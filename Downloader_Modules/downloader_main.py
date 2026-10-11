@@ -407,7 +407,12 @@ def run_phase1_ingestion(
                     v_path = os.path.join(target_dir, "video.mp4") if is_dup else None
                     return {"is_duplicate": is_dup, "video_path": v_path}
 
-            approved_reels = apify_scrape_creator_accounts("General", sources, limit_per_account=limit_per_account)
+            approved_reels = apify_scrape_creator_accounts(
+                "General",
+                sources,
+                limit_per_account=limit_per_account,
+                bypass_cooldown=bool(target_accounts),
+            )
             downloaded_files = []
             for item in (approved_reels or []):
                 if isinstance(item, str) and os.path.exists(item):

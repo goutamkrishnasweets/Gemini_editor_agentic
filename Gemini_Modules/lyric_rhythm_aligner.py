@@ -1180,11 +1180,43 @@ def compute_4d_audio_score(
     if clip_metadata:
         clip_text += f" {clip_metadata.get('caption', '')} {' '.join(str(h) for h in clip_metadata.get('hashtags', []))}".lower()
 
-    track_text = f"{c_genre} {vibe_str} {fn_lower} {c_emotion}".lower()
-    clip_words = set(re.findall(r"\w{4,}", clip_text))
-    track_words = set(re.findall(r"\w{4,}", track_text))
-    overlap = len(clip_words.intersection(track_words))
-    s_semantic = min(1.0, 0.20 + (overlap * 0.25))
+    cand_transcript = str(candidate_meta.get("transcript") or candidate_meta.get("lyrics") or "").lower()
+    cand_caption = str(candidate_meta.get("caption") or "").lower()
+    cand_tags = " ".join(str(h) for h in (candidate_meta.get("hashtags") or [])).lower()
+    cand_lang = str(candidate_meta.get("language") or "").lower()
+
+    track_text = f"{c_genre} {vibe_str} {fn_lower} {c_emotion} {cand_lang} {cand_caption} {cand_tags} {cand_transcript}".lower()
+
+    stopwords = {
+        "this", "that", "with", "from", "have", "video", "reel", "post",
+        "instagram", "tiktok", "edit", "editor", "your", "them", "they",
+        "will", "been", "were", "what", "when", "where", "which", "there",
+        "their", "about", "into", "more", "some", "such", "than", "then", "very"
+    }
+    clip_words = {w for w in re.findall(r"\w{3,}", clip_text) if w not in stopwords}
+    track_words = {w for w in re.findall(r"\w{3,}", track_text) if w not in stopwords}
+    exact_overlap = len(clip_words.intersection(track_words))
+
+    # Partial substring overlap for morphological variants (e.g. dance / dancing, romantic / romance)
+    partial_matches = 0
+    for cw in clip_words:
+        if len(cw) >= 4:
+            if any((cw in tw or tw in cw) for tw in track_words if len(tw) >= 4 and cw != tw):
+                partial_matches += 1
+
+    # Cultural & language synergy boost
+    indian_kws = ["bollywood", "hindi", "desi", "punjabi", "tamil", "telugu", "india", "mumbai", "saree", "lehenga", "bhangra", "garba", "tollywood", "kollywood", "actor", "actress", "shaadi"]
+    is_clip_indian = any(kw in clip_text for kw in indian_kws)
+    is_track_indian = any(kw in track_text for kw in indian_kws) or cand_lang in ["hi", "hindi", "pa", "punjabi", "ta", "tamil", "te", "telugu"]
+
+    cultural_bonus = 0.0
+    if is_clip_indian and is_track_indian:
+        cultural_bonus = 0.25
+    elif is_clip_indian and not is_track_indian and any(bad in track_text for bad in ["phonk", "drill", "death_metal"]):
+        cultural_bonus = -0.20
+
+    # Base semantic score starts at 0.35, scaled by overlap, partial match, and cultural synergy
+    s_semantic = max(0.10, min(1.0, 0.35 + (exact_overlap * 0.15) + (min(3, partial_matches) * 0.08) + cultural_bonus))
 
     # ── 3. S_rhythm (0.1 to 1.0) ─────────────────────────────────────────────
     clip_math_bpm = float(current_audio.get("math", {}).get("tempo_bpm", 0.0))
@@ -1537,10 +1569,36 @@ def select_best_audio_for_clip(
         last_used = float(meta.get("last_used", 0) or 0)
         hrs_ago = (now - last_used) / 3600.0 if last_used > 0 else 999.0
 
-        top_lines.append(
-            f"#{rank} '{c_file}'{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, energy={c_energy:.2f}, "
-            f"vibes='{vibe_str}', archetype_fit={cand['s_arch']:.2f}, 4d_score={cand['score']:.3f}, last_used={hrs_ago:.1f}h_ago"
-        )
+        c_lang = str(meta.get("language") or "").strip()
+        c_emotion = str(meta.get("dominant_emotion") or meta.get("emotion") or "").strip()
+        c_trans = str(meta.get("lyrics") or meta.get("transcript") or "").strip()
+        c_cap = str(meta.get("caption") or "").strip()
+        c_hook = float(meta.get("hook_time") or 0.0)
+
+        info_parts = [
+            f"genre='{c_genre}'",
+            f"bpm={c_bpm:.1f}",
+            f"energy={c_energy:.2f}",
+            f"vibes='{vibe_str}'"
+        ]
+        if c_lang and c_lang != "unknown":
+            info_parts.append(f"lang='{c_lang}'")
+        if c_emotion:
+            info_parts.append(f"emotion='{c_emotion}'")
+        if c_hook > 0:
+            info_parts.append(f"hook_drop={c_hook:.1f}s")
+        if c_cap:
+            cap_preview = (c_cap[:90] + "...") if len(c_cap) > 90 else c_cap
+            info_parts.append(f"origin_caption='{cap_preview}'")
+        if c_trans:
+            trans_preview = (c_trans[:120] + "...") if len(c_trans) > 120 else c_trans
+            info_parts.append(f"lyrics='{trans_preview}'")
+
+        info_parts.append(f"archetype_fit={cand['s_arch']:.2f}")
+        info_parts.append(f"4d_score={cand['score']:.3f}")
+        info_parts.append(f"last_used={hrs_ago:.1f}h_ago")
+
+        top_lines.append(f"#{rank} '{c_file}'{fid_tag}: " + ", ".join(info_parts))
     candidates_str = "\n".join(top_lines)
     all_forbidden = sorted(effective_disqualified.union(set(disqualified_by_archetype)))
     forbidden_str = ", ".join([f"'{t}'" for t in all_forbidden[:30]]) or "None"
@@ -1568,12 +1626,17 @@ DIRECTOR DIRECTIVE:
 1. NEVER pick a track from the FORBIDDEN list.
 2. STRICT SPEECH & NOISE BAN: Never pick crowd babble, microphone static, ambient street chatter, or spoken dialogue as music.
 3. ARCHETYPE ALIGNMENT: Obey the Director Directive above. Match the energy, rhythm, and genre strictly to the archetype.
-4. Return ONLY valid JSON with 'selected_audio_track', 'telegram_file_id', 'alignment_score', and 'reasoning'.
+4. SEMANTIC & CULTURAL RESONANCE (CRITICAL):
+   - You MUST match the cultural, linguistic, and emotional world of the video.
+   - For Bollywood, Hindi, Indian, or Desi creators/scenes: prioritize tracks with matching Indian/Bollywood vibes, Hindi lyrics, or culturally authentic rhythm. NEVER pick an incongruous Western phonk, trap, or unrelated podcast track.
+   - For fashion/glamour struts: pick tracks with swagger, luxury, beat drop, or high-fashion elegance.
+   - Match the lyrics and mood to what is visually occurring (e.g. romance, celebration, fitness, comedy).
+5. Return ONLY valid JSON with 'selected_audio_track', 'telegram_file_id', 'alignment_score', and 'reasoning'.
 
 [FORBIDDEN TRACKS — DO NOT SELECT]
 {forbidden_str}
 
-[TOP CANDIDATE MUSIC PROFILES (Ranked by 4D Intelligence)]
+[TOP CANDIDATE MUSIC PROFILES (Ranked by 4D Intelligence with Lyrics & Origin Context)]
 {candidates_str}
 
 Return ONLY valid JSON:
@@ -1581,7 +1644,7 @@ Return ONLY valid JSON:
   "selected_audio_track": "exact_candidate_filename.wav",
   "telegram_file_id": "file_id_if_available",
   "alignment_score": 0.95,
-  "reasoning": "Creative director explanation: why this track's bass/rhythm/vibe matches the subject's actions and viral impact."
+  "reasoning": "Creative director explanation: why this track's lyrics/subject/beat match the video narrative and cultural feel."
 }}
 """
 
@@ -1649,6 +1712,7 @@ Return ONLY valid JSON:
     store.patch_bgm_selection(clip_data, selected_track, reasoning, alignment_score)
     store.save(clip_id, clip_data, clip_folder)
 
+    win_meta = pool_files.get(selected_track, {}) if selected_track else {}
     return {
         "selected_audio_track": selected_track,
         "telegram_file_id": selected_file_id,
@@ -1657,6 +1721,9 @@ Return ONLY valid JSON:
         "backup_candidates": backup_candidates,
         "candidate_file_ids": cand_fids,
         "archetype": arch_name,
+        "hook_time": float(win_meta.get("hook_time") or 0.0),
+        "lyrics": str(win_meta.get("lyrics") or win_meta.get("transcript") or ""),
+        "dominant_emotion": str(win_meta.get("dominant_emotion") or ""),
     }
 
 

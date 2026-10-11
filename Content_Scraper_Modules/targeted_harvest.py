@@ -126,7 +126,8 @@ class TargetedHarvest:
                     reels = apify_scrape_creator_accounts(
                         creator_name=target_id,
                         source_accounts=[target_id],
-                        limit_per_account=self.clips_per_id
+                        limit_per_account=self.clips_per_id,
+                        bypass_cooldown=True,
                     )
                     
                     if not reels:

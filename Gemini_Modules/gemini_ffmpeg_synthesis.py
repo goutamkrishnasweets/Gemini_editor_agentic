@@ -2722,16 +2722,16 @@ class GeminiFFmpegEngine:
             if not audio_path or not os.path.exists(audio_path):
                 extra_inputs["preserve_original_audio"] = False
                 logger.info("🔇 [AUDIO DIRECTIVE] No audio track available → source clip will be MUTED (preserve_original_audio=False).")
+            elif rec_action in ("preserve_voice_duck_bgm", "preserve_original_audio") or speech_mode in ("on_camera_dialogue", "voiceover_narration", "lip_sync_dub") or f_intent == "talking_head":
+                extra_inputs["preserve_original_audio"] = True
+                logger.info(f"🎙️ [SPEECH INTEL] Preserved audio mode '{speech_mode}' detected (rec='{rec_action}') -> Enabling preserve_original_audio (static_audio_blend).")
             elif audio_path and (
                 rec_action == "audio_replace_full_bgm" or
-                speech_mode in ("silent_broll", "music_broll", "lip_sync_dub") or
+                speech_mode in ("silent_broll", "music_broll") or
                 f_intent in ("bollywood_dance_performance", "dance", "fashion", "visual_broll")
             ):
                 extra_inputs["preserve_original_audio"] = False
-                logger.info(f"🔇 [SPEECH INTEL] Visual/dance footage detected (mode='{speech_mode}', rec='{rec_action}') -> Clean BGM replacement (preserve_original_audio=False).")
-            elif rec_action == "preserve_voice_duck_bgm" or speech_mode in ("on_camera_dialogue", "voiceover_narration") or f_intent == "talking_head":
-                extra_inputs["preserve_original_audio"] = True
-                logger.info(f"🎙️ [SPEECH INTEL] Speech mode '{speech_mode}' detected -> Enabling preserve_original_audio (static_audio_blend).")
+                logger.info(f"🔇 [SPEECH INTEL] Visual footage detected (mode='{speech_mode}', rec='{rec_action}') -> Clean BGM replacement (preserve_original_audio=False).")
             else:
                 extra_inputs["preserve_original_audio"] = False
 

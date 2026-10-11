@@ -538,7 +538,13 @@ class TelegramVaultIndexer:
                                 sc_val = v.get("shortcode")
                                 if _is_bl(audio_filename=k, audio_shortcode=sc_val, telegram_file_id=fid):
                                     continue
-                                pool[k] = dict(v)
+                                entry = dict(v)
+                                g_intel = entry.get("gemini_semantic_audio_intelligence") or entry.get("gemini_semantic_intelligence") or {}
+                                if isinstance(g_intel, dict):
+                                    for gk, gv in g_intel.items():
+                                        if (gk not in entry or not entry[gk]) and gv:
+                                            entry[gk] = gv
+                                pool[k] = entry
 
                         # ALSO include valid audio tracks from social_media_id indexed by shortcode!
                         sm_dict = files_dict.get("social_media_id", {})
@@ -610,6 +616,24 @@ class TelegramVaultIndexer:
                                     pass
 
                                 track_key = f"{sc}.wav"
+
+                                # Extract rich semantic intelligence (lyrics, transcript, caption, language)
+                                w_trans = a_data.get("whisper_transcript") or sm_entry.get("whisper_transcript") or {}
+                                transcript_str = ""
+                                if isinstance(w_trans, dict):
+                                    transcript_str = str(w_trans.get("text") or "").strip()
+                                    if not transcript_str and "sentences" in w_trans:
+                                        transcript_str = " ".join(str(s.get("text", "")) for s in w_trans["sentences"] if isinstance(s, dict)).strip()
+                                elif isinstance(w_trans, str):
+                                    transcript_str = w_trans.strip()
+
+                                lyrics_str = str(a_data.get("lyrics") or sm_entry.get("lyrics") or transcript_str).strip()
+                                caption_str = str(sm_entry.get("caption") or a_data.get("caption") or "").strip()
+                                tags_list = sm_entry.get("hashtags") or a_data.get("hashtags") or []
+                                lang_val = str(a_data.get("language") or (w_trans.get("language") if isinstance(w_trans, dict) else "") or "").strip()
+                                dom_emotion = str(a_data.get("dominant_emotion") or a_data.get("emotion") or "").strip()
+                                hook_t = float(a_data.get("hook_time") or a_data.get("audio_math", {}).get("hook_time") or 0.0)
+
                                 pool[track_key] = {
                                     "shortcode": sc,
                                     "file_id": ext_fid,
@@ -624,6 +648,13 @@ class TelegramVaultIndexer:
                                     "is_source_extract": True,
                                     "usage_count": sm_entry.get("usage_count", 0),
                                     "last_used": sm_entry.get("last_used", 0),
+                                    "transcript": transcript_str,
+                                    "lyrics": lyrics_str,
+                                    "caption": caption_str,
+                                    "hashtags": tags_list if isinstance(tags_list, list) else [str(tags_list)],
+                                    "language": lang_val,
+                                    "dominant_emotion": dom_emotion,
+                                    "hook_time": hook_t,
                                 }
             except Exception as _pme:
                 logger.debug("Local pool metadata read notice: %s", _pme)

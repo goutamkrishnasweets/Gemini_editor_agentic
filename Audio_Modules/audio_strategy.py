@@ -153,7 +153,9 @@ def track_card(m: Dict[str, Any]) -> str:
         m.get("dominant_emotion"),
         m.get("language"),
         m.get("track_name") or m.get("title") or m.get("filename"),
-        str(m.get("transcript", ""))[:400]   # lyrics/speech meaning, not just tags
+        m.get("caption"),
+        " ".join(map(str, m.get("hashtags") or [])),
+        str(m.get("lyrics") or m.get("transcript") or "")[:400]   # lyrics/speech meaning, not just tags
     ]
     return " ".join(str(p) for p in parts if p)
 

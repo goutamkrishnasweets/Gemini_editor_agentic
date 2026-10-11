@@ -430,8 +430,9 @@ class ForensicVideoAnalyzer:
                     speech_mode = "on_camera_dialogue"
                     rec_action = "preserve_voice_duck_bgm"
                 elif is_talking and has_vocals and not is_speech_vocal:
+                    # On-camera musical performance / lip-sync: preserve original song sync
                     speech_mode = "lip_sync_dub"
-                    rec_action = "audio_replace_full_bgm"
+                    rec_action = "preserve_original_audio"
                 elif not is_talking and has_vocals and is_speech_vocal:
                     speech_mode = "voiceover_narration"
                     rec_action = "preserve_voice_duck_bgm"

@@ -262,7 +262,6 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
     downloaded_files = ingest_res.get("downloaded_files", [])
     if not ingest_res.get("success") or not downloaded_files:
         logger.warning("⚠️ [SCHEDULED BATCH] Ingestion returned 0 new clips.")
-        mark_and_sync_scraped_accounts(target_accounts)
         return []
 
     # Target newly downloaded clip directories up to processing limit (6 clips)

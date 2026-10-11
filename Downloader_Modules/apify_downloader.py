@@ -653,6 +653,7 @@ def apify_scrape_creator_accounts(
     creator_name:    str,
     source_accounts: List[str],
     limit_per_account: int = 11,
+    bypass_cooldown: bool = False,
 ) -> List[Dict]:
     """
     Scrapes the latest N reels from a list of professional source accounts.
@@ -679,27 +680,30 @@ def apify_scrape_creator_accounts(
         return []
 
 
-    # ── Per-Account 24h Cooldown ──────────────────────────────────────────────
-    # Block accounts that were already scraped within the last 24 hours.
-    # Prevents re-scraping the same content feed multiple times per day.
-    try:
-        from Core_Modules.salesman_state import get_account_scrape_throttle
-        _throttle = get_account_scrape_throttle()
-        _ready_accounts, _blocked_accounts = _throttle.filter_ready(source_accounts)
-        if not _ready_accounts:
-            logger.info(
-                "⏸️ [ACCOUNT_THROTTLE] ALL %d accounts are on 24h cooldown — skipping Apify call.",
-                len(source_accounts)
-            )
-            return []
-        if len(_ready_accounts) < len(source_accounts):
-            logger.info(
-                "⏸️ [ACCOUNT_THROTTLE] %d/%d accounts ready (others on cooldown).",
-                len(_ready_accounts), len(source_accounts)
-            )
-        source_accounts = _ready_accounts
-    except Exception as _thr_err:
-        logger.debug("Account throttle check skipped: %s", _thr_err)
+    # ── Per-Account Cooldown ──────────────────────────────────────────────────
+    # Block accounts that were already scraped recently (unless bypass_cooldown=True).
+    # Prevents re-scraping the same content feed repeatedly.
+    if not bypass_cooldown:
+        try:
+            from Core_Modules.salesman_state import get_account_scrape_throttle
+            _throttle = get_account_scrape_throttle()
+            _ready_accounts, _blocked_accounts = _throttle.filter_ready(source_accounts)
+            if not _ready_accounts:
+                logger.info(
+                    "⏸️ [ACCOUNT_THROTTLE] ALL %d accounts are on cooldown — skipping Apify call.",
+                    len(source_accounts)
+                )
+                return []
+            if len(_ready_accounts) < len(source_accounts):
+                logger.info(
+                    "⏸️ [ACCOUNT_THROTTLE] %d/%d accounts ready (others on cooldown).",
+                    len(_ready_accounts), len(source_accounts)
+                )
+            source_accounts = _ready_accounts
+        except Exception as _thr_err:
+            logger.debug("Account throttle check skipped: %s", _thr_err)
+    else:
+        logger.info("⚡ [ACCOUNT_THROTTLE] Cooldown bypassed for accounts: %s", source_accounts)
 
     logger.info(
         "🎬 [ACCOUNT MODE] Scraping %d accounts for '%s' (%d reels each)…",
@@ -755,13 +759,20 @@ def apify_scrape_creator_accounts(
         items = [item for item in raw_items if item.get("shortcode") or item.get("id")]
 
         # ── Positional Pinned-Post Skip (Per Account) ───────────────────────
-        # Instagram always pins posts at the top N profile slots.
-        # We drop the first N posts encountered for each account from the raw list
-        # to ensure we avoid the pinned posts while preserving all subsequent posts.
-        _skip_n = int(os.getenv("APIFY_SKIP_TOP_N", "3"))
+        # Instagram pins posts at top slots. Note: Stage 1 metadata filter already
+        # checks item.get("isPinned") == True. This positional check only serves as a fallback.
+        # Defaults to 0 so we don't blindly discard valid reels on small harvests.
+        _skip_n = int(os.getenv("APIFY_SKIP_TOP_N", "0"))
         if _skip_n > 0:
             filtered_items = []
             account_post_counters = {}
+            # Count total items per account in this batch to prevent starving to 0
+            account_totals = {}
+            for item in items:
+                u = (item.get("ownerUsername") or item.get("username") or "").strip().lower()
+                if u:
+                    account_totals[u] = account_totals.get(u, 0) + 1
+
             for item in items:
                 username = (item.get("ownerUsername") or item.get("username") or "").strip().lower()
                 if not username:
@@ -769,7 +780,10 @@ def apify_scrape_creator_accounts(
                     continue
                 
                 account_post_counters[username] = account_post_counters.get(username, 0) + 1
-                if account_post_counters[username] <= _skip_n:
+                # Only skip positionally if not explicitly unpinned AND pool has enough items
+                is_explicitly_unpinned = item.get("isPinned") is False
+                can_skip = account_totals.get(username, 0) > _skip_n and not is_explicitly_unpinned
+                if can_skip and account_post_counters[username] <= _skip_n:
                     logger.info(
                         "📌 [PINNED_SKIP] Skipping post %d for @%s (pinned avoidance)",
                         account_post_counters[username], username
@@ -782,17 +796,14 @@ def apify_scrape_creator_accounts(
         
         if actual_count > 0:
             _consume_quota(actual_count)
+            # Mark accounts as scraped ONLY when valid reels were returned
+            try:
+                from Core_Modules.salesman_state import get_account_scrape_throttle
+                get_account_scrape_throttle().mark_scraped(source_accounts)
+            except Exception as _mark_err:
+                logger.debug("mark_scraped skipped: %s", _mark_err)
         else:
             logger.warning("⚠️ Apify returned 0 valid reels (likely blocked by Instagram or private account).")
-
-        # Mark accounts as scraped NOW — cooldown starts from this moment.
-        # Done immediately after Apify returns so even a crash later won't
-        # let the same accounts be re-scraped the same day.
-        try:
-            from Core_Modules.salesman_state import get_account_scrape_throttle
-            get_account_scrape_throttle().mark_scraped(source_accounts)
-        except Exception as _mark_err:
-            logger.debug("mark_scraped skipped: %s", _mark_err)
 
         logger.info(
             "📦 Apify returned %d reels for creator '%s'",

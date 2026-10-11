@@ -85,10 +85,15 @@ class ApifyQuotaTracker:
 
 
 class AccountScrapeThrottle:
-    """Manages 24-hour scrape cooldowns for creator/source accounts."""
+    """Manages scrape cooldowns for creator/source accounts."""
 
-    def __init__(self, state_file: str = _STATE_FILE, cooldown_hours: float = 24.0):
+    def __init__(self, state_file: str = _STATE_FILE, cooldown_hours: Optional[float] = None):
         self.state_file = state_file
+        if cooldown_hours is None:
+            try:
+                cooldown_hours = float(os.getenv("APIFY_ACCOUNT_COOLDOWN_HOURS", "6.0"))
+            except (ValueError, TypeError):
+                cooldown_hours = 6.0
         self.cooldown_seconds = cooldown_hours * 3600.0
 
     def _load_history(self) -> Dict[str, float]:
