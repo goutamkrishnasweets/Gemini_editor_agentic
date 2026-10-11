@@ -142,6 +142,18 @@ def detect_watermark(
         # Gemini 1.5/2.5 Flash has native visual acuity to detect faint overlays if given 1080p frames.
         n_full = len(pil_images)
 
+        keywords_hint = ""
+        if keywords and str(keywords).strip():
+            kw_clean = str(keywords).strip()
+            keywords_hint = f"""
+─────────────────────────────────────────────────
+⚠️ TARGET BRANDING HINT (CRITICAL USER DIRECTIVE):
+The user explicitly requested removal of this watermark/branding:
+"{kw_clean}"
+Conduct an aggressive inspection for any text, handle, bug, or logo resembling or containing "{kw_clean}" in all frames and flag it!
+─────────────────────────────────────────────────
+"""
+
         # 🎯 FORENSIC PROMPT v17.0 — WATERMARK HUNT + BEST FRAME + FASHION/NSFW DETECTION
         # Part A: Watermark detection (UNCHANGED — do not modify)
         # Part B: Best thumbnail frame selection + clothing coverage (fashion vs NSFW)
@@ -154,7 +166,7 @@ Frames are numbered starting at 0 (Frame 0 = first image, Frame {n_full - 1} = l
 PART A — WATERMARK / BRANDING DETECTION
 ══════════════════════════════════════════════════════════════
 Hunt for ANY source branding/watermark burned into these frames. Examine all {n_full} frame(s) with maximum precision.
-
+{keywords_hint}
 ─────────────────────────────────────────────────
 WHAT TO FLAG (source branding that must be removed):
 ─────────────────────────────────────────────────

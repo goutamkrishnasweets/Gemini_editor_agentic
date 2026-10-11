@@ -879,24 +879,35 @@ class TelegramVaultIndexer:
             os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", shortcode),
         ]
-        candidate_filenames = [
-            f"{prefix}{shortcode}.mp4",
-            f"manual_raw_{shortcode}.mp4",
-            f"auto_raw_{shortcode}.mp4",
-            f"{folder_prefix}{shortcode}.mp4",
-            f"manual_{shortcode}.mp4",
-            f"auto_{shortcode}.mp4",
-            "video_inpainted_clean.mp4",
-            "video.mp4",
-            f"{shortcode}.mp4",
-        ]
-        if entry and entry.get("file_name"):
-            candidate_filenames.insert(1, entry["file_name"])
+        if check_clean_first:
+            candidate_filenames = [
+                f"{prefix}{shortcode}.mp4",
+                f"manual_raw_{shortcode}.mp4",
+                f"auto_raw_{shortcode}.mp4",
+                f"{folder_prefix}{shortcode}.mp4",
+                f"manual_{shortcode}.mp4",
+                f"auto_{shortcode}.mp4",
+                "video_inpainted_clean.mp4",
+                "video.mp4",
+                f"{shortcode}.mp4",
+            ]
+            if entry and entry.get("file_name"):
+                candidate_filenames.insert(1, entry["file_name"])
+        else:
+            candidate_filenames = [
+                f"{prefix}{shortcode}.mp4",
+                f"manual_raw_{shortcode}.mp4",
+                f"auto_raw_{shortcode}.mp4",
+                "video.mp4",
+                f"{shortcode}.mp4",
+            ]
 
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
                 for c_fn in candidate_filenames:
                     if "_master.mp4" in c_fn.lower():
+                        continue
+                    if not check_clean_first and ("_clean" in c_fn.lower() or "inpainted" in c_fn.lower()):
                         continue
                     c_out = os.path.join(c_dir, c_fn)
                     if os.path.exists(c_out) and os.path.getsize(c_out) > 1024:

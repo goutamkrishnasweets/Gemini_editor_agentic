@@ -450,18 +450,43 @@ def tool_reedit_session(
                             target_input = cand
                             break
 
-        # Telegram Vault recovery if source is missing on disk
-        if not target_input or not os.path.exists(target_input):
+        # Check if inpaint requested in directive
+        try:
+            from Watermark_and_Inpainting.watermark_directive_helper import is_inpaint_directive
+            is_inpaint = is_inpaint_directive(edit_directive)
+        except Exception:
+            is_inpaint = bool(
+                edit_directive and any(
+                    kw in edit_directive.lower()
+                    for kw in ["inpaint", "inapint", "watermark", "clean", "logo", "remove", "erase", "filmygyan", "flimygyan"]
+                )
+            )
+
+        # Telegram Vault recovery if source is missing on disk or if inpainting requested
+        if is_inpaint or not target_input or not os.path.exists(target_input):
             try:
                 vi = TelegramVaultIndexer()
                 clean_sc = clip_id.replace("manual_", "").strip() if clip_id else ""
                 v_entry = vi.find_entry_by_shortcode(clean_sc) or vi.find_entry_by_shortcode(clip_id)
                 if v_entry:
-                    recovery_dir = os.path.join(_REPO_ROOT, "downloads", clip_id or f"recovered_{session_id}")
+                    recovery_dir = os.path.dirname(target_input) if (target_input and os.path.isdir(os.path.dirname(target_input))) else os.path.join(_REPO_ROOT, "downloads", clip_id or f"recovered_{session_id}")
                     os.makedirs(recovery_dir, exist_ok=True)
-                    hydrated = vi.hydrate_raw_video_from_vault(clean_sc or clip_id, dest_dir=recovery_dir)
+                    # When inpainting is requested, NEVER fetch pre-cleaned video. Fetch the true raw un-inpainted video!
+                    hydrated = vi.hydrate_raw_video_from_vault(
+                        clean_sc or clip_id,
+                        dest_dir=recovery_dir,
+                        check_clean_first=(not is_inpaint)
+                    )
                     if hydrated and os.path.exists(hydrated):
                         target_input = hydrated
+                        if is_inpaint:
+                            # Purge any old clean videos or coords in recovery_dir
+                            for fn in os.listdir(recovery_dir):
+                                if ("_clean" in fn or "inpainted" in fn or fn.endswith(".coords.json")) and fn != os.path.basename(hydrated):
+                                    try:
+                                        os.remove(os.path.join(recovery_dir, fn))
+                                    except Exception:
+                                        pass
             except Exception as _ve:
                 logger.warning(f"Vault recovery warning in tool_reedit_session: {_ve}")
 
@@ -470,6 +495,19 @@ def tool_reedit_session(
                 "status": "failed",
                 "message": f"Source video could not be recovered on disk or vault for session '{session_id}'."
             }
+
+        clip_dir = os.path.dirname(target_input)
+        if not clip_dir or not os.path.isdir(clip_dir):
+            clip_dir = os.path.join(_REPO_ROOT, "downloads", clip_id)
+
+        # If inpainting requested, purge any stale clean outputs from clip_dir before Phase 2 runs
+        if is_inpaint and os.path.isdir(clip_dir):
+            for fn in os.listdir(clip_dir):
+                if ("_clean" in fn or "inpainted" in fn or fn.endswith(".coords.json")) and fn != os.path.basename(target_input):
+                    try:
+                        os.remove(os.path.join(clip_dir, fn))
+                    except Exception:
+                        pass
 
         # Check audio directive & blacklist rejected audio
         is_music = any(kw in edit_directive.lower() for kw in ["music", "bgm", "song", "track", "rhythm", "soundtrack", "audio", "beat"])
@@ -490,10 +528,6 @@ def tool_reedit_session(
                 logger.info(f"🚫 [TOOL: RE-EDIT] Added '{audio_fn_str}' (sc: '{audio_sc}') to rejected_audio_blacklist.")
             except Exception as _bl_err:
                 logger.debug(f"[TOOL: RE-EDIT] Blacklist add notice: {_bl_err}")
-
-        clip_dir = os.path.dirname(target_input)
-        if not clip_dir or not os.path.isdir(clip_dir):
-            clip_dir = os.path.join(_REPO_ROOT, "downloads", clip_id)
 
         # Register retry attempt
         req_chat = sess.get("requestor_chat_id")

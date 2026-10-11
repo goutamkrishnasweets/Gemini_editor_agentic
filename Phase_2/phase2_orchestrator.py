@@ -119,22 +119,24 @@ def run_phase2_pipeline(
             working_video_path = video_path
             watermark_boxes = []
 
-            # Check if user explicitly requested inpainting in directive
-            is_inpaint_requested = bool(
-                user_edit_directive and any(
-                    kw in user_edit_directive.lower()
-                    for kw in ["inpaint", "watermark", "clean", "logo", "remove watermark", "erase"]
+            # Check if user explicitly requested inpainting in directive (typo-tolerant)
+            try:
+                from Watermark_and_Inpainting.watermark_directive_helper import is_inpaint_directive, extract_watermark_keywords
+                is_inpaint_requested = is_inpaint_directive(user_edit_directive)
+            except Exception as _dir_err:
+                logger.debug(f"watermark_directive_helper import notice: {_dir_err}")
+                is_inpaint_requested = bool(
+                    user_edit_directive and any(
+                        kw in user_edit_directive.lower()
+                        for kw in ["inpaint", "inapint", "watermark", "clean", "logo", "remove", "erase", "filmygyan", "flimygyan"]
+                    )
                 )
-            )
 
-            # Check candidate clean video files on local disk
+            # Only genuine clean/inpainted outputs belong in candidate_clean
             candidate_clean = [
                 clean_raw_path,
                 os.path.join(clip_dir, f"manual_clean_{shortcode_stem}.mp4"),
                 os.path.join(clip_dir, f"auto_clean_{shortcode_stem}.mp4"),
-                os.path.join(clip_dir, f"{folder_prefix}{shortcode_stem}.mp4"),
-                os.path.join(clip_dir, f"manual_{shortcode_stem}.mp4"),
-                os.path.join(clip_dir, f"auto_{shortcode_stem}.mp4"),
                 os.path.join(clip_dir, "video_inpainted_clean.mp4"),
             ]
 
@@ -150,6 +152,33 @@ def run_phase2_pipeline(
                         except Exception as _rm_err:
                             logger.debug(f"Cache purge notice: {_rm_err}")
                 clean_raw_path = os.path.join(clip_dir, clean_filename)
+
+                # Ensure video_path is a true raw source (not a deleted or stale clean video)
+                if not os.path.exists(video_path) or "_clean.mp4" in video_path.lower():
+                    raw_candidates = [
+                        os.path.join(clip_dir, "video.mp4"),
+                        os.path.join(clip_dir, f"manual_raw_{shortcode_stem}.mp4"),
+                        os.path.join(clip_dir, f"auto_raw_{shortcode_stem}.mp4"),
+                        os.path.join(clip_dir, f"manual_{shortcode_stem}.mp4"),
+                        os.path.join(clip_dir, f"auto_{shortcode_stem}.mp4"),
+                    ]
+                    found_raw = None
+                    for rc in raw_candidates:
+                        if os.path.exists(rc) and os.path.getsize(rc) > 1024 and "_clean" not in rc.lower():
+                            found_raw = rc
+                            break
+                    if not found_raw:
+                        try:
+                            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                            _v_indexer = TelegramVaultIndexer()
+                            _raw_hydrated = _v_indexer.hydrate_raw_video_from_vault(folder_name, dest_dir=clip_dir, check_clean_first=False)
+                            if _raw_hydrated and os.path.exists(_raw_hydrated) and os.path.getsize(_raw_hydrated) > 1024:
+                                found_raw = _raw_hydrated
+                        except Exception as _vr_err:
+                            logger.warning(f"Vault raw recovery notice during inpaint override: {_vr_err}")
+                    if found_raw:
+                        video_path = found_raw
+                        working_video_path = found_raw
             else:
                 for c_cand in candidate_clean:
                     if "_master.mp4" in c_cand.lower():
@@ -191,7 +220,13 @@ def run_phase2_pipeline(
                     from Watermark_and_Inpainting.watermark_main import run_watermark_removal
 
                     logger.info(f"🧼 [UPFRONT INPAINTING] Running watermark detection & inpainting on: {os.path.basename(video_path)}")
-                    detect_kw = user_edit_directive if is_inpaint_requested else ""
+                    detect_kw = ""
+                    if is_inpaint_requested:
+                        try:
+                            from Watermark_and_Inpainting.watermark_directive_helper import extract_watermark_keywords
+                            detect_kw = extract_watermark_keywords(user_edit_directive)
+                        except Exception:
+                            detect_kw = user_edit_directive or ""
                     items, _ = detect_watermark_from_video(video_path=video_path, keywords=detect_kw)
                     if items:
                         watermark_boxes = items
