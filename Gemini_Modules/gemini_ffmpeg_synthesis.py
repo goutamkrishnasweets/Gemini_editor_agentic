@@ -397,11 +397,13 @@ class FFmpegCommandGenerator:
     def _get_encoder_flags(
         self,
         video_codec: str = "libx264",
-        crf: int = 18,
-        preset: str = "veryfast",
-        encoding_cfg: Optional[Dict[str, Any]] = None
+        crf: int = 16,
+        preset: str = "medium",
+        encoding_cfg: Optional[Dict[str, Any]] = None,
+        is_intermediate: bool = False
     ) -> List[str]:
         if isinstance(encoding_cfg, dict):
+            is_intermediate = is_intermediate or bool(encoding_cfg.get("is_intermediate", False))
             video_codec = encoding_cfg.get("codec") or encoding_cfg.get("video_codec") or video_codec
             preset = encoding_cfg.get("preset") or preset
             crf_val = encoding_cfg.get("crf")
@@ -411,12 +413,33 @@ class FFmpegCommandGenerator:
                 except (ValueError, TypeError):
                     pass
 
+        threads_cap = os.getenv("FFMPEG_THREADS", "4")
+
+        # ── LOSSLESS INTERMEDIATE MODE (Zero generational quality loss across multi-pass cuts) ──
+        if is_intermediate or crf == 0:
+            if self.hwaccel in ("cuda", "nvenc") or video_codec == "h264_nvenc":
+                return ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+            return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "0", "-threads", str(threads_cap), "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+
+        # ── MASTER DELIVERY QUALITY MODE ──
         if self.hwaccel in ("cuda", "nvenc") or video_codec == "h264_nvenc":
             return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
         elif self.hwaccel == "qsv" or video_codec == "h264_qsv":
             return ["-c:v", "h264_qsv", "-preset", str(preset), "-global_quality", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
-        threads_cap = os.getenv("FFMPEG_THREADS", "4")
-        return ["-c:v", str(video_codec), "-preset", str(preset), "-crf", str(crf), "-threads", str(threads_cap), "-pix_fmt", "yuv420p", "-profile:v", "main", "-movflags", "+faststart"]
+
+        profile = "high" if crf <= 18 else "main"
+        if isinstance(encoding_cfg, dict) and encoding_cfg.get("profile"):
+            profile = encoding_cfg.get("profile")
+
+        return [
+            "-c:v", str(video_codec),
+            "-preset", str(preset),
+            "-crf", str(crf),
+            "-threads", str(threads_cap),
+            "-pix_fmt", "yuv420p",
+            "-profile:v", str(profile),
+            "-movflags", "+faststart"
+        ]
 
     @staticmethod
     def cmd_list_to_string(cmd_list: List[str]) -> str:
@@ -943,7 +966,15 @@ class FFmpegCommandGenerator:
 
         # Check if input video has an audio stream AND whether we explicitly preserve original audio
         preserve_orig = bool(is_preserve_input)
-        has_input_audio = self._has_audio_stream(input_path) and preserve_orig
+        # Only extract/concat source audio in shot trims if source audio will actually be mixed in output.
+        # When external BGM replaces source audio (video_volume <= 0.01), omitting source audio trim/concat prevents
+        # FFmpeg's "Filter 'concat' has output 0 (ac) unconnected" graph failure.
+        source_audio_needed = (
+            self._has_audio_stream(input_path)
+            and preserve_orig
+            and (video_volume > 0.01 or (bgm_idx is None and vo_idx is None))
+        )
+        has_input_audio = source_audio_needed
 
         # ── Step A: Probe real source video duration and trim segments ───────────
         real_src_dur = 0.0
@@ -1307,6 +1338,12 @@ class FFmpegCommandGenerator:
         else:
             # Absolute last resort: video is genuinely silent (0 audio streams, no BGM, no VO)
             filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={total_visual_dur:.4f}[aout]")
+
+        # Safeguard: if [ac] was created in Step B but not referenced in audio assembly, sink it cleanly
+        full_subgraph = ";".join(filter_parts)
+        if "[ac]" in full_subgraph and "[aout]" in full_subgraph:
+            if full_subgraph.count("[ac]") == 1:
+                filter_parts.append("[ac]anullsink")
 
         # ── Assemble full filtergraph ─────────────────────────────────────────────
         filtergraph = ";".join(filter_parts)
@@ -2140,15 +2177,30 @@ class GeminiFFmpegEngine:
             self.cmd_generator._audio_stream_cache[current_input] = False
             logger.info("🔇 [AUDIO_STRIP] Stripped original clip audio up front to prevent speed-ramp pitch shifts & mid-sentence jump cuts under BGM.")
 
+        # ── Encoding Quality Strategy: Lossless Intermediates + Master Delivery ──
+        master_encoding_cfg = dict(encoding_cfg) if isinstance(encoding_cfg, dict) else {}
+        if not master_encoding_cfg.get("crf"):
+            master_encoding_cfg["crf"] = int(os.getenv("FFMPEG_MASTER_CRF", "16"))
+        if not master_encoding_cfg.get("preset"):
+            master_encoding_cfg["preset"] = os.getenv("FFMPEG_MASTER_PRESET", "medium")
+
+        intermediate_encoding_cfg = {
+            "codec": "libx264",
+            "crf": 0,
+            "preset": "ultrafast",
+            "is_intermediate": True,
+        }
+
         for idx, op in enumerate(grouped_ops):
             op_type = op.get("operation_type")
             is_last = (idx == len(grouped_ops) - 1) and not transition_ops
             step_output = output_path if is_last else os.path.join(out_dir, f"step_{idx}_{run_id}_{out_base}")
+            step_encoding = master_encoding_cfg if is_last else intermediate_encoding_cfg
 
             if op_type == "multi_trim":
                 sub_trims = op.get("trims", [])
                 sub_outputs = []
-                # Trim each segment from pre-trim source (current_input)
+                # Trim each segment from pre-trim source (current_input) with 100% lossless intermediate encoding
                 for s_idx, t_op in enumerate(sub_trims):
                     sub_out = os.path.join(out_dir, f"step_{idx}_sub_{s_idx}_{run_id}_{out_base}")
                     res_trim = self.cmd_generator.build_trim_command(
@@ -2156,25 +2208,25 @@ class GeminiFFmpegEngine:
                         start_time=t_op.get("start_time", 0.0),
                         end_time=t_op.get("end_time"),
                         duration=t_op.get("duration"),
-                        encoding_cfg=encoding_cfg,
+                        encoding_cfg=intermediate_encoding_cfg,
                         enforce_min_duration=False
                     )
                     command_steps.append(res_trim)
                     sub_outputs.append(sub_out)
 
                 # Concatenate all trimmed segments into step_output
-                res_concat = self.cmd_generator.build_concat_command(sub_outputs, step_output, encoding_cfg=encoding_cfg)
+                res_concat = self.cmd_generator.build_concat_command(sub_outputs, step_output, encoding_cfg=step_encoding)
                 command_steps.append(res_concat)
 
             elif op_type == "trim":
                 res = self.cmd_generator.build_trim_command(current_input, step_output,
                     start_time=op.get("start_time", 0.0), end_time=op.get("end_time"), duration=op.get("duration"),
-                    encoding_cfg=encoding_cfg)
+                    encoding_cfg=step_encoding)
                 command_steps.append(res)
             elif op_type == "scale_aspect":
                 res = self.cmd_generator.build_scale_aspect_command(current_input, step_output,
                     target_width=op.get("target_width", 1080), target_height=op.get("target_height", 1920), mode=op.get("mode", "crop"),
-                    encoding_cfg=encoding_cfg)
+                    encoding_cfg=step_encoding)
                 command_steps.append(res)
             elif op_type in ("speed_change", "speed_ramp"):
                 raw_speed = float(op.get("speed_factor", 1.25))
@@ -2201,7 +2253,7 @@ class GeminiFFmpegEngine:
                 else:
                     speed_factor = raw_speed
 
-                res = self.cmd_generator.build_speed_command(current_input, step_output, speed_factor=speed_factor, encoding_cfg=encoding_cfg)
+                res = self.cmd_generator.build_speed_command(current_input, step_output, speed_factor=speed_factor, encoding_cfg=step_encoding)
                 command_steps.append(res)
             elif op_type == "watermark_overlay":
                 wm_file = op.get("watermark_path") or extra_inputs.get("watermark")
@@ -2211,7 +2263,7 @@ class GeminiFFmpegEngine:
                         position=op.get("position", "top_right"),
                         scale=op.get("scale", 0.15),
                         opacity=op.get("opacity", 0.8),
-                        encoding_cfg=encoding_cfg
+                        encoding_cfg=step_encoding
                     )
                     command_steps.append(res)
                 else:
@@ -2226,7 +2278,7 @@ class GeminiFFmpegEngine:
                 if not _clean_upfront:
                     res = self.cmd_generator.build_delogo_blur_command(current_input, step_output,
                         x=op.get("x", 0), y=op.get("y", 0), w=op.get("w", 100), h=op.get("h", 50), band=op.get("band", 4),
-                        encoding_cfg=encoding_cfg)
+                        encoding_cfg=step_encoding)
                     command_steps.append(res)
                 else:
                     logger.info("⚡ [MULTI-STEP] Skipping redundant delogo_blur step — video was already inpainted upfront.")
@@ -2265,7 +2317,7 @@ class GeminiFFmpegEngine:
                     enable_box=op.get("enable_box", True),
                     boxcolor=boxcolor or "black@0.4",
                     fontfile=op.get("fontfile"),
-                    encoding_cfg=encoding_cfg
+                    encoding_cfg=step_encoding
                 )
                 command_steps.append(res)
             elif op_type == "concat":
@@ -2283,7 +2335,7 @@ class GeminiFFmpegEngine:
 
                 valid_clips = [c for c in input_clips if isinstance(c, str) and c and os.path.exists(c)]
                 if len(valid_clips) > 1:
-                    res = self.cmd_generator.build_concat_command(valid_clips, step_output, encoding_cfg=encoding_cfg)
+                    res = self.cmd_generator.build_concat_command(valid_clips, step_output, encoding_cfg=step_encoding)
                     command_steps.append(res)
                 else:
                     logger.info("ℹ️ [CONCAT SKIP] Concat operation has < 2 valid clips. Skipping redundant concat step.")
@@ -2298,7 +2350,7 @@ class GeminiFFmpegEngine:
                     res = self.cmd_generator.build_audio_ducking_mix_command(
                         current_input, vo_file, bgm_file, step_output,
                         music_volume=op.get("music_volume", 0.2), ducking_threshold=op.get("ducking_threshold", 0.1),
-                        encoding_cfg=encoding_cfg)
+                        encoding_cfg=step_encoding)
                     command_steps.append(res)
                 elif bgm_file and os.path.exists(bgm_file):
                     if extra_inputs.get("preserve_original_audio"):
@@ -2321,7 +2373,7 @@ class GeminiFFmpegEngine:
                         video_volume=v_vol,
                         audio_start_time=audio_st,
                         audio_offset=audio_off,
-                        encoding_cfg=encoding_cfg)
+                        encoding_cfg=step_encoding)
                     command_steps.append(res)
                 elif vo_file and os.path.exists(vo_file):
                     # Voiceover exists without external BGM -> mix voiceover over video!
@@ -2331,7 +2383,7 @@ class GeminiFFmpegEngine:
                         current_input, vo_file, step_output,
                         music_volume=1.0,
                         video_volume=v_vol,
-                        encoding_cfg=encoding_cfg)
+                        encoding_cfg=step_encoding)
                     command_steps.append(res)
                     logger.info(f"🎙️ [MULTI-PASS] Mixed voiceover into video without external BGM (video_vol={v_vol}, vo_vol=1.0)")
                 else:
@@ -2344,7 +2396,7 @@ class GeminiFFmpegEngine:
                     continue
                 res = self.cmd_generator.build_subtitle_burnin_command(current_input,
                     sub_file, step_output,
-                    encoding_cfg=encoding_cfg)
+                    encoding_cfg=step_encoding)
                 command_steps.append(res)
             else:
                 logger.warning(f"⚠️ [SYNTHESIS DISPATCH] Skipping unknown operation_type '{op_type}'.")
@@ -2359,9 +2411,26 @@ class GeminiFFmpegEngine:
                 gap_transitions = [{"gap_index": op.get("gap_index", 0), "transition_type": op.get("transition_type", "fade"),
                                      "duration": op.get("transition_duration", 0.5), "offset": op.get("offset", 4.0)}
                                     for op in transition_ops]
-                command_steps.append(self.cmd_generator.build_transition_xfade_command(valid_shots, output_path, gap_transitions, encoding_cfg=encoding_cfg))
+                command_steps.append(self.cmd_generator.build_transition_xfade_command(valid_shots, output_path, gap_transitions, encoding_cfg=master_encoding_cfg))
             else:
                 logger.info("ℹ️ Skipping transition_xfade step: single input video mode (no separate shot files provided).")
+
+        # ── Ensure Final Step Targets output_path with Master Quality Encoding ──
+        if command_steps and command_steps[-1].get("output") != output_path:
+            last_out = command_steps[-1].get("output")
+            cmd_last = [
+                self.cmd_generator.ffmpeg_path, "-y", "-i", last_out
+            ] + self.cmd_generator._get_encoder_flags(encoding_cfg=master_encoding_cfg)
+            if self.cmd_generator._has_audio_stream(last_out):
+                cmd_last.extend(["-c:a", "copy"])
+            cmd_last.append(output_path)
+            command_steps.append({
+                "cmd_list": cmd_last,
+                "terminal_command": self.cmd_generator.cmd_list_to_string(cmd_last),
+                "operation": "master_delivery",
+                "input": last_out,
+                "output": output_path
+            })
 
         raw_suggestion = gemini_json.get("raw_ffmpeg_command_suggestion", "")
         return {
@@ -2942,9 +3011,25 @@ class GeminiFFmpegEngine:
                     src_dur = float(json.loads(probe_res.stdout).get("format", {}).get("duration", 0.0))
                 except Exception:
                     src_dur = 15.0
-            micro_shots = [{"start": 0.0, "end": float(src_dur)}]
+        synth_mode = str(
+            extra_inputs.get("synthesis_mode")
+            or extra_inputs.get("execution_mode")
+            or gemini_json.get("synthesis_mode")
+            or os.getenv("FFMPEG_SYNTHESIS_MODE", "")
+        ).strip().lower()
 
-        if not dry_run and micro_shots:
+        force_multipass = bool(
+            extra_inputs.get("force_multipass")
+            or extra_inputs.get("prefer_multipass")
+            or os.getenv("FORCE_MULTIPASS", "").lower() in ("1", "true", "yes")
+            or os.getenv("PREFER_MULTIPASS", "").lower() in ("1", "true", "yes")
+            or synth_mode in ("multi_pass", "multipass", "multi_step", "multistep")
+        )
+
+        if force_multipass:
+            logger.info("🎬 [SYNTHESIS MODE] Direct high-quality multi-pass pipeline selected (skipping single-pass).")
+
+        if not dry_run and micro_shots and not force_multipass:
             try:
                 sp_step = self.cmd_generator.build_single_pass_filtergraph(
                     input_path=input_path,
@@ -3060,6 +3145,16 @@ class GeminiFFmpegEngine:
             logger.info(f"🧠 [ClipIntelligenceStore] Saved Gemini Call 3 Editing Plan & Output for '{clip_id}'")
         except Exception as store_err:
             logger.warning(f"🧠 [ClipIntelligenceStore] Call 3 save warning: {store_err}")
+
+        return {
+            "status": "SUCCESS",
+            "mode": "MULTI_PASS",
+            "editing_intent": synthesis.get("editing_intent"),
+            "creative_rationale": synthesis.get("creative_rationale", ""),
+            "total_steps": len(steps),
+            "final_output": output_path,
+            "duration_lock": duration_lock_res,
+        }
 
 def convert_cbm_to_ffmpeg_constraints(cbm_output: Dict[str, Any]) -> Dict[str, Any]:
     """

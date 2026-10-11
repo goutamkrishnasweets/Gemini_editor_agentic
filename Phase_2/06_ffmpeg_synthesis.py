@@ -182,6 +182,10 @@ def synthesize_editing_plan(
         wm_boxes = _raw_wm if isinstance(_raw_wm, list) and len(_raw_wm) > 0 else None
         if wm_boxes:
             extra_inputs["watermark_boxes"] = wm_boxes
+        if forensic_context.get("force_multipass"):
+            extra_inputs["force_multipass"] = True
+        if forensic_context.get("synthesis_mode"):
+            extra_inputs["synthesis_mode"] = forensic_context["synthesis_mode"]
 
     # If no external BGM track is available, retrieve clip's clean continuous extracted audio from Telegram Vault
     if not selected_bgm_path or not os.path.exists(selected_bgm_path):
