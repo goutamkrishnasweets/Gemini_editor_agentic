@@ -43,9 +43,17 @@ def select_clip_bgm(
     preserve_music = _intent.get("preserve_music", False)
 
     # ── STATEFUL CACHE LOCK (Stage 2 Cache-First BGM) ────────────────────────
+    try:
+        from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+    except ImportError:
+        def _is_bl(*args, **kwargs): return False
+
     if preserve_music:
         cached_bgm = _try_load_cached_bgm(clip_id, clip_folder, audio_dir)
         cached_track = cached_bgm.get("selected_audio_track") if cached_bgm else None
+        cached_fid = cached_bgm.get("telegram_file_id") if cached_bgm else None
+
+        is_bl = bool(cached_track and _is_bl(cached_track, telegram_file_id=cached_fid))
 
         is_excluded = False
         if cached_track and exclude_filenames:
@@ -57,13 +65,18 @@ def select_clip_bgm(
                     is_excluded = True
                     break
 
-        if cached_bgm and not is_excluded:
+        if cached_bgm and not is_excluded and not is_bl:
             logger.info(
                 f"🔒 [STEP 04] BGM CACHE LOCK — Skipping Gemini Call 2. "
                 f"Reusing: '{cached_track}' "
                 f"(intent: preserve_music=True)"
             )
             return cached_bgm
+        elif is_bl:
+            logger.warning(
+                f"🚫 [STEP 04] Cached BGM '{cached_track}' is in REJECTED_AUDIO_BLACKLIST! "
+                "Busting cache lock and running Gemini Call 2 fresh for alternative BGM."
+            )
         elif is_excluded:
             logger.info(
                 f"🚫 [STEP 04] Cached BGM '{cached_track}' is in exclude_filenames. "
@@ -93,10 +106,10 @@ def select_clip_bgm(
     os.makedirs(target_dest, exist_ok=True)
 
     candidates_to_try = []
-    if selected_track_name:
+    if selected_track_name and not _is_bl(selected_track_name, telegram_file_id=res.get("telegram_file_id")):
         candidates_to_try.append(selected_track_name)
     for c in backup_candidates:
-        if c and c not in candidates_to_try:
+        if c and c not in candidates_to_try and not _is_bl(c):
             candidates_to_try.append(c)
 
     from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
@@ -111,17 +124,24 @@ def select_clip_bgm(
     try:
         vault_pool = vault.get_vault_audio_pool(current_clip_id=clip_id) or {}
         for vtrack, vmeta in vault_pool.items():
+            vfid = vmeta.get("file_id") or vmeta.get("telegram_file_id") if isinstance(vmeta, dict) else None
+            if _is_bl(vtrack, telegram_file_id=vfid):
+                continue
             if vtrack not in candidates_to_try and (not exclude_filenames or vtrack not in exclude_filenames):
                 candidates_to_try.append(vtrack)
-                if vtrack not in cand_fids and isinstance(vmeta, dict) and vmeta.get("file_id"):
-                    cand_fids[vtrack] = vmeta["file_id"]
+                if vtrack not in cand_fids and vfid:
+                    cand_fids[vtrack] = vfid
     except Exception as _vp_err:
         logger.debug(f"[STEP 04] Notice fetching vault audio pool candidates: {_vp_err}")
 
     failed_candidates = set()
     for cand_name in candidates_to_try:
+        cand_fid = cand_fids.get(cand_name)
+        if _is_bl(cand_name, telegram_file_id=cand_fid):
+            logger.warning(f"🚫 [STEP 04] Skipping blacklisted candidate '{cand_name}'.")
+            failed_candidates.add(cand_name)
+            continue
         try:
-            cand_fid = cand_fids.get(cand_name)
             resolved_path = vault.hydrate_bgm_track_from_vault(
                 cand_name,
                 target_dest,

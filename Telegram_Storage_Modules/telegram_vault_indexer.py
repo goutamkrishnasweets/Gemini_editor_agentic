@@ -525,9 +525,18 @@ class TelegramVaultIndexer:
                     pm_data = json.load(f)
                     files_dict = pm_data.get("files", pm_data) if isinstance(pm_data, dict) else {}
                     if isinstance(files_dict, dict):
+                        try:
+                            from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+                        except ImportError:
+                            def _is_bl(*args, **kwargs): return False
+
                         for k, v in files_dict.items():
                             if isinstance(v, dict) and k != "social_media_id":
                                 if clip_stem and clip_stem in k.lower():
+                                    continue
+                                fid = v.get("file_id") or v.get("telegram_file_id")
+                                sc_val = v.get("shortcode")
+                                if _is_bl(audio_filename=k, audio_shortcode=sc_val, telegram_file_id=fid):
                                     continue
                                 pool[k] = dict(v)
 
@@ -546,6 +555,8 @@ class TelegramVaultIndexer:
                                 )
                                 a_data = sm_entry.get("audio_data") or {}
                                 if not ext_fid:
+                                    continue
+                                if _is_bl(audio_filename=f"{sc}.wav", audio_shortcode=sc, telegram_file_id=ext_fid):
                                     continue
 
                                 # ── STRICT SPEECH & NOISE GATE ────────────────────────

@@ -29,32 +29,57 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BLACKLIST_FILE = os.path.join(_REPO_ROOT, "data", "rejected_audio_blacklist.json")
 _lock = threading.RLock()
 
-# Module-level in-memory cache (loaded once per process)
+# Module-level in-memory cache (loaded once per process, reloaded on file mtime change)
 _cache: Optional[Dict[str, Any]] = None
+_cache_mtime: float = 0.0
+
+
+def clean_track_identifier(val: Optional[str]) -> str:
+    """Normalizes an audio track filename, shortcode, or path into a canonical clean key.
+    Strips prefixes (vault_bgm_, bgm_, extracted_, audio_) and extensions (.wav, .mp3, etc.).
+    """
+    if not val:
+        return ""
+    s = os.path.basename(str(val)).lower().strip()
+    for pfx in ("vault_bgm_", "bgm_", "extracted_", "audio_"):
+        if s.startswith(pfx):
+            s = s[len(pfx):]
+    for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4", ".ogg", ".flac"):
+        if s.endswith(ext):
+            s = s[:-len(ext)]
+    return s.strip()
 
 
 def _load() -> Dict[str, Any]:
-    global _cache
-    if _cache is not None:
-        return _cache
+    global _cache, _cache_mtime
     if os.path.isfile(_BLACKLIST_FILE):
         try:
+            mtime = os.path.getmtime(_BLACKLIST_FILE)
+            if _cache is not None and mtime <= _cache_mtime:
+                return _cache
             with open(_BLACKLIST_FILE, "r", encoding="utf-8") as f:
                 _cache = json.load(f)
+                _cache_mtime = mtime
                 return _cache
         except Exception as e:
             logger.warning(f"[Blacklist] Failed to load blacklist file: {e}")
+            if _cache is not None:
+                return _cache
+    if _cache is not None:
+        return _cache
     _cache = {"version": 1, "entries": {}}
+    _cache_mtime = 0.0
     return _cache
 
 
 def _save(data: Dict[str, Any]) -> None:
-    global _cache
+    global _cache, _cache_mtime
     _cache = data
     try:
         os.makedirs(os.path.dirname(_BLACKLIST_FILE), exist_ok=True)
         with open(_BLACKLIST_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        _cache_mtime = os.path.getmtime(_BLACKLIST_FILE)
     except Exception as e:
         logger.warning(f"[Blacklist] Failed to save blacklist file: {e}")
 
@@ -79,29 +104,30 @@ def add(
         fname_key = os.path.basename(str(audio_filename)).lower().strip() if audio_filename else ""
         sc_key = str(audio_shortcode).lower().strip() if audio_shortcode else ""
 
-        # Derive shortcode from filename if not explicitly given
-        if not sc_key and fname_key:
-            sc_key = fname_key.replace("vault_bgm_", "").replace("bgm_", "")
-            for ext in (".wav", ".mp3", ".m4a", ".aac"):
-                sc_key = sc_key.replace(ext, "")
-            sc_key = sc_key.strip()
+        # Derive clean shortcode from filename if not explicitly given
+        derived_sc = clean_track_identifier(fname_key)
+        if not sc_key and derived_sc:
+            sc_key = derived_sc
 
         if not fname_key and not sc_key:
             logger.warning("[Blacklist] add() called with no identifiable audio — skipping.")
             return
 
         key = fname_key or sc_key
-        entries[key] = {
+        record = {
             "filename": fname_key,
             "shortcode": sc_key,
             "telegram_file_id": telegram_file_id or "",
             "reason": reason,
             "blacklisted_at": time.time(),
         }
+        entries[key] = record
 
-        # Also index by shortcode so reverse lookups work
+        # Also index by derived/explicit clean shortcode so reverse lookups always work
         if sc_key and sc_key != key:
-            entries[sc_key] = entries[key]
+            entries[sc_key] = record
+        if derived_sc and derived_sc != key and derived_sc != sc_key:
+            entries[derived_sc] = record
 
         _save(data)
         logger.info(
@@ -197,35 +223,53 @@ def is_blacklisted(
         if not entries:
             return False
 
-        fname_key = os.path.basename(str(audio_filename)).lower().strip() if audio_filename else ""
-        sc_key = str(audio_shortcode).lower().strip() if audio_shortcode else ""
+        fname_raw = str(audio_filename).strip() if audio_filename else ""
+        fname_base = os.path.basename(fname_raw).lower().strip() if fname_raw else ""
+        sc_raw = str(audio_shortcode).lower().strip() if audio_shortcode else ""
         fid_key = str(telegram_file_id).strip() if telegram_file_id else ""
 
-        # Derive shortcode from filename if not given
-        if not sc_key and fname_key:
-            sc_key = fname_key.replace("vault_bgm_", "").replace("bgm_", "")
-            for ext in (".wav", ".mp3", ".m4a", ".aac"):
-                sc_key = sc_key.replace(ext, "")
-            sc_key = sc_key.strip()
+        norm_fname = clean_track_identifier(fname_base)
+        norm_sc = clean_track_identifier(sc_raw) if sc_raw else norm_fname
 
-        # Direct key hit
-        if fname_key and fname_key in entries:
-            return True
-        if sc_key and sc_key in entries:
-            return True
+        # 1. Direct key hits
+        for test_key in (fname_base, sc_raw, norm_fname, norm_sc):
+            if test_key and test_key in entries:
+                return True
 
-        # Telegram file_id hit (catches vault resync of same audio with new filename)
+        # 2. Telegram file_id hit (catches vault resync of same audio with new filename)
         if fid_key:
             for entry in entries.values():
-                if isinstance(entry, dict) and entry.get("telegram_file_id") == fid_key:
-                    return True
+                if isinstance(entry, dict) and entry.get("telegram_file_id"):
+                    if str(entry.get("telegram_file_id")).strip() == fid_key:
+                        return True
 
-        # Substring scan (catches vault_bgm_<shortcode>.wav vs bare shortcode entries)
-        for blk_key in entries:
-            if blk_key and fname_key and blk_key in fname_key:
+        # 3. Canonical normalized comparison across all blacklisted records
+        for blk_key, entry in entries.items():
+            if not isinstance(entry, dict):
+                # Legacy scalar entry
+                bl_clean = clean_track_identifier(str(blk_key))
+                if norm_fname and norm_fname == bl_clean:
+                    return True
+                if norm_sc and norm_sc == bl_clean:
+                    return True
+                continue
+
+            bl_fn = clean_track_identifier(entry.get("filename"))
+            bl_sc = clean_track_identifier(entry.get("shortcode"))
+            bl_k = clean_track_identifier(blk_key)
+
+            if norm_fname and (norm_fname == bl_fn or norm_fname == bl_sc or norm_fname == bl_k):
                 return True
-            if blk_key and sc_key and blk_key in sc_key:
+            if norm_sc and (norm_sc == bl_fn or norm_sc == bl_sc or norm_sc == bl_k):
                 return True
+
+            # Substring safety scan (catches embedded shortcodes >= 6 chars)
+            target_sc = norm_fname or norm_sc
+            if target_sc and len(target_sc) >= 6:
+                if bl_sc and len(bl_sc) >= 6 and (target_sc in bl_sc or bl_sc in target_sc):
+                    return True
+                if bl_k and len(bl_k) >= 6 and (target_sc in bl_k or bl_k in target_sc):
+                    return True
 
         return False
 
@@ -237,16 +281,23 @@ def get_all() -> Dict[str, Any]:
 
 
 def get_blacklisted_shortcodes() -> Set[str]:
-    """Returns a set of all blacklisted shortcodes for fast O(1) membership testing."""
+    """Returns a set of all blacklisted shortcodes and normalized filenames for fast O(1) membership testing."""
     with _lock:
         data = _load()
         result: Set[str] = set()
-        for entry in data.get("entries", {}).values():
+        for k, entry in data.get("entries", {}).items():
+            k_clean = clean_track_identifier(str(k))
+            if k_clean:
+                result.add(k_clean)
             if isinstance(entry, dict):
-                sc = entry.get("shortcode", "")
-                fn = entry.get("filename", "")
+                sc = clean_track_identifier(entry.get("shortcode"))
+                fn = clean_track_identifier(entry.get("filename"))
+                raw_fn = str(entry.get("filename", "")).lower().strip()
                 if sc:
                     result.add(sc)
                 if fn:
                     result.add(fn)
+                if raw_fn:
+                    result.add(raw_fn)
+                    result.add(os.path.basename(raw_fn))
         return result

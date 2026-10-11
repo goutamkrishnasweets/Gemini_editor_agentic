@@ -1328,7 +1328,8 @@ def select_best_audio_for_clip(
 
     def _is_disqualified_by_size_or_blacklist(fname, meta):
         fid = meta.get("file_id") or meta.get("telegram_file_id")
-        if _is_bl(audio_filename=fname, telegram_file_id=fid):
+        sc = meta.get("shortcode")
+        if _is_bl(audio_filename=fname, audio_shortcode=sc, telegram_file_id=fid):
             logger.info(f"🚫 [BGM Selector] Track '{fname}' is in rejected_audio_blacklist — excluding.")
             return True
         fsize = meta.get("file_size") or 0
@@ -1394,13 +1395,16 @@ def select_best_audio_for_clip(
 
         if retrieved_audio and os.path.exists(retrieved_audio) and os.path.getsize(retrieved_audio) > 1024:
             track_name = os.path.basename(retrieved_audio)
-            logger.info(f"🎙️ [BGM Selector] Retrieved clip's own extracted audio from Telegram Vault: {retrieved_audio}")
-            return {
-                "selected_audio_track": track_name,
-                "alignment_score": 0.90,
-                "reasoning": f"Retrieved clip's own continuous audio track ({track_name}) from Telegram Vault.",
-                "physical_path": retrieved_audio,
-            }
+            if _is_bl(audio_filename=track_name, audio_shortcode=clean_sc):
+                logger.warning(f"🚫 [BGM Selector] Vault extracted audio '{track_name}' is blacklisted — refusing fallback.")
+            else:
+                logger.info(f"🎙️ [BGM Selector] Retrieved clip's own extracted audio from Telegram Vault: {retrieved_audio}")
+                return {
+                    "selected_audio_track": track_name,
+                    "alignment_score": 0.90,
+                    "reasoning": f"Retrieved clip's own continuous audio track ({track_name}) from Telegram Vault.",
+                    "physical_path": retrieved_audio,
+                }
         logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index and vault has no audio.")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid clean BGM tracks in pool."}
 
@@ -1495,7 +1499,12 @@ def select_best_audio_for_clip(
     # Sort descending by 4D score with tiny jitter for near-ties
     import random
     scored_candidates.sort(key=lambda x: x["score"] + random.uniform(0.0, 0.02), reverse=True)
-    top_candidates = scored_candidates[:15]
+    raw_top = scored_candidates[:15]
+    clean_top_candidates = [
+        c for c in raw_top
+        if not _is_bl(c["filename"], audio_shortcode=c.get("meta", {}).get("shortcode"), telegram_file_id=c.get("file_id"))
+    ]
+    top_candidates = clean_top_candidates if clean_top_candidates else raw_top
 
     best_math_cand = top_candidates[0] if top_candidates else None
     selected_track = best_math_cand["filename"] if best_math_cand else ""
@@ -1601,23 +1610,31 @@ Return ONLY valid JSON:
 
                 all_valid_names = set(c["filename"].lower() for c in top_candidates)
                 if win_track and win_track.lower() in all_valid_names:
-                    selected_track = win_track
-                    reasoning = data.get("reasoning", reasoning)
-                    alignment_score = float(data.get("alignment_score", 0.92))
-                    if win_fid:
-                        selected_file_id = win_fid
+                    # ZERO-TRUST SECURITY GATE: Veto if win_track or win_fid is blacklisted
+                    if _is_bl(win_track, telegram_file_id=win_fid):
+                        logger.warning(
+                            f"🚫 [BGM Selector - ZERO TRUST VETO] Gemini returned blacklisted track '{win_track}'! "
+                            f"Vetoing and retaining verified clean 4D winner '{selected_track}'."
+                        )
                     else:
-                        selected_file_id = pool_files.get(selected_track, {}).get("file_id", selected_file_id)
-                    logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (score={alignment_score:.2f})")
+                        selected_track = win_track
+                        reasoning = data.get("reasoning", reasoning)
+                        alignment_score = float(data.get("alignment_score", 0.92))
+                        if win_fid:
+                            selected_file_id = win_fid
+                        else:
+                            selected_file_id = pool_files.get(selected_track, {}).get("file_id", selected_file_id)
+                        logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (score={alignment_score:.2f})")
                 else:
                     logger.warning(f"🎶 [BGM Selector] Gemini returned unknown track '{win_track}' — forcing top 4D math winner '{selected_track}'.")
     except Exception as e:
         logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to top 4D math winner: {e}")
 
-    # Compute backup candidates for resilient Step 04 failover (never empty when candidates exist)
+    # Compute backup candidates for resilient Step 04 failover (strictly non-blacklisted)
     backup_candidates = [
         c["filename"] for c in top_candidates
         if c["filename"] != selected_track
+        and not _is_bl(c["filename"], telegram_file_id=c.get("file_id"))
     ][:10]
 
     # Map candidate filenames to their Telegram file_ids for direct hydration

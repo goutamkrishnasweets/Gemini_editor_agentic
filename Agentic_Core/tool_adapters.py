@@ -476,15 +476,20 @@ def tool_reedit_session(
         curr_audio = sess.get("selected_audio")
         if is_music and curr_audio:
             try:
-                from Audio_Modules.rejected_audio_blacklist import add as blacklist_add
+                from Audio_Modules.rejected_audio_blacklist import add as blacklist_add, clean_track_identifier
+                audio_fn = curr_audio
+                if isinstance(curr_audio, dict):
+                    audio_fn = curr_audio.get("selected_audio_track") or curr_audio.get("filename") or ""
+                audio_fn_str = str(audio_fn).strip()
+                audio_sc = clean_track_identifier(audio_fn_str)
                 blacklist_add(
-                    audio_filename=curr_audio,
-                    audio_shortcode=clip_id,
+                    audio_filename=audio_fn_str,
+                    audio_shortcode=audio_sc or None,
                     reason="user_requested_music_change"
                 )
-                logger.info(f"🚫 [TOOL: RE-EDIT] Added '{curr_audio}' to rejected_audio_blacklist.")
-            except Exception:
-                pass
+                logger.info(f"🚫 [TOOL: RE-EDIT] Added '{audio_fn_str}' (sc: '{audio_sc}') to rejected_audio_blacklist.")
+            except Exception as _bl_err:
+                logger.debug(f"[TOOL: RE-EDIT] Blacklist add notice: {_bl_err}")
 
         clip_dir = os.path.dirname(target_input)
         if not clip_dir or not os.path.isdir(clip_dir):
