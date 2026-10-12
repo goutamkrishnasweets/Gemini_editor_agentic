@@ -448,11 +448,12 @@ CRITICAL ARCHITECTURE RULES (STRICTLY ENFORCED):
    ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration').
    FOR TELEGRAM: The title MUST appear ONLY ONCE as the bold headline. NEVER repeat the title or description text.
 
-6. PLATFORM BOUNDARIES & CTA INTEGRITY:
-   - YouTube: Links are directly clickable in the description! NEVER say 'Link in bio' or 'Tap bio' on YouTube. First 2 lines hook-heavy. Clean hashtags at the bottom.
-   - Instagram: Hook must be above the fold. CTA uses: '🔗 Tap the link in bio or visit 👉 [Link]'. Separate hashtags cleanly at the bottom.
+6. PLATFORM BOUNDARIES & STRICT 'NO LINK IN BIO' RULE (ALL PLATFORMS):
+   - ABSOLUTE PROHIBITION ON 'LINK IN BIO': NEVER write 'link in bio', 'tap bio', 'in my bio', 'check bio', or any bio reference anywhere in titles, descriptions, or captions for ANY platform (YouTube, Instagram, Telegram, Facebook). Always format as a clean direct link callout (e.g. '🔗 Direct Item / Shop Link: 👉 [Link]').
+   - YouTube: Links are directly clickable in description. First 2 lines hook-heavy. Clean hashtags at the bottom.
+   - Instagram: Hook must be above the fold. Clean direct link callout without any 'link in bio' mention. Separate hashtags cleanly at the bottom.
    - Telegram: Direct, bold title once (`🔥 **[Title]**`), concise storytelling hook + analogy, isolated buy link, channel join CTA, 3-5 hashtags. Total length strictly under 1000 characters.
-   - Facebook: Conversational storytelling, link callout, comment question.
+   - Facebook: Conversational storytelling, direct link callout, comment question.
 
 7. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
 8. NO ENTITY CATEGORY PREFIXES OR 'NONE' STRINGS: NEVER output prefixes like 'celebrity:', 'outfit:', etc. Format subjects cleanly.
@@ -478,7 +479,7 @@ OUTPUT SCHEMA — return ONLY this JSON, no other text:
     }},
     "instagram": {{
       "title": "<optimized title/hook>",
-      "description": "<storytelling caption with dynamic headers, bio/direct link callout, and spaced hashtags>",
+      "description": "<storytelling caption with dynamic headers, clean direct link callout (NO link in bio), and spaced hashtags>",
       "hashtags": ["#tag1", "#tag2", ...],
       "seo_score": <0-100>,
       "keyword_density": "<analysis>"
@@ -540,11 +541,9 @@ def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[s
     description = content.get("description", "")
     max_desc = limits.get("description_max", 2200)
 
-    # Platform-specific sanitization & boundary enforcement
-    if platform in ("youtube", "telegram"):
-        # Strip accidental "link in bio" phrases on platforms where links are in the description or telegram post
-        description = re.sub(r'(?i)\b(?:link\s+in\s+bio(?:\s+to\s+shop)?|check\s+(?:the\s+)?bio(?:\s+link)?|tap\s+bio)\b', 'direct link below', description)
-        description = re.sub(r'(?i)\b(?:link\s+in\s+bio\s*&?\s*below)\b', 'link below', description)
+    # Universal sanitization: Strictly scrub any accidental "link in bio" phrases across ALL platforms
+    description = re.sub(r'(?i)\b(?:tap\s+the\s+link\s+in\s+bio\s+or\s+visit\s+directly|tap\s+(?:the\s+)?link\s+in\s+bio|link\s+in\s+bio(?:\s+to\s+shop)?|check\s+(?:the\s+)?bio(?:\s+link)?|tap\s+bio|in\s+my\s+bio|in\s+the\s+bio|bio\s+link)\b', 'direct link', description)
+    description = re.sub(r'(?i)\b(?:link\s+in\s+bio\s*&?\s*below)\b', 'link below', description)
 
     if platform == "telegram":
         max_desc = 1000  # Ensure Telegram video captions fit within Telegram's 1024 char limit
@@ -653,7 +652,7 @@ def _heuristic_fallback(
         )
         ig_aff = (
             f"🔗 SHOP THE FEATURED LOOK:\n"
-            f"Tap the link in bio or visit directly 👉 {affiliate_link}\n"
+            f"Direct link 👉 {affiliate_link}\n"
             f"(#ad #affiliate — qualifying purchases earn commission)"
         )
         tg_link = (
