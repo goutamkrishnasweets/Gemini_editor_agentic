@@ -145,6 +145,8 @@ def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
                         if tag_lower not in seen_tags_lower:
                             seen_tags_lower.add(tag_lower)
                             cleaned_tokens.append(f"#{tag_inner}")
+                elif tok.startswith("http://") or tok.startswith("https://"):
+                    cleaned_tokens.append(tok)
                 else:
                     tok_clean = tok.replace("_", " ")
                     if tok_clean.strip():
@@ -357,9 +359,13 @@ def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_
 
 # ── SEO Generation Prompt ──────────────────────────────────────────────────────
 _SEO_GENERATION_PROMPT = """\
-You are an expert social media SEO content creator. Your task is to generate
-platform-optimized titles, hashtags, and descriptions for a video based on the
-extracted MAIN SUBJECT, APPLICABLE CONTEXT, and PRIOR GEMINI CALL CACHES.
+You are an elite storytelling content creator and viral social media conversion copywriter.
+Your task is to generate platform-optimized, high-retention titles, hashtags, and descriptions
+for a video based on the extracted MAIN SUBJECT, APPLICABLE CONTEXT, and PRIOR GEMINI CALL CACHES.
+
+You write like a modern, charismatic human creator who promotes a lifestyle or product through
+relatable storytelling and analogies, WITHOUT letting the audience get bored or feel like they
+are reading a dry corporate advertisement.
 
 DISCOVERED MAIN SUBJECT (PRIMARY HERO ANCHOR):
 {main_subject}
@@ -403,86 +409,90 @@ ORIGINAL POST HASHTAGS (niche signal from source post — use to infer content c
 ANALYTICS SIGNALS — FOR SEO STRATEGY ONLY (never mention raw counts in output captions):
 {analytics_signals}
 
-CRITICAL RULES (STRICTLY ENFORCED):
-1. HERO MAIN SUBJECT FIRST: Always use the DISCOVERED MAIN SUBJECT as the core hero anchor in all platform titles, descriptions, and hashtags (e.g. if main subject is 'Focal Subject', write 'Focal Subject | Core Feature Highlights ✨'; if 'Brand Product', write 'Brand Product Review & Setup 🖥️').
-2. ZERO REPETITION RULE (STRICT): ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration' or 'Trending Lookbook | Lookbook 2023'). Every title segment MUST be unique and complementary.
-3. WEAVE APPLICABLE DESCRIPTORS: Seamlessly integrate the applicable secondary context (e.g., 'effortlessly glowing', 'the dog', 'PC cabinet', 'trillionaire') to create compelling hooks.
-4. COMMERCIAL AFFILIATE FRAMING & POLICY COMPLIANCE: If an AFFILIATE & PRODUCT PROMOTION LINK is provided, embed it seamlessly into YouTube, Instagram, Facebook, and Telegram descriptions with compelling CTAs (e.g., '🛒 Shop featured item / look: [link]'). ALWAYS include a platform policy disclosure at the end (e.g. 'Disclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate') so earnings/commissions are fully protected and compliant across Amazon, Myntra, Ajio, and ad networks.
-5. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
-6. DYNAMIC REAL CONTEXT: Use exact metadata details and avoid generic hardcoded titles or outdated years.
-7. USER TITLE CLUE & SEMANTIC ALIGNMENT: If a USER PROVIDED TITLE / CLUE is provided, analyze its semantic similarity against the video context and metadata. Treat the clue as the explicit user intent for the main focal subject! Seamlessly incorporate the core keywords from the title clue across ALL platform outputs:
-   - TITLES: Anchor the title using the subject/keywords from the title clue.
-   - DESCRIPTIONS: Naturally integrate the title clue subject in the opening 1-2 lines.
-   - HASHTAGS: Derive primary niche hashtags directly from the title clue keywords (e.g., if clue is 'Ethnic Outfit Look', include #EthnicOutfit #StyleLook).
-8. NO ENTITY CATEGORY PREFIXES OR 'NONE' STRINGS: NEVER output entity category prefixes like 'celebrity:', 'outfit:', 'accessory:', etc. in titles, descriptions, or hashtags. Always format main subjects as clean, spaced human names (e.g. 'Avneet Kaur'). NEVER concatenate 'None' or 'null' into hashtags or text (e.g. write '#AvneetKaur', NEVER '#AvneetkaurNone' or '#celebrityAvneet_Kaur').
-9. ANALYTICS SIGNALS ARE STRATEGY INPUTS ONLY: taggedUsers reveal co-creator collab angles and brand partnerships — derive hashtag strategy from them. likesCount/videoViewCount indicate viral potential and algorithm warmth — if high, prioritise sharp hooks and trending niche tags. visual_data.vectors (scene cut timestamps, hook_zone_end_sec) show where the visual hook peaks — align the title's power word to that energy level. NEVER print raw counts, timestamps, or handle names in any caption or description output.
+CRITICAL ARCHITECTURE RULES (STRICTLY ENFORCED):
+
+1. STORYTELLING HOOK & ANALOGY (FIRST 1-3 LINES):
+   Every description MUST begin with a scroll-stopping, curiosity-inducing hook utilizing a relatable everyday analogy or contrast.
+   Examples of creator hook tone:
+   - "Most people think staying radiant on grueling 14-hour studio shoot days comes down to complex routines. The truth? It’s mastering the foundational essentials everyone else overlooks. 💧"
+   - "Think of your daily routine like running on 1% battery vs plugged into a supercharger. When you upgrade the basics, everything hits different."
+   NEVER write generic corporate PR statements (e.g. NEVER write 'Elegance meets hydration in this stunning minimalist studio commercial featuring...'). Hook the viewer's emotion and curiosity first!
+
+2. 100% ORGANIC CREATIVE INVENTIVENESS (NO HARDCODED MENUS OR STOCK HEADERS):
+   - ABSOLUTELY NEVER use static, repetitive, or stock boilerplate section headers or labels.
+   - DO NOT follow any predefined menu or copy rigid templates. You have full creative autonomy.
+   - For EVERY video, INVENT completely original, bespoke headers, transitions, storytelling hooks, and engagement framing by synthesizing:
+     * PAST VIRAL ANALYSIS: High-retention psychological hooks and narrative tension points that historically performed best in this niche.
+     * PRESENT SOCIAL MEDIA TRENDS: Real-time internet culture, authentic creator cadence, and current trending vernacular on Reels, Shorts, and TikTok.
+     * UPCOMING FUTURE AESTHETICS: Forward-looking stylistic movements, cutting-edge subculture terminology, and fresh cultural aesthetics that keep content ahead of the curve.
+   - The wording must feel organic, unpredictable, and natively authored by a trendsetting creator who never repeats themselves.
+
+3. HIGH-VISIBILITY AFFILIATE LINK ISOLATION & SPACING (CRITICAL):
+   If an AFFILIATE & PRODUCT PROMOTION LINK is provided:
+   - DO NOT bury the link inside a paragraph of text!
+   - Provide GENEROUS VERTICAL WHITESPACE with blank lines (\\n\\n) above and below the link block so it stands out immediately to anyone viewing the description.
+   - Format on its own clear lines with pointer emoji:
+     🛍️ [Dynamic Parallel Product Header]:
+     👉 [Exact Affiliate Link]
+
+     ✨ [1-line crisp benefit or why the viewer needs this upgrade]
+     (Disclosure: As an affiliate, I may earn from qualifying purchases at no extra cost to you. #ad #affiliate)
+   - The disclaimer MUST be placed on its own spaced line in parentheses—clear, compliant, and professional without suffocating the link.
+
+4. NON-AFFILIATE MODE (WHEN NO LINK IS PROVIDED):
+   If NO AFFILIATE LINK is provided:
+   - DO NOT output an empty, blank, or placeholder product box.
+   - Seamlessly replace the product block with an engaging CREATOR TAKE / ANALOGY DISCUSSION QUESTION (e.g. '💬 [Dynamic Creator Take]: [Engaging debate/question]') that provokes viewer comments and community debate, keeping the exact same high-retention structured layout!
+
+5. ZERO REPETITION RULE (STRICT):
+   ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration').
+   FOR TELEGRAM: The title MUST appear ONLY ONCE as the bold headline. NEVER repeat the title or description text.
+
+6. PLATFORM BOUNDARIES & CTA INTEGRITY:
+   - YouTube: Links are directly clickable in the description! NEVER say 'Link in bio' or 'Tap bio' on YouTube. First 2 lines hook-heavy. Clean hashtags at the bottom.
+   - Instagram: Hook must be above the fold. CTA uses: '🔗 Tap the link in bio or visit 👉 [Link]'. Separate hashtags cleanly at the bottom.
+   - Telegram: Direct, bold title once (`🔥 **[Title]**`), concise storytelling hook + analogy, isolated buy link, channel join CTA, 3-5 hashtags. Total length strictly under 1000 characters.
+   - Facebook: Conversational storytelling, link callout, comment question.
+
+7. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
+8. NO ENTITY CATEGORY PREFIXES OR 'NONE' STRINGS: NEVER output prefixes like 'celebrity:', 'outfit:', etc. Format subjects cleanly.
 
 Generate SEO-optimized content for the following platforms: {platforms}
 
 For EACH platform, output:
 1. **Title**: Optimized for character limits, keyword placement, click-through rate, and ZERO word repetition.
-2. **Description**: SEO-optimized with relevant keywords, engaging hooks, and platform-appropriate CTAs.
-3. **Hashtags**: Mix of high-volume, medium-volume, and niche hashtags relevant to {main_subject} and {applicable_context}.
+2. **Description**: Highly structured with clean line breaks (\\n\\n), storytelling hook, dynamic parallel section headers, isolated links (if provided) with compliant disclaimers, and platform-appropriate CTAs.
+3. **Hashtags**: Mix of high-volume and niche hashtags relevant to {main_subject} and {applicable_context}.
 4. **SEO Score**: 0-100 rating based on optimization quality.
-
-PLATFORM-SPECIFIC GUIDELINES:
-
-**YouTube**:
-- Title: 60-100 chars, main keyword at start, zero repeating words, power words
-- Description: First 150 chars crucial for SEO, include keywords naturally
-- Hashtags: 3-5 high-volume, 5-10 relevant niche tags
-- CTA: Subscribe-focused with channel link
-- Emojis: Use sparingly (2-3 max)
-
-**Instagram**:
-- Title/Caption: Up to 2200 chars, hook in first line, use line breaks
-- Description: Storytelling approach, emotional engagement
-- Hashtags: 5-10 high-volume, 10-20 niche, mix of branded tags
-- CTA: Link-focused with "Link in bio" or direct URL
-- Emojis: High usage for visual appeal
-
-**Facebook**:
-- Title: 60-100 chars, curiosity-inducing but not clickbait, zero repeating words
-- Description: Conversational tone, ask questions to drive comments
-- Hashtags: 3-5 relevant tags
-- CTA: Share-focused to boost algorithm reach
-- Emojis: Moderate usage
-
-**Telegram**:
-- Title: 50-100 chars, direct and informative, zero repeating words
-- Description: Concise, value-focused, easy to scan
-- Hashtags: 3-5 relevant tags
-- CTA: Join group/channel focused
-- Emojis: Moderate usage
 
 OUTPUT SCHEMA — return ONLY this JSON, no other text:
 {{
   "generated_at": "<ISO timestamp>",
   "platforms": {{
     "youtube": {{
-      "title": "<optimized title>",
-      "description": "<SEO description>",
+      "title": "<optimized title with zero word repetition>",
+      "description": "<structured storytelling description with dynamic parallel headers, isolated link, and disclaimers>",
       "hashtags": ["#tag1", "#tag2", ...],
       "seo_score": <0-100>,
       "keyword_density": "<analysis>"
     }},
     "instagram": {{
-      "title": "<optimized caption>",
-      "description": "<engaging description>",
+      "title": "<optimized title/hook>",
+      "description": "<storytelling caption with dynamic headers, bio/direct link callout, and spaced hashtags>",
       "hashtags": ["#tag1", "#tag2", ...],
       "seo_score": <0-100>,
       "keyword_density": "<analysis>"
     }},
     "facebook": {{
       "title": "<optimized title>",
-      "description": "<conversational description>",
+      "description": "<conversational storytelling description with isolated link and discussion prompt>",
       "hashtags": ["#tag1", "#tag2", ...],
       "seo_score": <0-100>,
       "keyword_density": "<analysis>"
     }},
     "telegram": {{
       "title": "<optimized title>",
-      "description": "<concise description>",
+      "description": "<single bold headline, concise micro-story hook, isolated buy link, zero duplicate titles, under 1000 chars>",
       "hashtags": ["#tag1", "#tag2", ...],
       "seo_score": <0-100>,
       "keyword_density": "<analysis>"
@@ -529,6 +539,27 @@ def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[s
     # Description validation
     description = content.get("description", "")
     max_desc = limits.get("description_max", 2200)
+
+    # Platform-specific sanitization & boundary enforcement
+    if platform in ("youtube", "telegram"):
+        # Strip accidental "link in bio" phrases on platforms where links are in the description or telegram post
+        description = re.sub(r'(?i)\b(?:link\s+in\s+bio(?:\s+to\s+shop)?|check\s+(?:the\s+)?bio(?:\s+link)?|tap\s+bio)\b', 'direct link below', description)
+        description = re.sub(r'(?i)\b(?:link\s+in\s+bio\s*&?\s*below)\b', 'link below', description)
+
+    if platform == "telegram":
+        max_desc = 1000  # Ensure Telegram video captions fit within Telegram's 1024 char limit
+        # Deduplicate title if repeated at top of description
+        clean_t = validated["title"].strip()
+        desc_s = description.strip()
+        if clean_t and desc_s.lower().startswith(clean_t.lower()):
+            desc_s = desc_s[len(clean_t):].lstrip(" :\n*-—")
+            description = desc_s
+
+    # Ensure generous spacing around URLs (keep them visually isolated)
+    description = re.sub(r'(?<!\n)(https?://[^\s<>"]+)', r'\n\1', description)
+    description = re.sub(r'(https?://[^\s<>"]+)(?!\n)', r'\1\n', description)
+    description = re.sub(r'\n{3,}', '\n\n', description).strip()
+
     if len(description) > max_desc:
         description = description[:max_desc-3] + "..."
     validated["description"] = strip_system_and_tracking_tokens(description or "Check out this amazing video!")
@@ -558,8 +589,10 @@ def _heuristic_fallback(
     user_hint: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Heuristic fallback generating natural, human-feeling creator captions & hashtags (0 API call cost).
+    Heuristic fallback generating natural, storytelling creator captions & hashtags (0 API call cost).
+    Features dynamic parallel vocabulary, storytelling hooks, analogies, and isolated affiliate links.
     """
+    import random
     extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=affiliate_link)
     main_subject = extracted["main_subject"] or "Style Highlight"
     applicable = extracted["applicable_context"] or ""
@@ -600,34 +633,75 @@ def _heuristic_fallback(
     popular_tags = ["#FashionLifestyle", "#StreetStyle", "#Lookbook", "#Aspirational", "#OOTD", "#StyleInspo", "#FashionMoment", "#ViralReels"]
     all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + popular_tags if t]))
 
-    # Commercial affiliate CTA
-    aff_text = ""
-    if affiliate_link:
-        aff_text = f"\n\n🛒 Shop / Get Look: {affiliate_link}\n\nDisclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate"
+    # Procedural dynamic synthesis based on video context (no static hardcoded lists)
+    intent_word = extracted.get("intent", "aesthetic").replace("_", " ").title()
+    desc_clean = applicable.split(",")[0].strip().title() if applicable else "Curated"
 
-    # Human-styled platform captions
-    ig_caption = (
-        f"{clean_subj} serving pure style goals! 😍✨\n\n"
-        f"Save this post for your daily outfit inspo 💡 What do you think of this look? Drop your thoughts below! 👇"
-        f"{aff_text}"
+    prod_hdr = f"🛍️ Official {clean_subj} {desc_clean} Link:"
+    abt_hdr = f"🎬 {clean_subj} | {intent_word} Scene Focus:"
+    q_hdr = f"💬 Community Take: What's your rating for this {intent_word.lower()} look?"
+    sub_hdr = f"⚡ Daily {intent_word} Drops & Curated Edits:"
+    hook = f"Most people focus on complex routines, but true confidence comes from mastering the essentials. {clean_subj} showing how subtle details elevate the entire aesthetic. ✨"
+
+    # ── Formatted affiliate / non-affiliate blocks with generous spacing ──
+    if affiliate_link:
+        aff_spotlight = (
+            f"{prod_hdr}\n"
+            f"👉 {affiliate_link}\n\n"
+            f"✨ Upgrade your routine with the exact setup featured in this video!\n"
+            f"(Disclosure: As an affiliate, I may earn from qualifying purchases at no extra cost to you. #ad #affiliate)"
+        )
+        ig_aff = (
+            f"🔗 SHOP THE FEATURED LOOK:\n"
+            f"Tap the link in bio or visit directly 👉 {affiliate_link}\n"
+            f"(#ad #affiliate — qualifying purchases earn commission)"
+        )
+        tg_link = (
+            f"🛍️ **Featured Item / Shop:**\n"
+            f"👉 {affiliate_link}\n"
+            f"*(#ad #affiliate)*"
+        )
+    else:
+        aff_spotlight = (
+            f"{q_hdr}\n"
+            f"What's your #1 non-negotiable daily essential when you need to feel 100% on point? Drop your thoughts below! 👇"
+        )
+        ig_aff = (
+            f"{q_hdr}\n"
+            f"On a scale of 1-10, what's your energy level today? Drop it below! 👇"
+        )
+        tg_link = (
+            f"💬 **Creator Question:** What do you think of this visual aesthetic? Drop your thoughts below!"
+        )
+
+    # ── Human-styled, storytelling platform captions with generous whitespace ──
+    yt_desc = (
+        f"{hook}\n\n"
+        f"{aff_spotlight}\n\n"
+        f"{abt_hdr}\n"
+        f"Minimalist aesthetics meet iconic presence featuring {clean_subj}. Elevate your perspective and radiate absolute confidence.\n\n"
+        f"{sub_hdr}\n"
+        f"Subscribe for more daily celebrity style breakdowns & aesthetic highlights! 🚀"
     )
 
-    yt_desc = (
-        f"{clean_subj} looking absolutely iconic! ✨\n\n"
-        f"Subscribe to the channel for more daily fashion inspiration & celebrity style moments! 🚀"
-        f"{aff_text}"
+    ig_caption = (
+        f"Stop sleeping on the basics. ✨\n\n"
+        f"{hook}\n\n"
+        f"{ig_aff}\n\n"
+        f"💾 Save this post for your daily inspiration & share with a friend!\n"
+        f"💬 Drop your thoughts below! 👇"
     )
 
     fb_desc = (
-        f"How amazing does {clean_subj} look here? 😍✨\n\n"
+        f"{hook}\n\n"
+        f"{aff_spotlight}\n\n"
         f"Share this with someone who loves this vibe! Drop a comment below! 👇"
-        f"{aff_text}"
     )
 
     tg_desc = (
-        f"✨ {clean_subj} — Stylish & Aesthetic Highlight\n\n"
-        f"Join our official Telegram group for more daily exclusive updates! 🚀"
-        f"{aff_text}"
+        f"{hook}\n\n"
+        f"{tg_link}\n\n"
+        f"👉 Join our official channel for daily exclusive aesthetic drops! 🚀"
     )
 
     platforms = {
@@ -818,7 +892,7 @@ def generate_platform_seo(
 
         if not raw_resp:
             logger.warning("[PlatformSEO] Empty Gemini response — using heuristic fallback.")
-            result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
+            result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
             if platforms:
                 result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
             return result
@@ -865,7 +939,7 @@ def generate_platform_seo(
 
     except Exception as e:
         logger.warning(f"[PlatformSEO] Gemini call failed ({e}) — using heuristic fallback.")
-        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
+        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
         return strip_system_and_tracking_tokens(result)

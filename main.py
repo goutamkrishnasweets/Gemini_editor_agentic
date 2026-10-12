@@ -1008,7 +1008,8 @@ async def handle_telegram_callback(update, context):
                 niche=creator_niche,
                 tags=tags_str,
                 description=ig_desc,
-                user_id=cb_user_id
+                user_id=cb_user_id,
+                seo_data=seo_res
             )
 
     elif data.startswith("reedit_"):
@@ -1341,7 +1342,8 @@ def _dispatch_phase4_publishing_in_background(
     niche: str = "General",
     tags: str = "#viral #shorts #trending",
     description: str = "",
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    seo_data: Optional[Dict[str, Any]] = None
 ):
     """Spawns non-blocking daemon thread for Phase 4 publishing so the Telegram bot asyncio event loop never freezes."""
     def _worker():
@@ -1354,7 +1356,8 @@ def _dispatch_phase4_publishing_in_background(
                 tags=tags,
                 niche=niche,
                 description=description,
-                user_id=pub_user_id
+                user_id=pub_user_id,
+                seo_data=seo_data
             )
             status_lines = []
             for p_name, p_info in pub_res.get("platforms", {}).items():
@@ -2295,7 +2298,8 @@ async def handle_telegram_incoming_msg(update, context):
                 niche=creator_niche,
                 tags=tags_str,
                 description=ig_desc,
-                user_id=user_id
+                user_id=user_id,
+                seo_data=seo_res
             )
             return
 

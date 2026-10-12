@@ -302,7 +302,16 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "", us
             write_timeout=300.0
         )
         bot = Bot(token=bot_token, request=req)
-        full_caption = f"🔥 **{title}**\n\n{caption or '#viral #shorts #reels'}"
+        clean_title = (title or "").strip()
+        clean_caption = (caption or "").strip()
+
+        # Deduplicate title: if clean_caption already starts with or contains clean_title in first 80 chars, don't duplicate!
+        if clean_title and (clean_title.lower() in clean_caption[:len(clean_title) + 40].lower() or clean_caption.startswith("🔥")):
+            full_caption = clean_caption
+        elif clean_title:
+            full_caption = f"🔥 **{clean_title}**\n\n{clean_caption}"
+        else:
+            full_caption = clean_caption or '#viral #shorts #reels'
 
         async def _send_video_safe(target_cid, file_or_id, text_caption, max_retries=3):
             for attempt in range(1, max_retries + 1):
@@ -383,7 +392,8 @@ async def run_phase4_publishing_async(
     description: str = "",
     tags: str = "#viral #shorts #trending",
     niche: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    seo_data: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Async implementation of Phase 4 Multi-Platform Publishing."""
     logger.info("==================================================================")
@@ -402,14 +412,31 @@ async def run_phase4_publishing_async(
         "platforms": {}
     }
 
+    platforms_payload = (seo_data.get("platforms", {}) if isinstance(seo_data, dict) else {}) or {}
+
     # 1. YouTube Shorts (sync function)
-    yt_res = publish_to_youtube(video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id)
+    yt_payload = platforms_payload.get("youtube", {})
+    yt_title = yt_payload.get("title") or title
+    yt_desc = yt_payload.get("description") or description
+    yt_tags = " ".join(yt_payload.get("hashtags", [])) if yt_payload.get("hashtags") else tags
+    yt_res = publish_to_youtube(video_path=video_path, title=yt_title, description=yt_desc, tags=yt_tags, niche=niche, user_id=user_id)
     results["platforms"]["youtube"] = yt_res
 
     # 2. Meta (Instagram Reels & Facebook Reels)
-    caption_text = f"{title}\n\n{tags}"
+    ig_payload = platforms_payload.get("instagram", {})
+    ig_desc = ig_payload.get("description")
+    ig_tags = " ".join(ig_payload.get("hashtags", [])) if ig_payload.get("hashtags") else tags
+
+    if ig_desc:
+        # Include hashtags cleanly if not already present in the description body
+        meta_caption = ig_desc if (ig_tags and ig_tags.split()[0] in ig_desc) else f"{ig_desc}\n\n{ig_tags}"
+    elif description:
+        meta_caption = description if (tags and tags.split()[0] in description) else f"{description}\n\n{tags}"
+    else:
+        meta_caption = f"{title}\n\n{tags}"
+
     try:
-        meta_res = await publish_to_meta(video_path=video_path, caption=caption_text, niche=niche, user_id=user_id)
+        meta_res = await publish_to_meta(video_path=video_path, caption=meta_caption, niche=niche, user_id=user_id)
         
         # Instagram
         ig_result = meta_res.get("instagram", {})
@@ -442,8 +469,20 @@ async def run_phase4_publishing_async(
             results["platforms"]["tiktok"] = {"status": "failed", "error": str(e)}
 
     # 4. Telegram Channel
+    tg_payload = platforms_payload.get("telegram", {})
+    tg_desc = tg_payload.get("description")
+    tg_title = tg_payload.get("title") or title
+    tg_tags = " ".join(tg_payload.get("hashtags", [])) if tg_payload.get("hashtags") else tags
+
+    if tg_desc:
+        tg_caption = tg_desc if (tg_tags and tg_tags.split()[0] in tg_desc) else f"{tg_desc}\n\n{tg_tags}"
+    elif description:
+        tg_caption = description if (tags and tags.split()[0] in description) else f"{description}\n\n{tags}"
+    else:
+        tg_caption = tg_tags
+
     try:
-        tg_res = await publish_to_telegram(video_path=video_path, title=title, caption=caption_text, user_id=user_id)
+        tg_res = await publish_to_telegram(video_path=video_path, title=tg_title, caption=tg_caption, user_id=user_id)
         results["platforms"]["telegram"] = tg_res
     except Exception as e:
         logger.error("❌ Telegram publish error: %s", e)
@@ -470,7 +509,8 @@ def run_phase4_publishing(
     description: str = "",
     tags: str = "#viral #shorts #trending",
     niche: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    seo_data: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Master Orchestration Entry Point for Phase 4 Multi-Platform Publishing.
@@ -489,7 +529,7 @@ def run_phase4_publishing(
             future = pool.submit(
                 lambda: asyncio.run(
                     run_phase4_publishing_async(
-                        video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id
+                        video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id, seo_data=seo_data
                     )
                 )
             )
@@ -497,7 +537,7 @@ def run_phase4_publishing(
     else:
         return asyncio.run(
             run_phase4_publishing_async(
-                video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id
+                video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id, seo_data=seo_data
             )
         )
 
