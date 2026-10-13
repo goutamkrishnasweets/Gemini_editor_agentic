@@ -238,6 +238,48 @@
       "telegram_file_id": "BQACAgUAAyEG",
       "reason": "oversized_20mb_bot_api_rejected",
       "blacklisted_at": 1791146659.0
+    },
+    "vault_bgm_bad_audio_source_456.wav": {
+      "filename": "vault_bgm_bad_audio_source_456.wav",
+      "shortcode": "bad_audio_source_456",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1791921873.104274
+    },
+    "bad_audio_source_456": {
+      "filename": "bad_audio_source_456.wav",
+      "shortcode": "bad_audio_source_456",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1791921873.1053557
+    },
+    "extracted_processed_clip_123.wav": {
+      "filename": "extracted_processed_clip_123.wav",
+      "shortcode": "processed_clip_123",
+      "telegram_file_id": "",
+      "reason": "admin_rejected_reel_source",
+      "blacklisted_at": 1791921873.101621
+    },
+    "processed_clip_123": {
+      "filename": "processed_clip_123.wav",
+      "shortcode": "processed_clip_123",
+      "telegram_file_id": "",
+      "reason": "admin_rejected_reel_source",
+      "blacklisted_at": 1791921873.1026626
+    },
+    "processed_clip_123.wav": {
+      "filename": "processed_clip_123.wav",
+      "shortcode": "processed_clip_123",
+      "telegram_file_id": "",
+      "reason": "admin_rejected_reel_source",
+      "blacklisted_at": 1791921873.1026626
+    },
+    "bad_audio_source_456.wav": {
+      "filename": "bad_audio_source_456.wav",
+      "shortcode": "bad_audio_source_456",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1791921873.1053557
     }
   }
 }

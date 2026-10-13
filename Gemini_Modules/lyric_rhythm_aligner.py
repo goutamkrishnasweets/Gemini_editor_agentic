@@ -1293,12 +1293,22 @@ def select_best_audio_for_clip(
     except Exception as _tve:
         logger.debug(f"[BGM SELECTOR] Vault audio index lookup notice: {_tve}")
 
+    try:
+        from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+    except ImportError:
+        def _is_bl(*args, **kwargs): return False
+
     from Audio_Modules.audio_pool_manager import AudioPoolManager
     _pm = AudioPoolManager()
     local_pool_files = _pm.get_files_index()
 
     pool_files = dict(vault_audio_pool)
     for fname, meta in local_pool_files.items():
+        m_fid = meta.get("file_id") or meta.get("telegram_file_id") if isinstance(meta, dict) else None
+        m_sc = meta.get("shortcode") if isinstance(meta, dict) else None
+        if _is_bl(audio_filename=fname, audio_shortcode=m_sc, telegram_file_id=m_fid):
+            logger.debug(f"🚫 [BGM POOL] Excluding blacklisted track '{fname}' from pool index.")
+            continue
         if fname in pool_files:
             was_source_extract = pool_files[fname].get("is_source_extract", False)
             pool_files[fname].update(meta)
@@ -1321,11 +1331,6 @@ def select_best_audio_for_clip(
             if ef:
                 disqualified_tracks.add(str(ef).lower())
                 disqualified_tracks.add(os.path.basename(str(ef)).lower())
-
-    try:
-        from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
-    except ImportError:
-        def _is_bl(*args, **kwargs): return False
 
     try:
         from Telegram_Storage_Modules.telegram_http import is_mtproto_configured as _is_mtproto_ok
@@ -1531,17 +1536,20 @@ def select_best_audio_for_clip(
     # Sort descending by 4D score with tiny jitter for near-ties
     import random
     scored_candidates.sort(key=lambda x: x["score"] + random.uniform(0.0, 0.02), reverse=True)
-    raw_top = scored_candidates[:15]
-    clean_top_candidates = [
-        c for c in raw_top
+    clean_scored_candidates = [
+        c for c in scored_candidates
         if not _is_bl(c["filename"], audio_shortcode=c.get("meta", {}).get("shortcode"), telegram_file_id=c.get("file_id"))
     ]
-    top_candidates = clean_top_candidates if clean_top_candidates else raw_top
+    top_candidates = clean_scored_candidates[:15]
 
-    best_math_cand = top_candidates[0] if top_candidates else None
-    selected_track = best_math_cand["filename"] if best_math_cand else ""
-    selected_file_id = best_math_cand["file_id"] if best_math_cand else ""
-    alignment_score = float(best_math_cand["score"]) if best_math_cand else 0.85
+    if not top_candidates:
+        logger.warning(f"🚫 [BGM Selector] Zero clean candidates remaining for clip '{clip_id}'. Refusing blacklisted audio.")
+        return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "All candidate tracks are blacklisted."}
+
+    best_math_cand = top_candidates[0]
+    selected_track = best_math_cand["filename"]
+    selected_file_id = best_math_cand["file_id"]
+    alignment_score = float(best_math_cand["score"])
     reasoning = f"Universal 4D Audio Engine Match: Archetype={arch_name} (score={alignment_score:.2f})."
 
     # 5. Build Hollywood Creative Director Prompt for Gemini Call 2
@@ -1692,6 +1700,17 @@ Return ONLY valid JSON:
                     logger.warning(f"🎶 [BGM Selector] Gemini returned unknown track '{win_track}' — forcing top 4D math winner '{selected_track}'.")
     except Exception as e:
         logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to top 4D math winner: {e}")
+
+    # Final zero-trust verification on selected_track
+    if selected_track and _is_bl(selected_track, telegram_file_id=selected_file_id):
+        logger.error(f"🚫 [BGM Selector FATAL VETO] Selected track '{selected_track}' failed final zero-trust blacklist check! Selecting next clean candidate.")
+        selected_track = None
+        for c in top_candidates:
+            if not _is_bl(c["filename"], telegram_file_id=c.get("file_id")):
+                selected_track = c["filename"]
+                selected_file_id = c.get("file_id")
+                alignment_score = float(c["score"])
+                break
 
     # Compute backup candidates for resilient Step 04 failover (strictly non-blacklisted)
     backup_candidates = [

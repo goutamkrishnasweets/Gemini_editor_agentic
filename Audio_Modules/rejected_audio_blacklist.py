@@ -19,6 +19,7 @@ This makes rejection IRREVERSIBLE regardless of:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Set
@@ -35,13 +36,27 @@ _cache_mtime: float = 0.0
 
 
 def clean_track_identifier(val: Optional[str]) -> str:
-    """Normalizes an audio track filename, shortcode, or path into a canonical clean key.
-    Strips prefixes (vault_bgm_, bgm_, extracted_, audio_) and extensions (.wav, .mp3, etc.).
+    """Normalizes an audio track filename, shortcode, URL, or path into a canonical clean key.
+    Strips prefixes (vault_bgm_, bgm_, extracted_, audio_, manual_) and extensions (.wav, .mp3, etc.).
+    Safely extracts shortcodes from Instagram/YouTube/TikTok URLs.
     """
     if not val:
         return ""
-    s = os.path.basename(str(val)).lower().strip()
-    for pfx in ("vault_bgm_", "bgm_", "extracted_", "audio_"):
+    val_str = str(val).strip().strip("`").rstrip("/")
+    if val_str.endswith("%60"):
+        val_str = val_str[:-3].strip()
+
+    # URL extraction for reels/shorts/posts
+    m_ig = re.search(r"/(?:p|reel|reels)/([A-Za-z0-9_-]+)", val_str, re.IGNORECASE)
+    if m_ig:
+        val_str = m_ig.group(1)
+    else:
+        m_yt = re.search(r"(?:shorts/|v=|youtu\.be/)([A-Za-z0-9_-]{11})", val_str, re.IGNORECASE)
+        if m_yt:
+            val_str = m_yt.group(1)
+
+    s = os.path.basename(val_str).lower().strip().split("?")[0]
+    for pfx in ("vault_bgm_", "bgm_", "extracted_", "audio_", "manual_"):
         if s.startswith(pfx):
             s = s[len(pfx):]
     for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4", ".ogg", ".flac"):
@@ -230,6 +245,12 @@ def is_blacklisted(
 
         norm_fname = clean_track_identifier(fname_base)
         norm_sc = clean_track_identifier(sc_raw) if sc_raw else norm_fname
+
+        # 0. Fast O(1) set membership check
+        b_set = get_blacklisted_shortcodes()
+        for k_test in (norm_fname, norm_sc, fname_base, sc_raw):
+            if k_test and k_test in b_set:
+                return True
 
         # 1. Direct key hits
         for test_key in (fname_base, sc_raw, norm_fname, norm_sc):

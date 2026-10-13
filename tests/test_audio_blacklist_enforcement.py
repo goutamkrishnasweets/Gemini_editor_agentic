@@ -165,3 +165,139 @@ def test_lyric_rhythm_aligner_zero_trust_veto():
         # Zero-trust gate must veto and fall back to clean 4D math winner!
         assert res.get("selected_audio_track") != "banned_viral_hit.wav"
         assert res.get("selected_audio_track") in ["clean_candidate_1.wav", "clean_candidate_2.wav"]
+
+
+def test_clean_track_identifier_urls_and_edge_cases():
+    # URL trailing slashes and query params
+    assert clean_track_identifier("https://www.instagram.com/reel/Deb2IaFE67-/") == "deb2iafe67-"
+    assert clean_track_identifier("https://www.instagram.com/reel/Deb2IaFE67-/?utm_source=ig_web_copy_link") == "deb2iafe67-"
+    assert clean_track_identifier("https://www.instagram.com/p/Deb2IaFE67-") == "deb2iafe67-"
+    
+    # manual_ prefix
+    assert clean_track_identifier("manual_Deb2IaFE67-") == "deb2iafe67-"
+    assert clean_track_identifier("manual_DXKHhNfhxwX") == "dxkhhnfhxwx"
+    
+    # File patterns
+    assert clean_track_identifier("Deb2IaFE67-.wav") == "deb2iafe67-"
+    assert clean_track_identifier("extracted_Deb2IaFE67-.wav") == "deb2iafe67-"
+    assert clean_track_identifier("vault_bgm_Deb2IaFE67-.mp3") == "deb2iafe67-"
+
+
+def test_dual_input_purge_blacklists_both_reel_and_bgm(tmp_path, monkeypatch):
+    from Audio_Modules.audio_pool_manager import AudioPoolManager
+
+    temp_pool_dir = tmp_path / "pool_data"
+    temp_pool_dir.mkdir(parents=True, exist_ok=True)
+    temp_meta = str(temp_pool_dir / "pool_metadata.json")
+
+    reel_sc = "Deb2IaFE67-"
+    reel_url = f"https://www.instagram.com/reel/{reel_sc}/"
+    bgm_sc = "SomeOtherBGM"
+    bgm_fname = f"vault_bgm_{bgm_sc}.wav"
+
+    mock_meta_data = {
+        "version": 3,
+        "files": {
+            "social_media_id": {
+                reel_url: {
+                    "social_media_id": reel_url,
+                    "shortcode": reel_sc,
+                    "selected_audio": bgm_fname,
+                    "media_file_ids": {"extracted_audio_file_id": "reel_audio_fid_111"}
+                }
+            },
+            bgm_fname: {
+                "file_id": "bgm_fid_222",
+                "shortcode": bgm_sc
+            }
+        }
+    }
+    with open(temp_meta, "w", encoding="utf-8") as f:
+        json.dump(mock_meta_data, f)
+
+    pm = AudioPoolManager(base_dir=str(temp_pool_dir))
+    pm.metadata = mock_meta_data
+    pm._save_metadata(sync_to_vault=False)
+
+    # Pre-condition: neither is blacklisted
+    assert is_blacklisted(reel_sc) is False
+    assert is_blacklisted(bgm_fname) is False
+
+    # Execute dual-input purge
+    result = pm.purge_media_and_audio_entries(
+        reel_identifier=f"manual_{reel_sc}",
+        selected_audio_name=bgm_fname
+    )
+
+    assert result["status"] == "success"
+
+    # POST-CONDITION 1: The rejected reel's own extracted audio is blacklisted!
+    assert is_blacklisted(reel_sc) is True
+    assert is_blacklisted(f"extracted_{reel_sc}.wav") is True
+    assert is_blacklisted(f"{reel_sc}.wav") is True
+
+    # POST-CONDITION 2: The selected BGM track is blacklisted!
+    assert is_blacklisted(bgm_fname) is True
+    assert is_blacklisted(bgm_sc) is True
+    assert is_blacklisted("random_name.wav", telegram_file_id="bgm_fid_222") is True
+
+
+def test_vault_hydration_skips_and_sanitizes_blacklisted_tracks(tmp_path, monkeypatch):
+    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+    from Audio_Modules.audio_pool_manager import AudioPoolManager
+
+    temp_pool_dir = tmp_path / "pool_data_hydrate"
+    temp_pool_dir.mkdir(parents=True, exist_ok=True)
+    temp_meta = str(temp_pool_dir / "pool_metadata.json")
+
+    with open(temp_meta, "w", encoding="utf-8") as f:
+        json.dump({"version": 3, "files": {}}, f)
+
+    # Blacklist Deb2IaFE67-
+    add(audio_filename="Deb2IaFE67-.wav", reason="admin_rejected")
+
+    indexer = TelegramVaultIndexer()
+    indexer.vault_index = {
+        "column_1_processed_reels": {
+            "by_session_id": {
+                "sess_old_1": {
+                    "audio_data": {
+                        "selected_audio_track": "Deb2IaFE67-.wav",
+                        "pool_metadata": {
+                            "selected_audio_track": "Deb2IaFE67-.wav",
+                            "shortcode": "Deb2IaFE67-",
+                            "file_id": "fid_blacklisted"
+                        }
+                    }
+                },
+                "sess_old_2": {
+                    "audio_data": {
+                        "selected_audio_track": "clean_track_999.wav",
+                        "pool_metadata": {
+                            "selected_audio_track": "clean_track_999.wav",
+                            "shortcode": "clean_track_999",
+                            "file_id": "fid_clean_999"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # Patch AudioPoolManager to use our temp metadata directory
+    orig_apm_init = AudioPoolManager.__init__
+    def mock_apm_init(self, base_dir=None):
+        orig_apm_init(self, base_dir=str(temp_pool_dir))
+
+    monkeypatch.setattr(AudioPoolManager, "__init__", mock_apm_init)
+
+    indexer._hydrate_local_caches()
+
+    # Verify that clean_track_999 was hydrated, but Deb2IaFE67-.wav was BLOCKED
+    with open(temp_meta, "r", encoding="utf-8") as f:
+        hydrated_meta = json.load(f)
+
+    files = hydrated_meta.get("files", {})
+    assert "Deb2IaFE67-.wav" not in files
+    assert "clean_track_999.wav" in files
+

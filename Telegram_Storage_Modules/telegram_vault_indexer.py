@@ -394,6 +394,12 @@ class TelegramVaultIndexer:
                             os.remove(temp_bl_path)
                         except Exception:
                             pass
+                    # Scrub any newly-blacklisted items from local pool metadata
+                    try:
+                        from Audio_Modules.audio_pool_manager import AudioPoolManager
+                        AudioPoolManager().sanitize_pool_metadata_anomalies()
+                    except Exception as _san_err:
+                        logger.debug("Notice sanitizing pool after blacklist merge: %s", _san_err)
                 except Exception as _bl_err:
                     logger.warning("⚠️ Notice hydrating rejected_audio_blacklist: %s", _bl_err)
         except Exception as _h_err:
@@ -1672,6 +1678,24 @@ class TelegramVaultIndexer:
                         self.vault_index = remote_index
                         self.vault_index["pinned_message_id"] = pinned.message_id
                         self._save_local_index()
+
+                        # Immediately sync rejected audio blacklist if present
+                        bl_file_id = remote_index.get("rejected_audio_blacklist_file_id")
+                        if bl_file_id:
+                            try:
+                                from Audio_Modules.rejected_audio_blacklist import _BLACKLIST_FILE, merge_blacklist_from_file
+                                bl_file = await bot.get_file(bl_file_id)
+                                temp_bl = _BLACKLIST_FILE + ".sync.tmp"
+                                await bl_file.download_to_drive(custom_path=temp_bl)
+                                if os.path.exists(temp_bl):
+                                    merge_blacklist_from_file(temp_bl)
+                                    try:
+                                        os.remove(temp_bl)
+                                    except Exception:
+                                        pass
+                            except Exception as _sync_bl_err:
+                                logger.warning(f"⚠️ [VAULT SYNC] Could not sync rejected_audio_blacklist: {_sync_bl_err}")
+
                         self._hydrate_local_caches()
                         return True
         except Exception as e:
@@ -1684,6 +1708,7 @@ class TelegramVaultIndexer:
             if c1_reels:
                 from Audio_Modules.audio_pool_manager import AudioPoolManager
                 import Audio_Modules.audio_pool_manager as _apm_mod
+                from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
                 _apm_mod._VAULT_HYDRATION_IN_PROGRESS = True
                 try:
                     pm = AudioPoolManager()
@@ -1692,7 +1717,14 @@ class TelegramVaultIndexer:
                         pool_meta = adata.get("pool_metadata") or {}
                         track_name = pool_meta.get("selected_audio_track") or pool_meta.get("selected_bgm_track")
                         if track_name and pool_meta:
-                            pm._set_file_metadata(os.path.basename(track_name), pool_meta)
+                            base_track = os.path.basename(track_name)
+                            fid = pool_meta.get("file_id") or pool_meta.get("telegram_file_id") or adata.get("file_id")
+                            sc = pool_meta.get("shortcode") or adata.get("shortcode")
+                            if _is_bl(audio_filename=base_track, audio_shortcode=sc, telegram_file_id=fid):
+                                logger.info(f"🚫 [VAULT HYDRATE] Skipping blacklisted track '{base_track}' from reel session '{sess_id}'")
+                                continue
+                            pm._set_file_metadata(base_track, pool_meta)
+                    pm.sanitize_pool_metadata_anomalies()
                     pm._save_metadata(sync_to_vault=False)
                 finally:
                     _apm_mod._VAULT_HYDRATION_IN_PROGRESS = False

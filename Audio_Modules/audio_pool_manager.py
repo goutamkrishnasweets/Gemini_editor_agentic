@@ -637,6 +637,19 @@ class AudioPoolManager:
                     logger.debug(f"[POOL_SYNC] Skipping pipeline artifact: {filename}")
                     continue
 
+                # ── BLACKLIST GATE: Never move blacklisted audio to active pool ─────────
+                try:
+                    from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+                    if _is_bl(audio_filename=filename):
+                        logger.info(f"🚫 [POOL_SYNC] Skipping and purging blacklisted file from root: {filename}")
+                        try:
+                            os.remove(src)
+                        except Exception:
+                            pass
+                        continue
+                except Exception:
+                    pass
+
                 # ── MUSIC GATE: Never re-ingest voice-only files via boot-sync ──────────
                 if meta and meta.get("is_speech_only", False):
                     logger.debug(f"[POOL_SYNC] Skipping voice-only file (speech gate flag): {filename}")
@@ -708,7 +721,20 @@ class AudioPoolManager:
                 path = os.path.join(self.active_dir, filename)
                 if not os.path.isfile(path):
                     continue
-                
+
+                # ── BLACKLIST GATE: Prune blacklisted active audio file ─────────
+                try:
+                    from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+                    if _is_bl(audio_filename=filename):
+                        logger.info(f"🚫 [POOL_SYNC] Removing blacklisted active audio file: {filename}")
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+                        continue
+                except Exception:
+                    pass
+
                 meta = self._get_file_metadata(filename)
                 if not meta:
                     logger.info(f"[POOL_SYNC] Registering unstubbed active audio in metadata: {filename}")
@@ -1095,7 +1121,10 @@ class AudioPoolManager:
                 # ── PERMANENT REJECTION BLACKLIST CHECK ───────────────────────────────
                 try:
                     from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
-                    if _is_bl(audio_filename=filename):
+                    meta_cand = self._get_file_metadata(filename) or {}
+                    cand_fid = meta_cand.get("file_id") or meta_cand.get("telegram_file_id")
+                    cand_sc = meta_cand.get("shortcode")
+                    if _is_bl(audio_filename=filename, audio_shortcode=cand_sc, telegram_file_id=cand_fid):
                         logger.info(f"🚫 [POOL] Skipping admin-rejected (blacklisted) audio: {filename}")
                         continue
                 except Exception as _bl_check_err:
@@ -1218,14 +1247,28 @@ class AudioPoolManager:
         if cooldown_skipped:
             cooldown_skipped.sort(key=lambda x: (x[0], -x[2]))
 
-        # If all candidates are in cooldown, fall back to least-recently-used track
+        # If all candidates are in cooldown, fall back to least-recently-used track (strictly non-blacklisted)
         if not best_audio and cooldown_skipped:
-            logger.warning(
-                f"⚠️ [POOL COOLDOWN] All {len(cooldown_skipped)} valid candidates were used within the last "
-                f"{self.reuse_cooldown_seconds/3600:.1f}h cooldown limit! "
-                f"Falling back to least-recently-used track to avoid pipeline failure."
-            )
-            best_audio = cooldown_skipped[0][1]
+            clean_skipped = []
+            try:
+                from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+                for item in cooldown_skipped:
+                    c_fn = item[1]
+                    c_meta = self._get_file_metadata(c_fn) or {}
+                    c_fid = c_meta.get("file_id") or c_meta.get("telegram_file_id")
+                    c_sc = c_meta.get("shortcode")
+                    if not _is_bl(audio_filename=c_fn, audio_shortcode=c_sc, telegram_file_id=c_fid):
+                        clean_skipped.append(item)
+            except Exception:
+                clean_skipped = cooldown_skipped
+
+            if clean_skipped:
+                logger.warning(
+                    f"⚠️ [POOL COOLDOWN] All {len(cooldown_skipped)} valid candidates were used within the last "
+                    f"{self.reuse_cooldown_seconds/3600:.1f}h cooldown limit! "
+                    f"Falling back to clean least-recently-used track to avoid pipeline failure."
+                )
+                best_audio = clean_skipped[0][1]
 
         if not best_audio:
             return None
@@ -1549,7 +1592,8 @@ class AudioPoolManager:
 
     def sanitize_pool_metadata_anomalies(self) -> int:
         """
-        Removes illegal entries from files root (like 'video.mp4' or video files)
+        Removes illegal entries from files root (like 'video.mp4' or video files),
+        prunes blacklisted audio tracks from files root and social_media_id,
         and deduplicates all social_media_id entries.
         """
         removed = 0
@@ -1567,6 +1611,45 @@ class AudioPoolManager:
                     del files_dict[k]
                     removed += 1
                     logger.info(f"🧹 [POOL SANITIZE] Removed rogue video entry from audio files index: {k}")
+
+                # ── BLACKLIST SCRUBBING: Prune blacklisted audio entries from metadata ──
+                try:
+                    from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+                    bl_to_del = [
+                        k for k, v in files_dict.items()
+                        if k != "social_media_id" and isinstance(v, dict)
+                        and _is_bl(
+                            audio_filename=k,
+                            audio_shortcode=v.get("shortcode"),
+                            telegram_file_id=v.get("file_id") or v.get("telegram_file_id")
+                        )
+                    ]
+                    for k in bl_to_del:
+                        del files_dict[k]
+                        removed += 1
+                        logger.info(f"🚫 [POOL SANITIZE] Scrubbed blacklisted track from pool files: {k}")
+
+                    sm_dict = files_dict.get("social_media_id", {})
+                    if isinstance(sm_dict, dict):
+                        sm_bl_del = [
+                            url for url, entry in list(sm_dict.items())
+                            if isinstance(entry, dict) and _is_bl(
+                                audio_filename=f"{entry.get('shortcode', '')}.wav",
+                                audio_shortcode=entry.get("shortcode"),
+                                telegram_file_id=(
+                                    entry.get("media_file_ids", {}).get("extracted_audio_file_id")
+                                    or entry.get("extracted_audio_file_id")
+                                    or entry.get("file_id")
+                                )
+                            )
+                        ]
+                        for url in sm_bl_del:
+                            del sm_dict[url]
+                            removed += 1
+                            logger.info(f"🚫 [POOL SANITIZE] Scrubbed blacklisted harvested reel from social_media_id: {url}")
+                except Exception as _bl_scrub_err:
+                    logger.debug("Notice during pool sanitize blacklist check: %s", _bl_scrub_err)
+
             if removed > 0:
                 self._save_metadata()
 
@@ -1577,9 +1660,22 @@ class AudioPoolManager:
         """
         Return the pool_metadata["files"] dict — the unified audio track index.
         Keys are filenames (e.g. 'Zareena_khan.mp3'), values are the full metadata dicts.
-        This is the single source of truth for select_best_audio_for_clip().
+        Guarantees 100% exclusion of blacklisted audio tracks.
         """
-        return dict(self.metadata.get("files", self.metadata))
+        raw = dict(self.metadata.get("files", self.metadata))
+        try:
+            from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+            return {
+                k: v for k, v in raw.items()
+                if k != "social_media_id" and isinstance(v, dict)
+                and not _is_bl(
+                    audio_filename=k,
+                    audio_shortcode=v.get("shortcode"),
+                    telegram_file_id=v.get("file_id") or v.get("telegram_file_id")
+                )
+            }
+        except Exception:
+            return raw
 
     def merge_lyric_into_pool(self, track_identifier: str, lyric_data: Dict[str, Any]) -> bool:
         """
@@ -1737,6 +1833,7 @@ class AudioPoolManager:
 
             # 1. Recover selected_audio from processed reel entry if not provided
             resolved_audio = selected_audio_name
+            reel_fid = None
             for url_key, entry in list(social_dict.items()):
                 if not isinstance(entry, dict):
                     continue
@@ -1751,6 +1848,12 @@ class AudioPoolManager:
                     is_match = True
 
                 if is_match:
+                    if not reel_fid:
+                        reel_fid = (
+                            entry.get("media_file_ids", {}).get("extracted_audio_file_id")
+                            or entry.get("extracted_audio_file_id")
+                            or entry.get("media_file_ids", {}).get("audio_file_id")
+                        )
                     if not resolved_audio:
                         sel_cand = entry.get("selected_audio") or entry.get("audio_data", {}).get("selected_audio")
                         if isinstance(sel_cand, dict):
@@ -1763,7 +1866,7 @@ class AudioPoolManager:
                     purged_items.append(f"Processed input section: {url_key}")
                     logger.info(f"🗑️ [POOL PURGE] Completely deleted processed input section: {url_key}")
 
-            # 2. If resolved_audio found, purge the selected audio's originating harvest input from social_media_id
+            # 2. BLACKLIST WRITE: Permanent ban for BOTH reel's extracted audio AND selected BGM
             audio_sc = ""
             audio_fname = ""
             if resolved_audio:
@@ -1779,29 +1882,61 @@ class AudioPoolManager:
                     if audio_sc.endswith(ext):
                         audio_sc = audio_sc[:-len(ext)]
                 audio_sc = audio_sc.strip()
-            elif reel_identifier:
-                # If no external BGM track was selected, the rejected audio was the reel's ambient/extracted audio
-                audio_sc = processed_sc or str(reel_identifier).lower()
-                audio_fname = f"extracted_{audio_sc}.wav"
 
-            # ── BLACKLIST WRITE: permanent ban before any deletion ────────────────
-            # This runs regardless of whether audio_sc matches anything in the pool,
-            # guaranteeing the audio can never be re-selected even after vault resyncs.
-            if audio_fname or audio_sc:
-                try:
-                    from Audio_Modules.rejected_audio_blacklist import add as _bl_add, sync_blacklist_to_vault
+            try:
+                from Audio_Modules.rejected_audio_blacklist import add as _bl_add, sync_blacklist_to_vault
+                # A) Permanently blacklist the rejected reel's own audio
+                if processed_sc:
+                    _bl_add(
+                        audio_filename=f"extracted_{processed_sc}.wav",
+                        audio_shortcode=processed_sc,
+                        telegram_file_id=reel_fid,
+                        reason="admin_rejected_reel_source",
+                    )
+                    _bl_add(
+                        audio_filename=f"{processed_sc}.wav",
+                        audio_shortcode=processed_sc,
+                        telegram_file_id=reel_fid,
+                        reason="admin_rejected_reel_source",
+                    )
+
+                # B) Permanently blacklist the selected BGM track
+                if audio_fname or audio_sc:
+                    audio_fid = None
+                    for fk, fv in files_root.items():
+                        if isinstance(fv, dict) and (fk.lower() == audio_fname or (audio_sc and audio_sc in fk.lower())):
+                            audio_fid = fv.get("file_id") or fv.get("telegram_file_id")
+                            if audio_fid:
+                                break
+                    if not audio_fid and audio_sc:
+                        for url_key, entry in social_dict.items():
+                            if isinstance(entry, dict):
+                                sc_val = str(entry.get("shortcode", "")).lower()
+                                if sc_val == audio_sc or audio_sc in str(url_key).lower():
+                                    audio_fid = (
+                                        entry.get("media_file_ids", {}).get("extracted_audio_file_id")
+                                        or entry.get("extracted_audio_file_id")
+                                        or entry.get("file_id")
+                                    )
+                                    if audio_fid:
+                                        break
                     _bl_add(
                         audio_filename=audio_fname or f"{audio_sc}.mp3",
                         audio_shortcode=audio_sc or None,
-                        telegram_file_id=(
-                            files_root.get(audio_fname, {}).get("file_id")
-                            or files_root.get(audio_fname, {}).get("social_media_id")
-                        ),
+                        telegram_file_id=audio_fid,
                         reason="admin_rejected",
                     )
-                    sync_blacklist_to_vault()
-                except Exception as _bl_err:
-                    logger.warning(f"⚠️ [POOL PURGE] Blacklist write failed (non-fatal): {_bl_err}")
+                    if audio_sc and f"{audio_sc}.wav" != audio_fname:
+                        _bl_add(
+                            audio_filename=f"{audio_sc}.wav",
+                            audio_shortcode=audio_sc,
+                            telegram_file_id=audio_fid,
+                            reason="admin_rejected",
+                        )
+
+                sync_blacklist_to_vault()
+            except Exception as _bl_err:
+                logger.warning(f"⚠️ [POOL PURGE] Blacklist write failed (non-fatal): {_bl_err}")
             # ─────────────────────────────────────────────────────────────────────
 
                 if audio_sc:

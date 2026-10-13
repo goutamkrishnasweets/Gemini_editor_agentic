@@ -168,14 +168,16 @@ def select_clip_bgm(
             pool = AudioPoolManager(base_dir=audio_dir)
             all_excludes = set(exclude_filenames or set()) | failed_candidates
             resolved_path = pool.select_best_audio(exclude_filenames=all_excludes)
-            if not resolved_path and failed_candidates:
-                # If everything was excluded, retry excluding only failed candidates
-                resolved_path = pool.select_best_audio(exclude_filenames=failed_candidates)
             if resolved_path and os.path.isfile(resolved_path) and os.path.getsize(resolved_path) > 1024:
-                selected_track_name = os.path.basename(resolved_path)
-                res["selected_audio_track"] = selected_track_name
-                res["alignment_score"] = res.get("alignment_score") or 0.80
-                logger.info(f"✓ [STEP 04] Pool manager fallback succeeded: '{selected_track_name}' -> {resolved_path}")
+                cand_selected = os.path.basename(resolved_path)
+                if _is_bl(cand_selected):
+                    logger.error(f"🚫 [STEP 04 CRITICAL] Pool fallback returned blacklisted track '{cand_selected}'! Discarding.")
+                    resolved_path = None
+                else:
+                    selected_track_name = cand_selected
+                    res["selected_audio_track"] = selected_track_name
+                    res["alignment_score"] = res.get("alignment_score") or 0.80
+                    logger.info(f"✓ [STEP 04] Pool manager fallback succeeded: '{selected_track_name}' -> {resolved_path}")
             else:
                 resolved_path = None
         except Exception as pool_err:
@@ -190,6 +192,9 @@ def select_clip_bgm(
             f"Please verify that audio tracks in your Telegram Storage Group are accessible "
             f"and under 20MB (or configure TELEGRAM_API_ID / TELEGRAM_API_HASH for Pyrogram MTProto)."
         )
+        logger.error(err_msg)
+    if selected_track_name and _is_bl(selected_track_name):
+        err_msg = f"🚫 [STEP 04 SECURITY VIOLATION] Attempted to finalize blacklisted BGM track '{selected_track_name}' for clip '{clip_id}'!"
         logger.error(err_msg)
         raise RuntimeError(err_msg)
 
