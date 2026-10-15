@@ -20,6 +20,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def harvest_reels_from_apify(
     target_accounts: List[str],
     limit_per_account: int = 3,
+    bypass_cooldown: bool = False,
     callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
 ) -> List[Dict[str, Any]]:
     """
@@ -33,7 +34,12 @@ def harvest_reels_from_apify(
     approved_reels = []
     try:
         from Downloader_Modules.apify_downloader import apify_scrape_actress_accounts
-        reels = apify_scrape_actress_accounts("General", target_accounts, limit_per_account=limit_per_account)
+        reels = apify_scrape_actress_accounts(
+            "General",
+            target_accounts,
+            limit_per_account=limit_per_account,
+            bypass_cooldown=bypass_cooldown
+        )
         if reels:
             approved_reels = reels
             logger.info(f"🤖 [STEP 03] Apify harvested {len(approved_reels)} approved reel candidate(s).")

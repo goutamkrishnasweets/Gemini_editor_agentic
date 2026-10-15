@@ -41,36 +41,35 @@ def _ensure_event_loop() -> asyncio.AbstractEventLoop:
         return loop
 
 
-def _run_coro_safely(coro):
+def _run_coro_safely(coro_or_factory):
     """
-    Safely executes an async coroutine synchronously from any context:
-      - Active running event loop (e.g. main asyncio loop) -> uses nest_asyncio or isolated thread executor
+    Safely executes an async coroutine or coroutine factory synchronously from any context:
+      - Active running event loop (e.g. main asyncio loop) -> isolated thread worker with a new event loop
       - Worker thread without event loop -> creates and binds thread event loop
       - Worker thread with inactive event loop -> runs loop.run_until_complete
+    Prevents 'cannot reuse already awaited coroutine' errors by creating/running fresh coroutines.
     """
+    is_callable = callable(coro_or_factory) and not asyncio.iscoroutine(coro_or_factory)
     try:
         running_loop = asyncio.get_running_loop()
     except RuntimeError:
         running_loop = None
 
     if running_loop and running_loop.is_running():
-        try:
-            import nest_asyncio
-            nest_asyncio.apply()
-            return running_loop.run_until_complete(coro)
-        except Exception:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                def _thread_worker():
-                    thr_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(thr_loop)
-                    try:
-                        return thr_loop.run_until_complete(coro)
-                    finally:
-                        thr_loop.close()
-                return executor.submit(_thread_worker).result()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            def _thread_worker():
+                thr_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(thr_loop)
+                try:
+                    c = coro_or_factory() if is_callable else coro_or_factory
+                    return thr_loop.run_until_complete(c)
+                finally:
+                    thr_loop.close()
+            return executor.submit(_thread_worker).result()
     else:
         loop = _ensure_event_loop()
-        return loop.run_until_complete(coro)
+        c = coro_or_factory() if is_callable else coro_or_factory
+        return loop.run_until_complete(c)
 
 
 # Automatically load environment variables from Credentials/.env, .env, or telegram_config.json
@@ -293,7 +292,7 @@ def upload_file_with_pyrogram(
                     return {"ok": True, "result": res_payload}
                 return None
 
-        return _run_coro_safely(_async_upload())
+        return _run_coro_safely(_async_upload)
 
     except Exception as e:
         logger.warning("[telegram_http] Pyrogram MTProto upload failed for %s: %s", filename, e)
@@ -362,6 +361,36 @@ def send_document(
                 if result.get("ok"):
                     return result.get("result")
                 logger.warning("[telegram_http] sendDocument not OK: %s", result)
+                return None
+        except urllib.error.HTTPError as he:
+            # Check for HTTP 429 Too Many Requests -> sleep retry_after
+            if he.code == 429:
+                retry_after = 5
+                try:
+                    err_data = json.loads(he.read().decode())
+                    retry_after = err_data.get("parameters", {}).get("retry_after", 5)
+                except Exception:
+                    pass
+                if attempt < max_retries:
+                    logger.warning("[telegram_http] HTTP 429 Rate Limit for %s. Sleeping %.1fs before retry...", filename, float(retry_after) + 0.5)
+                    time.sleep(float(retry_after) + 0.5)
+                    continue
+
+            # Check for HTTP 413 Request Entity Too Large -> trigger Pyrogram immediately
+            if he.code == 413:
+                logger.warning("[telegram_http] HTTP 413 encountered for %s. Falling back to Pyrogram MTProto upload...", filename)
+                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, file_name=filename, as_video=False)
+                if pyro_res and pyro_res.get("ok"):
+                    return pyro_res.get("result")
+
+            if attempt < max_retries:
+                logger.warning("[telegram_http] send_document attempt %d failed for %s (%s) — retrying...", attempt, filename, he)
+                time.sleep(2.0 * attempt)
+            else:
+                logger.warning("[telegram_http] send_document failed after %d attempts for %s: %s. Trying Pyrogram MTProto fallback...", max_retries, filename, he)
+                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, file_name=filename, as_video=False)
+                if pyro_res and pyro_res.get("ok"):
+                    return pyro_res.get("result")
                 return None
         except Exception as e:
             # Check for HTTP 413 Request Entity Too Large -> trigger Pyrogram immediately
@@ -453,7 +482,7 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
                     return True
                 return False
 
-        return _run_coro_safely(_async_download())
+        return _run_coro_safely(_async_download)
 
     except Exception as e:
         logger.warning("[telegram_http] Pyrogram MTProto download failed for file_id=%s: %s", file_id[:12], e)

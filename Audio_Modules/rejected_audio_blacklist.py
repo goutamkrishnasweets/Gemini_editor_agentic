@@ -99,11 +99,15 @@ def _save(data: Dict[str, Any]) -> None:
         logger.warning(f"[Blacklist] Failed to save blacklist file: {e}")
 
 
+_LAST_VAULT_SYNC = 0.0
+
+
 def add(
     audio_filename: Optional[str],
     audio_shortcode: Optional[str] = None,
     telegram_file_id: Optional[str] = None,
     reason: str = "admin_rejected",
+    sync_to_vault: bool = True,
 ) -> None:
     """
     Permanently blacklist an audio track.
@@ -145,23 +149,32 @@ def add(
             entries[derived_sc] = record
 
         _save(data)
+        fid_display = telegram_file_id if telegram_file_id else "N/A (local extract)"
         logger.info(
             f"🚫 [Blacklist] Permanently blacklisted audio: filename='{fname_key}' "
-            f"shortcode='{sc_key}' file_id='{telegram_file_id}' reason='{reason}'"
+            f"shortcode='{sc_key}' file_id='{fid_display}' reason='{reason}'"
         )
 
-        # Cloud sync to Telegram Storage Group Vault
-        try:
-            sync_blacklist_to_vault()
-        except Exception as _sync_err:
-            logger.debug("[Blacklist] Vault sync notice: %s", _sync_err)
+        # Cloud sync to Telegram Storage Group Vault (can be batched by caller)
+        if sync_to_vault:
+            try:
+                sync_blacklist_to_vault()
+            except Exception as _sync_err:
+                logger.debug("[Blacklist] Vault sync notice: %s", _sync_err)
 
 
-def sync_blacklist_to_vault() -> Optional[str]:
+def sync_blacklist_to_vault(force: bool = False) -> Optional[str]:
     """
     Uploads rejected_audio_blacklist.json to Telegram Storage Group via telegram_http.py
     and updates rejected_audio_blacklist_file_id in master_vault_index.json.
+    Includes a 2-second debounce to prevent redundant cloud pins on rapid-fire calls.
     """
+    global _LAST_VAULT_SYNC
+    now = time.time()
+    if not force and (now - _LAST_VAULT_SYNC) < 2.0:
+        logger.debug("[Blacklist] Skipping rapid-fire vault sync (debounced: %.1fs elapsed)", now - _LAST_VAULT_SYNC)
+        return None
+
     try:
         if not os.path.isfile(_BLACKLIST_FILE):
             return None
@@ -176,6 +189,7 @@ def sync_blacklist_to_vault() -> Optional[str]:
         if res:
             doc_id = extract_file_id(res)
             if doc_id:
+                _LAST_VAULT_SYNC = time.time()
                 indexer = TelegramVaultIndexer()
                 indexer.vault_index["rejected_audio_blacklist_file_id"] = doc_id
                 indexer._save_local_index()

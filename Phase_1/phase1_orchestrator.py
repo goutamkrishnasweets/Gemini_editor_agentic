@@ -148,7 +148,13 @@ def run_phase1_pipeline(
 
         # Step 3: Apify Harvest & Pre-screen
         limit = limit_per_account if limit_per_account else 3
-        reels = harvest_reels_from_apify(sources, limit_per_account=limit, callback=event_callback)
+        should_bypass = bool(target_accounts)
+        reels = harvest_reels_from_apify(
+            sources,
+            limit_per_account=limit,
+            bypass_cooldown=should_bypass,
+            callback=event_callback
+        )
 
         for item in (reels or []):
             if isinstance(item, dict):

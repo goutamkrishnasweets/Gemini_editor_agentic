@@ -1853,6 +1853,9 @@ class AudioPoolManager:
                             entry.get("media_file_ids", {}).get("extracted_audio_file_id")
                             or entry.get("extracted_audio_file_id")
                             or entry.get("media_file_ids", {}).get("audio_file_id")
+                            or entry.get("media_file_ids", {}).get("raw_video_file_id")
+                            or entry.get("raw_video_file_id")
+                            or entry.get("file_id")
                         )
                     if not resolved_audio:
                         sel_cand = entry.get("selected_audio") or entry.get("audio_data", {}).get("selected_audio")
@@ -1865,6 +1868,14 @@ class AudioPoolManager:
                     del social_dict[url_key]
                     purged_items.append(f"Processed input section: {url_key}")
                     logger.info(f"🗑️ [POOL PURGE] Completely deleted processed input section: {url_key}")
+
+            # Fallback search across files_root for reel_fid if not found in social_dict
+            if not reel_fid and processed_sc:
+                for fk, fv in files_root.items():
+                    if isinstance(fv, dict) and (processed_sc in fk.lower() or f"{processed_sc}.wav" == fk.lower()):
+                        reel_fid = fv.get("file_id") or fv.get("telegram_file_id")
+                        if reel_fid:
+                            break
 
             # 2. BLACKLIST WRITE: Permanent ban for BOTH reel's extracted audio AND selected BGM
             audio_sc = ""
@@ -1885,22 +1896,24 @@ class AudioPoolManager:
 
             try:
                 from Audio_Modules.rejected_audio_blacklist import add as _bl_add, sync_blacklist_to_vault
-                # A) Permanently blacklist the rejected reel's own audio
+                # A) Permanently blacklist the rejected reel's own audio (batched sync)
                 if processed_sc:
                     _bl_add(
                         audio_filename=f"extracted_{processed_sc}.wav",
                         audio_shortcode=processed_sc,
                         telegram_file_id=reel_fid,
                         reason="admin_rejected_reel_source",
+                        sync_to_vault=False,
                     )
                     _bl_add(
                         audio_filename=f"{processed_sc}.wav",
                         audio_shortcode=processed_sc,
                         telegram_file_id=reel_fid,
                         reason="admin_rejected_reel_source",
+                        sync_to_vault=False,
                     )
 
-                # B) Permanently blacklist the selected BGM track
+                # B) Permanently blacklist the selected BGM track (batched sync)
                 if audio_fname or audio_sc:
                     audio_fid = None
                     for fk, fv in files_root.items():
@@ -1925,6 +1938,7 @@ class AudioPoolManager:
                         audio_shortcode=audio_sc or None,
                         telegram_file_id=audio_fid,
                         reason="admin_rejected",
+                        sync_to_vault=False,
                     )
                     if audio_sc and f"{audio_sc}.wav" != audio_fname:
                         _bl_add(
@@ -1932,6 +1946,7 @@ class AudioPoolManager:
                             audio_shortcode=audio_sc,
                             telegram_file_id=audio_fid,
                             reason="admin_rejected",
+                            sync_to_vault=False,
                         )
 
                 sync_blacklist_to_vault()
