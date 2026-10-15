@@ -943,15 +943,6 @@ class ForensicVideoAnalyzer:
 
             content_part: Any = uploaded
             fps = float(proxy.get("fps", 1.0))
-            if abs(fps - 1.0) > 1e-6:
-                try:
-                    from google.genai import types
-                    content_part = types.Part(
-                        file_data=types.FileData(file_uri=uploaded.uri, mime_type=getattr(uploaded, "mime_type", None) or "video/mp4"),
-                        video_metadata=types.VideoMetadata(fps=fps),
-                    )
-                except Exception as me:
-                    logger.warning(f"🔬 Could not attach VideoMetadata(fps={fps:g}) ({me}); Gemini will sample at 1 fps.")
 
             logger.info(f"🔬 ForensicAnalyzer: analyzing (~{proxy.get('gemini_token_est')} video tokens, fps={fps:g})...")
             last_err: Optional[Exception] = None

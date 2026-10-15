@@ -34,6 +34,7 @@ _REEDIT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _UPLOAD_RE = re.compile(r"process\s+uploaded\s+video\s+at\s+'([^']+)'", re.IGNORECASE)
+_MANGA_RE = re.compile(r"(?:process|extract)\s+uploaded\s+manga(?:/comic)?\s+(?:pdf|document)?\s+at\s+'([^']+)'", re.IGNORECASE)
 _BATCH_ACCOUNTS_RE = re.compile(r"creator\s+accounts?\s*:\s*((?:@[A-Za-z0-9._]+[\s,]*)+)", re.IGNORECASE)
 _SCHEDULED_BATCH_RE = re.compile(r"run\s+scheduled\s+content\s+scraper\s+batch", re.IGNORECASE)
 
@@ -43,7 +44,7 @@ MAX_BATCH_ACCOUNTS = 2
 
 @dataclass
 class Route:
-    kind: str                                   # url|handle|batch|upload|reedit|freeform
+    kind: str                                   # url|handle|batch|upload|manga_stickman|reedit|freeform
     goal: str = ""
     url: Optional[str] = None
     handles: List[str] = field(default_factory=list)
@@ -97,6 +98,11 @@ def classify_goal(text: str) -> Route:
     m = _UPLOAD_RE.search(goal)
     if m:
         return Route(kind="upload", goal=goal, path=m.group(1).strip())
+
+    # 2b) Uploaded Manga / Comic PDF -> Stickman Production
+    m = _MANGA_RE.search(goal)
+    if m:
+        return Route(kind="manga_stickman", goal=goal, path=m.group(1).strip())
 
     # 3) Scheduled-pool batch trigger (menu button)
     if _SCHEDULED_BATCH_RE.search(goal):
