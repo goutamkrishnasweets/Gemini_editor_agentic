@@ -1,1108 +1,1175 @@
 """
-Intelligence_Modules/forensic_analyzer.py
-------------------------------------------
-Forensic Video Analyzer — Vision-AI based frame inspection.
+Gemini_Modules/forensic_analyzer.py
+------------------------------------
+Forensic Video Analyzer — video + corrected transcript -> timestamped explanation.
 
-Performs TWO tasks on extracted video frames via Gemini Vision:
+Pipeline (one Gemini video call):
 
-  TASK 1 — CONTENT ANALYSIS
-    Classifies content intent, confidence, recommended editing feature flags,
-    and monetization safety rating.
+    source video ──► proxy_encoder.encode_for_gemini()  (compressed, Gemini-tuned)
+    clip audio   ──► whisper_transcriber ──► transcript_corrector  (final transcript)
+                                   │
+    compressed video + final transcript ──► Gemini ──► structured analysis
 
-Output format (strict JSON):
-{
-  "watermarks": [{"x":0,"y":0,"w":0,"h":0}],
-  "content_strategy": {
-    "intent": "...",
-    "confidence": 0.0-1.0,
-    "feature_flags": {
-        "enable_price_tags": true/false,
-        "enable_fashion_caption": true/false,
-        "enable_cinematic_zoom": true/false,
-        "enable_speed_ramps": true/false,
-        "enable_fast_pacing": true/false,
-        "enable_voiceover": true/false
-    },
-    "recommended_editing_style": "...",
-    "safety": "safe|risky|blocked"
-  }
-}
+What Gemini returns, and what the CODE adds:
+  Gemini : overview, visual timeline (scenes), per-transcript-line visual alignment,
+           key moments, transcript conflicts, classification, watermarks, director block.
+  Code   : attaches the EXACT transcript text/timestamps to every timeline scene
+           (never trusts Gemini to copy speech), normalizes/clamps all timestamps,
+           converts watermark boxes to source-pixel coordinates, enforces safety
+           invariants, derives speech_intelligence and visual_vectors from real data.
+
+Backward compatible: still returns intent / feature_flags / safety / editing_style /
+content_strategy / content_director / creative_possibilities / selected_audio_track /
+watermarks(x,y,w,h) / speech_intelligence / visual_vectors / clip_intelligence.
+New: result["video_analysis"], result["transcript_meta"], result["video_proxy"].
+
+Use render_explanation(result) for the human-readable timestamped report.
 """
 
-import os
+import copy
+import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
-import tempfile
-import shutil
-import copy
-from typing import List, Optional, Any, Dict
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 try:
     from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
-except ImportError:
+except Exception:
     try:
-        from gemini_governor import gemini_router
-    except ImportError:
-        gemini_router = None
+        from Gemini_Modules.gemini_governor import gemini_router
+    except Exception:
+        try:
+            from gemini_governor import gemini_router
+        except Exception:
+            gemini_router = None
 
 from dotenv import load_dotenv
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Load .env first, then Credentials/.env with override=False so real env vars win,
-# and .env takes precedence over Credentials/.env
-for env_candidate in [
-    os.path.join(_REPO_ROOT, ".env"),
-    os.path.join(_REPO_ROOT, "Credentials", ".env"),
-]:
-    if os.path.exists(env_candidate):
-        load_dotenv(env_candidate, override=False)
+if os.path.exists(os.path.join(_REPO_ROOT, ".env")):
+    load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
+elif os.path.exists(os.path.join(_REPO_ROOT, "Credentials", ".env")):
+    load_dotenv(os.path.join(_REPO_ROOT, "Credentials", ".env"), override=True)
+else:
+    load_dotenv(".env", override=True)
 
 logger = logging.getLogger("forensic_analyzer")
 
+# ── Config ────────────────────────────────────────────────────────────────────
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")      # only used if router is unavailable
+_FPS_ENV = os.getenv("FORENSIC_VIDEO_FPS", "auto").strip().lower()  # "auto" or a number, e.g. "1"
+AUTO_TRANSCRIBE = os.getenv("FORENSIC_AUTO_TRANSCRIBE", "true").lower() in ("true", "1", "yes")
+GEMINI_TIMEOUT_SEC = float(os.getenv("FORENSIC_GEMINI_TIMEOUT", "180"))
+FILE_ACTIVE_TIMEOUT_SEC = 120.0
+MAX_ATTEMPTS = 2                      # one retry, only for unparseable output
+_PROMPT_VERSION = 1
+_MAX_TRANSCRIPT_CHARS = 14000
+_MAX_WATERMARK_AREA = 0.35            # reject boxes covering >35% of the frame
+
+ALLOWED_INTENTS = {
+    "educational_explainer", "kids_animation", "tech_review", "fitness_action", "nature_travel",
+    "fashion_lifestyle", "meme_viral", "food_cooking", "talking_head", "music_performance",
+    "general_content",
+}
+ALLOWED_STYLES = {
+    "educational_tutorial", "playful_animation", "fast_social", "cinematic", "documentary",
+    "product_review", "fashion_showcase", "vlog", "news", "podcast_clip",
+}
+SHOT_TYPES = {"closeup", "medium", "wide", "aerial", "screen_recording", "text_card", "other"}
+CAMERA_MOTIONS = {"static", "pan", "zoom", "handheld", "tracking", "mixed"}
+SPEECH_RELATIONS = {
+    "no_speech", "speaker_on_camera", "voiceover_matches_visual", "voiceover_b_roll",
+    "lip_sync_to_audio", "singing_performance", "speech_unrelated_to_visual", "off_screen_speaker",
+}
+_SPOKEN_RELATIONS = {
+    "speaker_on_camera", "voiceover_matches_visual", "voiceover_b_roll",
+    "speech_unrelated_to_visual", "off_screen_speaker",
+}
+ALIGN_RELATIONS = {"matches_visual", "b_roll", "speaker_on_camera", "mismatch", "unclear"}
+MOMENT_TYPES = {
+    "hook", "punchline", "reveal", "peak", "cta", "transition", "product_shown",
+    "text_overlay", "emotional_beat", "other",
+}
+FLAG_NAMES = (
+    "enable_price_tags", "enable_fashion_caption", "enable_cinematic_zoom",
+    "enable_speed_ramps", "enable_fast_pacing", "enable_voiceover",
+)
+
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
-FORENSIC_PROMPT = """
-You are a Professional Short-Form Content Director analyzing a sparse set of sampled video frames.
-You do not have the full video — only {frame_count} frames at {width}x{height}. Treat every frame as
-partial evidence, not the whole story.
+FORENSIC_PROMPT = """You are a Professional Short-Form Content Director and forensic video analyst.
 
-Your output has two consumers, both of which matter:
-1. A second-stage AI editor (Gemini Call 3) will read your JSON as raw text and reason over it to build
-   an actual FFmpeg edit plan. Your fields are its only source of visual understanding — it never sees
-   the frames itself. Vague or generic output here directly degrades what it produces.
-2. Your output is stored permanently as training/retrieval signal for a future recommendation system.
-   Precision and honesty matter more than confident-sounding guesses — a wrong but confident answer
-   pollutes that store in a way that compounds over time.
+INPUTS
+  (1) VIDEO — a compressed proxy of the clip: <<W>>x<<H>>, <<FPS>> frame(s) per second, <<DUR>>s long, original audio included.
+  (2) TRANSCRIPT — the speech in that video. It was produced by Whisper and then corrected by a second
+      model that listened to the audio. It is given below with timestamps.
 
----
+YOUR JOB
+Write a detailed, timestamped explanation of the video that CONNECTS what is seen with what is said,
+then classify it for editing.
 
-GROUNDING RULES (apply to everything below)
+Your output has two consumers:
+  A. A second-stage AI editor (Call 3) reads your JSON as raw text and builds an FFmpeg edit plan. It never
+     sees the video — your fields are its ONLY visual understanding. Vague output degrades its plan.
+  B. Your output is stored permanently as retrieval/training signal. Precision and honesty matter more than
+     confident-sounding guesses; a wrong confident answer pollutes that store.
 
-- Only report what is directly visible in the frames provided. Do not infer off-screen action, audio
-  content, or context you cannot see. If you would need information from outside these frames to be
-  sure, say so in `visual_event` rather than stating it as fact.
-- If frames are ambiguous, contradictory, or too sparse to classify confidently, say so — do not force
-  a confident answer to satisfy the schema. Use lower confidence and describe uncertainty in `visual_event`.
-  A well-flagged "uncertain" is more useful to Call 3 than a wrong "certain."
-- If the video appears to mix multiple content types, classify by whichever type occupies the most visual
-  weight across sampled frames, and name the secondary type explicitly inside `visual_event`.
+TIMESTAMP RULES
+- Every timestamp is in SECONDS (float) from the very start of the video (t=0). Never MM:SS.
+- Transcript timestamps are ground truth for WHEN speech happens. Anchor speech-related events to them;
+  do not re-estimate speech timing from the video.
+- Your visual timing comes from ~<<FPS>> frame(s)/second, so visual boundaries are only good to about
+  +/-<<PREC>>s. Do not claim finer precision.
 
----
+GROUNDING RULES
+- Report only what is visible or audible. Do not infer off-screen events, intent, or context you cannot observe.
+- Do NOT invent speech. Speech content comes from the transcript. If the transcript says there is no speech
+  or is unavailable, describe the audio you hear (music, effects) and put any speech claim in "uncertainties".
+- If the video is ambiguous, too short, or too sparse, say so in "uncertainties" and lower "confidence".
+  "general_content" is a valid, useful answer — do not stretch a category.
+- Mixed content: classify by dominant visual weight and name the secondary type in the overview.
+- Never identify real people from their faces. Describe them neutrally ("a woman in a red jacket"). You may
+  use a name that is SPOKEN in the transcript or SHOWN in on-screen text, and say which one it came from.
 
-TASK 1 — CONTENT CLASSIFICATION
+TASK 1 — DETAILED EXPLANATION
+1. overview.summary: 5-8 sentences. What happens from start to finish, who/what is in it, where, why it
+   exists, and how the speech and visuals work together.
+2. timeline: contiguous scenes covering t=0 to the end with no gaps or overlaps. Start a new scene when the
+   shot, subject, location, on-screen text, or the speech/visual relationship meaningfully changes.
+   For each scene describe concretely: who/what, action, framing, camera movement, lighting/colour, on-screen
+   text VERBATIM. Do NOT copy the transcript into scenes — the system attaches exact speech afterwards.
+   Instead state speech_relation and, in speech_visual_note, how the words relate to what is shown
+   (e.g. says "this jacket" while the jacket is on screen).
+3. transcript_alignment: one entry for EVERY transcript line id: a short visual_at_time (max 20 words),
+   whether the speaker is visible, and the relation.
+4. key_moments: the moments an editor must know about (hook, punchline, reveal, peak, cta, product shown,
+   text overlay, emotional beat), with importance 1-5.
+5. transcript_conflicts: ONLY where the video gives concrete evidence that a transcript word is wrong
+   (on-screen subtitle, name card, product label, clear lip movement mismatch). Do not "fix" the transcript
+   from audio guesses — that was already done. Usually empty.
+6. speaker_analysis and uncertainties: be explicit about what you could not determine.
 
-Examine all frames and classify this video by what you directly observe.
+TASK 2 — CLASSIFICATION
+`intent` — single best fit:
+  educational_explainer (tutorials, how-tos) | kids_animation | tech_review | fitness_action |
+  nature_travel | fashion_lifestyle (outfits, beauty, celebrity highlights) | meme_viral |
+  food_cooking | talking_head (podcast, interview, commentary, news) |
+  music_performance (singing, instruments, dance, concerts) | general_content (no clear fit).
 
-`intent` — Write a short, specific content label that accurately describes what this video IS, derived
-entirely from what you see. Be specific and descriptive rather than generic.
-Examples of good outputs: "bollywood_celebrity_arrival", "gym_workout_reel", "product_unboxing_review",
-"street_food_vendor", "standup_comedy_clip", "corporate_tech_keynote", "wildlife_drone_footage".
-Bad outputs: "general", "video", "content". If frames are too ambiguous to classify, write "unclassifiable"
-and explain in `visual_event`.
+Feature flag defaults (override when the evidence contradicts them):
+- Educational / Tutorial / Talking Head -> enable_voiceover=true, enable_speed_ramps=false.
+- Animation -> enable_cinematic_zoom=true.  Fashion -> enable_fashion_caption=true, enable_cinematic_zoom=true;
+  enable_price_tags only if products/apparel are visibly the focus.
+- Fitness / Action -> enable_speed_ramps=true, enable_fast_pacing=true.
+- Nature / Travel -> enable_cinematic_zoom=true, enable_fast_pacing=false.
+- Music / Performance -> enable_speed_ramps=true if rhythm/choreography-driven, else cinematic zoom.
+- Food -> enable_cinematic_zoom=true; enable_voiceover=true if narration is present in the transcript.
+- meme_viral / general_content -> enable_fast_pacing=true unless the clip is slow and narrative.
+Voiceover legibility beats fast pacing when they conflict.
 
-`feature_flags` — Decide each flag independently from what you observe in the frames. Do not apply
-category-based rules. Ask yourself for each flag: does the visual evidence in these frames directly
-support enabling this feature for better viewer engagement?
-- enable_cinematic_zoom: would slow push-in or pull-out zooms enhance the visual subject on screen?
-- enable_speed_ramps: is there physical motion, action, or rhythm that would benefit from speed variation?
-- enable_fast_pacing: are there multiple distinct shots or scenes that suggest rapid cut editing style?
-- enable_voiceover: is there visible on-camera speech, narration, or commentary that needs audio treatment?
-- enable_fashion_caption: are specific garments, accessories, or fashion items the visual focus of frames?
-- enable_price_tags: are specific purchasable products, items, or merchandise visibly featured?
+`confidence` (0.0-1.0) reflects evidence quality, and Call 3 reads it as a trust signal:
+  0.8-1.0 unambiguous across the clip | 0.5-0.79 likely but mixed/low-detail | <0.5 too sparse or
+  contradictory — prefer general_content.
 
-`confidence` (0.0–1.0) reflects evidence quality, not category enthusiasm:
-- 0.8–1.0: classification is unambiguous across most/all sampled frames.
-- 0.5–0.79: likely correct, but some frames are inconclusive, low-detail, or mixed-content.
-- 0.0–0.49: too sparse/blurry/static/contradictory to classify confidently.
-
-Safety Rules (`safety.classification`) — these are policy rules, always apply them:
-- "safe": brand-safe, no policy-sensitive content, suitable for ad monetization.
-- "risky": borderline — mild innuendo, implied aggressive language, alcohol/tobacco visible but not the
-  focus, intense-but-non-graphic action, unverified claims-style content.
+`safety.classification`:
+- "safe": brand-safe, monetizable.
+- "risky": borderline — mild innuendo, aggressive language (check the transcript too), alcohol/tobacco visible
+  but not the focus, intense non-graphic action, unverified claims.
 - "blocked": nudity/sexual content, graphic violence/gore, weapons used to threaten, visible drug use,
-  hate symbols or hateful gestures, content endangering minors, self-harm depiction, or copyrighted
-  broadcast footage (sports leagues, films, TV) used as the primary subject.
-If any "blocked" trigger is present, `monetization_safe` must be false regardless of other flags.
+  hate symbols or hateful speech, content endangering minors, self-harm depiction, or copyrighted broadcast
+  footage (sports leagues, films, TV) as the primary subject.
+Any "blocked" trigger forces monetization_safe=false.
 
----
+TASK 3 — WATERMARKS
+Only overlay elements added during recording/editing: burned-in app logos, usernames/handles, platform UI
+chrome (TikTok/CapCut/screen-recorder icons), timestamps, post-added captions, repeated corner/edge branding.
+NOT: shop signage, packaging text, text on clothing, background posters, or any text physically in the scene.
+If unsure whether something is overlay or in-scene, do not report it — a missed watermark is better than a
+false box a downstream tool might crop or blur.
+Give box_2d as [ymin, xmin, ymax, xmax] normalized to 0-1000 over the full frame.
 
-TASK 2 — CONTENT DIRECTOR (Human Editor Intelligence)
+TASK 4 — CONTENT DIRECTOR (brief a human editor who has never seen the footage)
+detected_entities (only visible ones, e.g. "person:female", "environment:indoor"), visual_event (1-2 concrete
+sentences), viewer_attention (what grabs the eye in the first second), internet_context (recognizable
+references, neutral wording), possible_narratives and recommended_narrative from
+[educational_guide, playful_story, tech_breakdown, fitness_motivation, scenic_journey, fashion_moment,
+celebrity_highlight, humor_reaction, recipe_walkthrough, commentary_talk, music_showcase],
+tone from [educational, playful, aspirational, dramatic, humorous, calm_ambient, hype, informative, neutral],
+editing_style from the style list below, engagement_hook (one concrete sentence for what should appear/be said
+in the first 3 seconds, grounded in THIS clip), feature_commands echoing feature_flags.
 
-This block is the richest signal Call 3 receives — write it like you're briefing a human editor who
-has never seen the footage, not like you're filling out a form. All fields are free-form — write
-exactly what you observe, not what fits a predefined list.
+Return ONLY one valid JSON object. No markdown, no commentary.
 
-1. main_subject: the primary human, celebrity, object, or hero entity — use their real name if
-   identifiable (e.g. "Kareena Kapoor", "Virat Kohli", "Porsche 911 GT3"), otherwise describe
-   accurately (e.g. "Fitness model in olive activewear", "Street food chef at outdoor stall").
-2. detected_entities: specific people, objects, brands, garments, environments, or cultural references
-   visible. Be specific and granular. Free-form list of strings.
-3. visual_event: 1-2 concrete, vivid sentences describing what is actually happening across sampled
-   frames. Ground every claim in what is visible. Name specific subjects and actions.
-4. viewer_attention: the single object or subject most likely to grab a viewer's attention in the
-   first frame.
-5. internet_context: recognizable cultural, celebrity, fashion, or viral references visible in the
-   frames. List any events, trends, or contexts you can identify from visual evidence alone.
-6. possible_narratives: list 2-4 specific narrative angles this footage could support as short-form
-   content. Write them as editor briefs, not category labels.
-7. recommended_narrative: the single best narrative angle from your list above. One sentence.
-8. tone: the dominant emotional register of this footage as you observe it. Free-form word or phrase.
-9. editing_style: the editing approach that best fits what you see in the frames. Free-form descriptor.
-10. engagement_hook: one concrete sentence describing what should appear or be said in the first 3
-    seconds — grounded in what is actually in the frames, naming the subject and visual action.
-    Call 3 will act on this directly, so specificity has outsized value.
-11. feature_commands: echo the same feature flags you set in Task 1 for consistency.
-
----
-
-Return ONLY valid JSON. No markdown wrappers, no commentary. Just the JSON object.
-
-Required JSON format:
-{{
-  "intent": "<free-form content label derived from visual observation>",
-  "confidence": <float 0.0-1.0>,
-  "editing_style": "<free-form editing style descriptor>",
-  "feature_flags": {{
-    "enable_price_tags": <bool>,
-    "enable_fashion_caption": <bool>,
-    "enable_cinematic_zoom": <bool>,
-    "enable_speed_ramps": <bool>,
-    "enable_fast_pacing": <bool>,
-    "enable_voiceover": <bool>
-  }},
-  "platform_priority": ["<primary platform>", "<secondary platform>"],
-  "safety": {{
-    "classification": "safe|risky|blocked",
-    "monetization_safe": <bool>
-  }},
-  "content_director": {{
-    "main_subject": "<full name or accurate visual description>",
-    "detected_entities": [],
-    "visual_event": "",
-    "viewer_attention": "",
-    "internet_context": [],
-    "possible_narratives": [],
-    "recommended_narrative": "",
-    "tone": "",
-    "editing_style": "",
+{
+  "overview": {
+    "summary": "",
+    "setting": "",
+    "subjects": [],
+    "spoken_language": "",
+    "narrative_arc": "<hook -> development -> payoff, 1-2 sentences>",
+    "target_audience": "",
+    "on_screen_text_summary": ""
+  },
+  "timeline": [
+    {
+      "start": <float>, "end": <float>, "scene_label": "",
+      "visual": "<detailed, concrete description>",
+      "on_screen_text": [],
+      "shot_type": "closeup|medium|wide|aerial|screen_recording|text_card|other",
+      "camera_motion": "static|pan|zoom|handheld|tracking|mixed",
+      "non_speech_audio": "<music/effects heard, or empty>",
+      "mood": "",
+      "speech_relation": "no_speech|speaker_on_camera|voiceover_matches_visual|voiceover_b_roll|lip_sync_to_audio|singing_performance|speech_unrelated_to_visual|off_screen_speaker",
+      "speech_visual_note": "",
+      "edit_notes": "<what an editor should know: cut-safe, must-keep, trim candidate>"
+    }
+  ],
+  "transcript_alignment": [
+    {"id": <int transcript line id>, "visual_at_time": "", "speaker_on_screen": true|false|null,
+     "relation": "matches_visual|b_roll|speaker_on_camera|mismatch|unclear"}
+  ],
+  "key_moments": [
+    {"time": <float>, "type": "hook|punchline|reveal|peak|cta|transition|product_shown|text_overlay|emotional_beat|other",
+     "description": "", "importance": <int 1-5>}
+  ],
+  "transcript_conflicts": [
+    {"id": <int>, "video_evidence": "", "suggested_text": ""}
+  ],
+  "speaker_analysis": {
+    "visible_people": <int>,
     "is_talking_on_camera": <bool>,
-    "engagement_hook": "",
-    "feature_commands": {{
-      "enable_fast_pacing": <bool>,
-      "enable_cinematic_zoom": <bool>,
-      "enable_speed_ramps": <bool>,
-      "enable_voiceover": <bool>,
-      "enable_price_tags": <bool>,
-      "enable_fashion_caption": <bool>
-    }}
-  }}
-}}
+    "voice_matches_visible_speaker": true|false|null,
+    "notes": ""
+  },
+  "uncertainties": [],
+  "watermarks": [
+    {"box_2d": [<ymin>, <xmin>, <ymax>, <xmax>], "label": "", "first_seen": <float>, "last_seen": <float>, "confidence": <float>}
+  ],
+  "intent": "<intent>",
+  "confidence": <float 0.0-1.0>,
+  "editing_style": "educational_tutorial|playful_animation|fast_social|cinematic|documentary|product_review|fashion_showcase|vlog|news|podcast_clip",
+  "feature_flags": {
+    "enable_price_tags": <bool>, "enable_fashion_caption": <bool>, "enable_cinematic_zoom": <bool>,
+    "enable_speed_ramps": <bool>, "enable_fast_pacing": <bool>, "enable_voiceover": <bool>
+  },
+  "platform_priority": ["youtube_shorts", "instagram_reels", "facebook_reels"],
+  "safety": {"classification": "safe|risky|blocked", "monetization_safe": <bool>},
+  "content_director": {
+    "detected_entities": [], "visual_event": "", "viewer_attention": "", "internet_context": [],
+    "possible_narratives": [], "recommended_narrative": "", "tone": "", "editing_style": "",
+    "is_talking_on_camera": <bool>, "engagement_hook": "",
+    "feature_commands": {
+      "enable_fast_pacing": <bool>, "enable_cinematic_zoom": <bool>, "enable_speed_ramps": <bool>,
+      "enable_voiceover": <bool>, "enable_price_tags": <bool>, "enable_fashion_caption": <bool>
+    }
+  }
+}
 
-Frame dimensions: {width}x{height} pixels.
-Number of frames provided: {frame_count}
+<<TRANSCRIPT_BLOCK>>
+Creator Handle Hint: '<<CREATOR>>'
 """
 
+_BGM_TASK = """
+---
 
-# ── Default fallback ──────────────────────────────────────────────────────────
+TASK 5 — BGM AUDIO SELECTION & CREATIVE POSSIBILITIES
 
-DEFAULT_RESULT = {
-    "_failed":                   True,
-    "watermarks":                [],
-    "intent":                    "unknown",
-    "confidence":                0.0,
-    "editing_style":             "cinematic",
-    "main_subject":              "",
-    "is_talking_on_camera":      False,
-    "content_director":          {},
-    "feature_flags": {
-        "enable_price_tags":      False,
-        "enable_fashion_caption": False,
-        "enable_cinematic_zoom":  True,
-        "enable_speed_ramps":     False,
-        "enable_fast_pacing":     False,
-        "enable_voiceover":       True,
-    },
-    "platform_priority": ["youtube_shorts", "instagram_reels", "facebook_reels"],
-    "safety": {
-        "classification":    "risky",
-        "monetization_safe": False,
-    },
-    # Backward-compat wrapper so orchestrator.get("content_strategy") still works
-    "content_strategy": {
-        "intent":                    "unknown",
-        "confidence":                0.0,
-        "recommended_editing_style": "cinematic",
-        "feature_flags": {
-            "enable_price_tags":      False,
-            "enable_fashion_caption": False,
-            "enable_cinematic_zoom":  True,
-            "enable_speed_ramps":     False,
-            "enable_fast_pacing":     False,
-            "enable_voiceover":       True,
+[Candidate Background Music Tracks Available]
+<<AUDIO_TABLE>>
+
+Judge the video (and its speech, per the transcript) against the candidate tracks:
+1. "selected_audio_track": the SINGLE best matching track filename (e.g. 'Fit_girl_2.mp3').
+2. "creative_possibilities": 2-3 edit options as objects:
+   [{"rank": 1, "clip_label": "hero_hook", "target_duration_sec": 15, "editing_style": "rhythm_driven"},
+    {"rank": 2, "clip_label": "action_cut", "target_duration_sec": 30, "editing_style": "fast_cuts"}]
+Add both fields to the returned JSON object.
+"""
+
+# ── Defaults ──────────────────────────────────────────────────────────────────
+
+def _default_result() -> Dict[str, Any]:
+    flags = {
+        "enable_price_tags": False, "enable_fashion_caption": False,
+        "enable_cinematic_zoom": True, "enable_speed_ramps": False,
+        "enable_fast_pacing": False, "enable_voiceover": True,
+    }
+    return {
+        "watermarks": [],
+        "intent": "unknown",
+        "confidence": 0.0,
+        "editing_style": "cinematic",
+        "feature_flags": dict(flags),
+        "platform_priority": ["youtube_shorts", "instagram_reels", "facebook_reels"],
+        "safety": {"classification": "risky", "monetization_safe": False},
+        "content_strategy": {
+            "intent": "unknown", "confidence": 0.0,
+            "recommended_editing_style": "cinematic",
+            "feature_flags": dict(flags), "safety": "risky",
         },
-        "safety": "risky",
-    },
-}
+    }
+
+
+DEFAULT_RESULT = _default_result()
+
+
+# ── Small helpers ─────────────────────────────────────────────────────────────
+
+def _f(v: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    try:
+        if v is None:
+            return default
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _s(v: Any) -> str:
+    return "" if v is None else str(v).strip()
+
+
+def _str_list(v: Any) -> List[str]:
+    return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+
+
+def _clamp01(v: Any, default: float = 0.5) -> float:
+    return max(0.0, min(1.0, _f(v, default)))
+
+
+def _enum(v: Any, allowed: set, default: str) -> str:
+    v = _s(v).lower()
+    return v if v in allowed else default
+
+
+def _clean_json(text: str) -> str:
+    if not text:
+        return ""
+    text = str(text)
+    if "```" in text:
+        m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+        text = m.group(1) if m else text.replace("```json", "").replace("```", "")
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start:end + 1]
+    return re.sub(r",\s*([\]}])", r"\1", text.strip())
+
+
+def _fmt_ts(t: float) -> str:
+    t = max(0.0, float(t))
+    return f"{int(t // 60):02d}:{t % 60:04.1f}"
+
+
+# ── Normalizers (pure functions) ──────────────────────────────────────────────
+
+def _normalize_timeline(raw: Any, duration: float) -> Tuple[List[Dict[str, Any]], float]:
+    """Clamp, sort, de-overlap. Returns (timeline, coverage_ratio)."""
+    items = []
+    if isinstance(raw, list):
+        for e in raw:
+            if not isinstance(e, dict):
+                continue
+            s, en = _f(e.get("start"), None), _f(e.get("end"), None)
+            if s is None or en is None:
+                continue
+            s = max(0.0, s)
+            if duration:
+                en = min(duration, en)
+            if en > s:
+                items.append((s, en, e))
+    items.sort(key=lambda x: x[0])
+
+    out, prev_end = [], 0.0
+    for s, en, e in items:
+        s = max(s, prev_end)
+        if en - s < 0.05:
+            continue
+        out.append({
+            "start": round(s, 2), "end": round(en, 2),
+            "scene_label": _s(e.get("scene_label")),
+            "visual": _s(e.get("visual")),
+            "on_screen_text": _str_list(e.get("on_screen_text")),
+            "shot_type": _enum(e.get("shot_type"), SHOT_TYPES, "other"),
+            "camera_motion": _enum(e.get("camera_motion"), CAMERA_MOTIONS, "static"),
+            "non_speech_audio": _s(e.get("non_speech_audio")),
+            "mood": _s(e.get("mood")),
+            "speech_relation": _enum(e.get("speech_relation"), SPEECH_RELATIONS, "no_speech"),
+            "speech_visual_note": _s(e.get("speech_visual_note")),
+            "edit_notes": _s(e.get("edit_notes")),
+        })
+        prev_end = en
+    covered = sum(x["end"] - x["start"] for x in out)
+    return out, round(covered / duration, 3) if duration else 0.0
+
+
+def _attach_transcript(
+    timeline: List[Dict[str, Any]],
+    alignment_raw: Any,
+    conflicts_raw: Any,
+    transcript: Optional[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[int]]:
+    segs = (transcript or {}).get("segments") or []
+    by_id = {s["id"]: s for s in segs}
+
+    covered_ids = set()
+    for e in timeline:
+        ov = [s for s in segs if s["start"] < e["end"] and s["end"] > e["start"]]
+        covered_ids.update(s["id"] for s in ov)
+        e["speech_segments"] = [{"id": s["id"], "start": s["start"], "end": s["end"], "text": s["text"]} for s in ov]
+        e["speech_text"] = " ".join(s["text"] for s in ov)
+        if ov and e["speech_relation"] == "no_speech":
+            e["speech_relation"] = "unspecified"
+        if not ov and segs and e["speech_relation"] in _SPOKEN_RELATIONS:
+            e["speech_relation"] = "no_speech"
+
+    gem_align: Dict[int, Dict[str, Any]] = {}
+    if isinstance(alignment_raw, list):
+        for a in alignment_raw:
+            try:
+                gem_align[int(a.get("id"))] = a
+            except (TypeError, ValueError, AttributeError):
+                continue
+    alignment = []
+    for s in segs:
+        a = gem_align.get(s["id"], {})
+        on_screen = a.get("speaker_on_screen")
+        alignment.append({
+            "id": s["id"], "start": s["start"], "end": s["end"], "text": s["text"],
+            "visual_at_time": _s(a.get("visual_at_time")),
+            "speaker_on_screen": on_screen if isinstance(on_screen, bool) else None,
+            "relation": _enum(a.get("relation"), ALIGN_RELATIONS, "unclear"),
+        })
+
+    conflicts = []
+    if isinstance(conflicts_raw, list):
+        for c in conflicts_raw:
+            try:
+                cid = int(c.get("id"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if cid in by_id and _s(c.get("suggested_text")):
+                conflicts.append({
+                    "id": cid, "transcript_text": by_id[cid]["text"],
+                    "video_evidence": _s(c.get("video_evidence")),
+                    "suggested_text": _s(c.get("suggested_text")),
+                })
+    uncovered = sorted(i for i in by_id if i not in covered_ids)
+    return timeline, alignment, conflicts, uncovered
+
+
+def _normalize_key_moments(raw: Any, duration: float) -> List[Dict[str, Any]]:
+    out = []
+    if isinstance(raw, list):
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            t = _f(m.get("time"), None)
+            if t is None or t < 0 or (duration and t > duration + 0.5):
+                continue
+            out.append({
+                "time": round(min(t, duration) if duration else t, 2),
+                "type": _enum(m.get("type"), MOMENT_TYPES, "other"),
+                "description": _s(m.get("description")),
+                "importance": int(max(1, min(5, _f(m.get("importance"), 3)))),
+            })
+    return sorted(out, key=lambda x: x["time"])
+
+
+def _convert_watermarks(raw: Any, src_w: int, src_h: int, duration: float) -> List[Dict[str, Any]]:
+    """Gemini box_2d (0-1000 normalized) -> source-pixel x,y,w,h, with sanity rejection."""
+    out = []
+    if not isinstance(raw, list) or src_w <= 0 or src_h <= 0:
+        return out
+    for wm in raw:
+        box = wm.get("box_2d") if isinstance(wm, dict) else None
+        if not (isinstance(box, (list, tuple)) and len(box) == 4):
+            continue
+        try:
+            ymin, xmin, ymax, xmax = [max(0.0, min(1000.0, float(v))) for v in box]
+        except (TypeError, ValueError):
+            continue
+        if xmax <= xmin or ymax <= ymin:
+            continue
+        if (xmax - xmin) * (ymax - ymin) / 1e6 > _MAX_WATERMARK_AREA:
+            logger.info("🔬 Dropped implausibly large watermark box (likely scene content).")
+            continue
+        x, y = int(round(xmin / 1000 * src_w)), int(round(ymin / 1000 * src_h))
+        w, h = int(round((xmax - xmin) / 1000 * src_w)), int(round((ymax - ymin) / 1000 * src_h))
+        if w < 2 or h < 2:
+            continue
+        out.append({
+            "x": x, "y": y, "w": w, "h": h,
+            "norm_box": [round(ymin), round(xmin), round(ymax), round(xmax)],
+            "label": _s(wm.get("label")),
+            "first_seen": round(max(0.0, _f(wm.get("first_seen"), 0.0)), 2),
+            "last_seen": round(min(duration, _f(wm.get("last_seen"), duration)) if duration else _f(wm.get("last_seen"), 0.0), 2),
+            "confidence": round(_clamp01(wm.get("confidence"), 0.5), 2),
+            "coord_space": f"source_{src_w}x{src_h}",
+        })
+    return out
+
+
+def _derive_speech_intel(is_talking: bool, transcript: Optional[Dict[str, Any]], p1_audio: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    has_audio = bool(p1_audio.get("has_audio", True)) if p1_audio else True
+    if transcript is not None:
+        has_vocals = bool(transcript.get("has_speech"))
+        is_speech_vocal = has_vocals and not bool(transcript.get("is_singing"))
+    elif p1_audio:
+        has_vocals = bool(p1_audio.get("has_vocals", False))
+        is_speech_vocal = bool(p1_audio.get("is_speech_vocal", False))
+    else:
+        has_vocals, is_speech_vocal = is_talking, is_talking
+
+    if not has_vocals:
+        mode, action = "silent_broll", "audio_replace_full_bgm"
+    elif is_talking and is_speech_vocal:
+        mode, action = "on_camera_dialogue", "preserve_voice_duck_bgm"
+    elif is_talking and not is_speech_vocal:
+        mode, action = "lip_sync_dub", "audio_replace_full_bgm"
+    elif not is_talking and is_speech_vocal:
+        mode, action = "voiceover_narration", "preserve_voice_duck_bgm"
+    else:
+        mode, action = "music_broll", "audio_replace_full_bgm"
+    if not has_audio:
+        mode, action = "silent_broll", "audio_replace_full_bgm"
+    return {
+        "speech_mode": mode,
+        "is_talking_visually": is_talking,
+        "has_spoken_vocal": has_vocals,
+        "is_speech_vocal": is_speech_vocal,
+        "recommended_audio_action": action,
+    }
+
+
+def _derive_visual_vectors(va: Dict[str, Any], duration: float) -> Dict[str, Any]:
+    ts = {0.0}
+    for e in va.get("timeline", []):
+        ts.add(round(e["start"], 2))
+        ts.add(round((e["start"] + e["end"]) / 2, 2))
+    for m in va.get("key_moments", []):
+        ts.add(m["time"])
+    targeted = sorted(t for t in ts if 0 <= t <= (duration or 1e9))
+    cuts = sorted({e["start"] for e in va.get("timeline", []) if e["start"] > 0.05})
+
+    climax = None
+    ranked = [m for m in va.get("key_moments", []) if m["type"] in ("peak", "reveal", "punchline")]
+    if ranked:
+        climax = max(ranked, key=lambda m: m["importance"])["time"]
+    if climax is None:
+        climax = round(duration * 0.75, 2) if duration else 10.0
+    return {
+        "targeted_timestamps_sec": targeted,
+        "scene_cut_timestamps": cuts,
+        "hook_zone_end_sec": round(min(5.0, duration), 2) if duration else 5.0,
+        "climax_zone_start_sec": climax,
+    }
+
+
+# ── Report renderer ───────────────────────────────────────────────────────────
+
+def render_explanation(result: Dict[str, Any]) -> str:
+    """Human-readable, timestamped explanation: visuals and speech interleaved."""
+    va = result.get("video_analysis") or {}
+    ov = va.get("overview") or {}
+    lines = []
+    lines.append("VIDEO EXPLANATION")
+    lines.append("=" * 60)
+    if ov.get("summary"):
+        lines += [ov["summary"], ""]
+    for label, key in (("Setting", "setting"), ("Language", "spoken_language"),
+                       ("Arc", "narrative_arc"), ("Audience", "target_audience"),
+                       ("On-screen text", "on_screen_text_summary")):
+        if ov.get(key):
+            lines.append(f"{label}: {ov[key]}")
+    if ov.get("subjects"):
+        lines.append("Subjects: " + ", ".join(ov["subjects"]))
+    lines.append(f"Intent: {result.get('intent')} (confidence {result.get('confidence')}) | "
+                 f"Style: {result.get('editing_style')} | Safety: {result.get('safety', {}).get('classification')}")
+
+    lines += ["", "TIMELINE", "-" * 60]
+    for e in va.get("timeline", []):
+        lines.append(f"[{_fmt_ts(e['start'])} - {_fmt_ts(e['end'])}] {e.get('scene_label') or 'scene'}  "
+                     f"({e['shot_type']}, {e['camera_motion']}, {e['mood'] or 'neutral'})")
+        lines.append(f"  VISUAL : {e['visual']}")
+        if e.get("on_screen_text"):
+            lines.append(f"  TEXT   : {' | '.join(e['on_screen_text'])}")
+        if e.get("non_speech_audio"):
+            lines.append(f"  AUDIO  : {e['non_speech_audio']}")
+        for s in e.get("speech_segments", []):
+            lines.append(f"  SPEECH : [{_fmt_ts(s['start'])}-{_fmt_ts(s['end'])}] \"{s['text']}\"")
+        lines.append(f"  LINK   : {e['speech_relation']}" + (f" — {e['speech_visual_note']}" if e.get("speech_visual_note") else ""))
+        if e.get("edit_notes"):
+            lines.append(f"  EDIT   : {e['edit_notes']}")
+        lines.append("")
+
+    if va.get("key_moments"):
+        lines += ["KEY MOMENTS", "-" * 60]
+        for m in va["key_moments"]:
+            lines.append(f"[{_fmt_ts(m['time'])}] {m['type']} (importance {m['importance']}): {m['description']}")
+        lines.append("")
+    if va.get("transcript_conflicts"):
+        lines += ["TRANSCRIPT CONFLICTS (video evidence)", "-" * 60]
+        for c in va["transcript_conflicts"]:
+            lines.append(f"#{c['id']}: \"{c['transcript_text']}\" -> \"{c['suggested_text']}\"  [{c['video_evidence']}]")
+        lines.append("")
+    if va.get("uncertainties"):
+        lines += ["UNCERTAINTIES", "-" * 60] + [f"- {u}" for u in va["uncertainties"]] + [""]
+    return "\n".join(lines)
 
 
 # ── Main class ────────────────────────────────────────────────────────────────
 
 class ForensicVideoAnalyzer:
     """
-    Extracts frames from a video and sends them to Gemini Vision for forensic analysis.
-
     Usage:
         analyzer = ForensicVideoAnalyzer()
-        result = analyzer.analyze(video_path)
-        # result is a dict matching the JSON schema above
+        result = analyzer.analyze(video_path)                       # auto Whisper -> corrector
+        result = analyzer.analyze(video_path, transcript=my_final)  # bring your own transcript
+        print(render_explanation(result))
     """
-
-    # How many frames to sample from the video (spread evenly)
-    FRAME_COUNT = 5
-    # Target resolution for frames sent to Gemini (keeps token count low)
-    FRAME_WIDTH = 640
-    FRAME_HEIGHT = 360
 
     def __init__(self):
         self.router = gemini_router
-        self._available = bool(self.router is not None)
+        self._api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        self._available = bool(self._api_key)
         if not self._available:
-            logger.warning("🔬 ForensicAnalyzer: gemini_router unavailable — will return defaults")
-            return
-
-        model_name = os.getenv("GEMINI_MODEL")
-        logger.info(f"🔬 ForensicAnalyzer: ACTIVE (model={model_name})")
+            logger.warning("🔬 ForensicAnalyzer: GEMINI_API_KEY not set — will return defaults")
+        else:
+            logger.info(f"🔬 ForensicAnalyzer: ACTIVE (video+transcript mode, router={'yes' if self.router else 'no'})")
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def analyze(self, video_path: str,
-                frame_paths: Optional[List[str]] = None,
-                creator_name: Optional[str] = None,
-                audio_candidates: Optional[List[dict]] = None) -> dict:
-        """
-        Perform forensic & scene analysis on a video.
-
-        Args:
-            video_path:       Path to source video file.
-            frame_paths:      Optional list of pre-extracted frame image paths.
-            creator_name:     Optional creator handle/title hint for face cache RAG.
-            audio_candidates: Optional list of candidate BGM audio metadata dicts.
-        """
-        clip_folder = os.path.dirname(os.path.abspath(video_path))
-        clip_id = os.path.basename(clip_folder)
-        scene_context = {}
-        tmp_dir = None
-        own_frames = False
-
+    def analyze(
+        self,
+        video_path: str,
+        frame_paths: Optional[List[str]] = None,       # accepted for compatibility; ignored (video mode)
+        creator_name: Optional[str] = None,
+        audio_candidates: Optional[List[dict]] = None,
+        transcript: Optional[Dict[str, Any]] = None,   # output of transcript_corrector.correct_transcript()
+        use_cache: bool = True,
+    ) -> dict:
+        scene_context: Dict[str, Any] = {}
         try:
-            # ── Pre-Pipeline Scene & Face Intelligence ─────────────────────────
-            try:
-                try:
-                    from Core_Modules.scene_intel import analyze_scene_pre_pipeline
-                except ImportError:
-                    from Gemini_Modules.scene_intel import analyze_scene_pre_pipeline
-                scene_context = analyze_scene_pre_pipeline(video_path, creator_name=creator_name)
-                logger.info(
-                    f"👤 SceneIntel: faces={scene_context.get('num_detected_faces')} | "
-                    f"subjects={scene_context.get('num_subjects')} | "
-                    f"face_cache={scene_context.get('face_cache_status')}"
-                )
-            except Exception as sie:
-                logger.debug(f"SceneIntel fallback: {sie}")
-
+            scene_context = self._scene_intel(video_path, creator_name)
+            if frame_paths:
+                logger.debug("🔬 frame_paths ignored — analyzer now sends the compressed video.")
             if not self._available:
-                logger.info("🔬 ForensicAnalyzer skipped (unavailable)")
-                res = copy.deepcopy(DEFAULT_RESULT)
-                res["scene_context"] = scene_context
-                res.pop("_failed", None)
-                return res
+                return self._fallback("analyzer_unavailable", scene_context)
+            if not video_path or not os.path.isfile(video_path):
+                return self._fallback("video_not_found", scene_context)
 
-            # ── Step 0: Ensure 480p Proxy Video exists for Gemini & Sampling ──
-            proxy_video_path = None
+            clip_folder = os.path.dirname(os.path.abspath(video_path))
+            clip_id = os.path.basename(clip_folder)
+            p1_audio = self._load_p1_audio(clip_folder)
+
+            # 1. Compressed video
             try:
-                from Main_Modules.proxy_encoder import ensure_proxy
-                proxy_video_path = ensure_proxy(video_path)
-                logger.info(f"🔬 ForensicAnalyzer: Using 480p proxy for analysis: {proxy_video_path}")
+                proxy = self._prepare_proxy(video_path, clip_folder)
             except Exception as pe:
-                logger.debug(f"🔬 ForensicAnalyzer: Proxy encode notice ({pe}); falling back to source video")
-                proxy_video_path = video_path
+                logger.error(f"🔬 Proxy encode failed: {pe}")
+                return self._fallback(f"proxy_encode_failed: {pe}", scene_context)
 
-            # ── Step 1: Extract frames (Hook-Dense Strategic Sampler) ─────────
-            sampling_context = None
-            if frame_paths and all(os.path.exists(p) for p in frame_paths):
-                frames = frame_paths
-            else:
-                tmp_dir = tempfile.mkdtemp(prefix="forensic_frames_")
-                own_frames = True
-                sampling_target = proxy_video_path if (proxy_video_path and os.path.exists(proxy_video_path)) else video_path
+            # 2. Final transcript (Whisper -> Gemini corrector), or the one supplied
+            transcript = self._resolve_transcript(transcript, video_path, clip_folder, clip_id, proxy, p1_audio, creator_name)
+
+            # 3. Gemini (cached on proxy + transcript + inputs)
+            cache_path = os.path.join(clip_folder, "forensic_analysis.json")
+            key = self._cache_key(proxy, transcript, creator_name, audio_candidates)
+            result = self._load_cache(cache_path, key) if use_cache else None
+            if result is None:
+                prompt = self._build_prompt(proxy, transcript, creator_name, audio_candidates)
                 try:
-                    try:
-                        from Main_Modules.strategic_frame_sampler import extract_strategic_frame_files
-                    except ImportError:
-                        from Core_Modules.scene_intel import extract_strategic_frame_files
-                    res_frames = extract_strategic_frame_files(sampling_target, tmp_dir, return_meta=True)
-                    if isinstance(res_frames, tuple):
-                        frames, sample_meta = res_frames
-                        sampling_context = self._build_sampling_note(sample_meta)
-                    else:
-                        frames = res_frames
-                    logger.info(f"🔬 ForensicAnalyzer: loaded {len(frames)} strategic hook-dense frames")
-                except Exception as sse:
-                    logger.debug(f"Strategic frame extraction notice ({sse}); using ffmpeg frame extraction")
-                    frames = self._extract_frames(sampling_target, tmp_dir)
-                    sampling_context = None
+                    data = self._call_gemini(proxy, prompt)
+                except Exception as ge:
+                    logger.error(f"🔬 Gemini video analysis failed: {ge}")
+                    return self._fallback(f"gemini_failed: {ge}", scene_context, transcript)
+                result = self._build_result(data, proxy, transcript)
+                self._save_cache(cache_path, key, result)
 
-            if not frames:
-                logger.warning("🔬 ForensicAnalyzer: no frames extracted — returning default")
-                res = copy.deepcopy(DEFAULT_RESULT)
-                res["scene_context"] = scene_context
-                res.pop("_failed", None)
-                return res
-
-            # ── Step 2: Build Gemini payload with audio candidate table + proxy video ───────
-            result = self._call_gemini_with_audio(
-                frames,
-                creator_name=creator_name,
-                clip_dir=clip_folder,
-                audio_candidates=audio_candidates,
-                sampling_context=sampling_context,
-                video_proxy_path=proxy_video_path
-            )
             result["scene_context"] = scene_context
 
-            # Skip persistence if analysis failed to avoid store pollution
-            is_failed = bool(result.pop("_failed", False)) or (result.get("confidence", 0.0) == 0.0 and result.get("intent") == "unknown")
-            if is_failed:
-                logger.warning(f"🔬 ForensicAnalyzer: Analysis flagged as failed — skipping persistence for '{clip_id}'.")
-                return result
-
-            # ── Step 2.5: Save to Master ClipIntelligenceStore (Schema v3) ──
-            try:
-                from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
-                from Audio_Modules.audio_extractor import load_audio_analysis
-
-                store = ClipIntelligenceStore()
-                clip_data = store.load(clip_id, clip_folder) or store.create_blank(clip_id, clip_folder)
-
-                # 1. Fill audio_data.math FIRST from Phase 1 DSP audio_analysis.json
-                p1_audio = load_audio_analysis(clip_folder)
-                if p1_audio:
-                    store.patch_audio_math(clip_data, {
-                        "tempo_bpm": p1_audio.get("tempo_bpm", 120.0),
-                        "beat_timestamps": p1_audio.get("beats", []),
-                        "drop_timestamps": p1_audio.get("drops", []),
-                        "avg_energy": p1_audio.get("avg_energy", 0.5),
-                        "vibe": p1_audio.get("vibe", "unknown"),
-                        "beat_count": p1_audio.get("beat_count", len(p1_audio.get("beats", []))),
-                        "drop_count": p1_audio.get("drop_count", len(p1_audio.get("drops", []))),
-                        "wav_path": p1_audio.get("wav_path"),
-                    })
-
-                # 2. Fill visual_context SECOND (Gemini visual semantic context)
-                cd_block = result.get("content_director", {})
-                discovered_subject = cd_block.get("main_subject") or result.get("main_subject") or ""
-
-                visual_ctx = {
-                    "main_subject": discovered_subject,
-                    "person_name": discovered_subject,
-                    "visual_event": cd_block.get("visual_event", ""),
-                    "intent": result.get("intent", "viral_reel"),
-                    "tone": cd_block.get("tone", "aspirational"),
-                    "editing_style": result.get("editing_style", "cinematic"),
-                    "engagement_hook": cd_block.get("engagement_hook", ""),
-                    "detected_entities": cd_block.get("detected_entities", []),
-                    "possible_narratives": cd_block.get("possible_narratives", []),
-                    "recommended_narrative": cd_block.get("recommended_narrative", ""),
-                    "feature_flags": result.get("feature_flags", {}),
-                    "safety": result.get("safety", {}),
-                    "creative_possibilities": result.get("creative_possibilities", []),
-                    "content_director": cd_block,
-                }
-                # Calculate 3-Signal speech_intelligence (Vision Talking + Audio Vocals + Speech Formants)
-                is_talking = bool(result.get("is_talking_on_camera") or cd_block.get("is_talking_on_camera", False) or result.get("intent") == "talking_head")
-                has_audio = bool(p1_audio.get("has_audio", True)) if p1_audio else True
-                has_vocals = bool(p1_audio.get("has_vocals", True)) if p1_audio else is_talking
-                is_speech_vocal = bool(p1_audio.get("is_speech_vocal", True)) if p1_audio else is_talking
-
-                if is_talking and has_vocals and is_speech_vocal:
-                    speech_mode = "on_camera_dialogue"
-                    rec_action = "preserve_voice_duck_bgm"
-                elif is_talking and has_vocals and not is_speech_vocal:
-                    # On-camera musical performance / lip-sync: preserve original song sync
-                    speech_mode = "lip_sync_dub"
-                    rec_action = "preserve_original_audio"
-                elif not is_talking and has_vocals and is_speech_vocal:
-                    speech_mode = "voiceover_narration"
-                    rec_action = "preserve_voice_duck_bgm"
-                elif not is_talking and has_vocals and not is_speech_vocal:
-                    speech_mode = "music_broll"
-                    rec_action = "audio_replace_full_bgm"
-                elif not has_vocals:
-                    speech_mode = "silent_broll"
-                    rec_action = "audio_replace_full_bgm"
-                else:
-                    # SAFE DEFAULT: Default to preserving voice if audio is present!
-                    speech_mode = "on_camera_dialogue" if has_audio else "silent_broll"
-                    rec_action = "preserve_voice_duck_bgm" if has_audio else "audio_replace_full_bgm"
-
-                speech_intel = {
-                    "speech_mode": speech_mode,
-                    "is_talking_visually": is_talking,
-                    "has_spoken_vocal": has_vocals,
-                    "is_speech_vocal": is_speech_vocal,
-                    "recommended_audio_action": rec_action
-                }
-                result["speech_intelligence"] = speech_intel
-                visual_ctx["speech_intelligence"] = speech_intel
-
-                store.patch_visual_context(clip_data, visual_ctx)
-
-                # 3. Fill audio_data.context THIRD (Gemini audio semantic context into same audio_data block)
-                audio_ctx = {
-                    "has_vocals": has_vocals,
-                    "speech_mode": speech_mode,
-                    "recommended_audio_action": rec_action,
-                    "dominant_emotion": result.get("content_director", {}).get("tone", "hype"),
-                    "vibe": result.get("editing_style", "rhythm_driven"),
-                }
-                store.patch_audio_context(clip_data, audio_ctx)
-
-                # 4. Fill visual_vectors FOURTH (Mathematical targeting timestamps for OpenCV)
-                # Compute strategic targeting timestamps
-                targeted_ts = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
-                if isinstance(result.get("creative_possibilities"), list):
-                    for cp in result["creative_possibilities"]:
-                        if isinstance(cp, dict) and "target_duration_sec" in cp:
-                            dur = float(cp["target_duration_sec"])
-                            targeted_ts.extend([round(dur * 0.25, 2), round(dur * 0.5, 2), round(dur * 0.75, 2), round(dur, 2)])
-                targeted_ts = sorted(list(set(targeted_ts)))
-
-                vectors = {
-                    "targeted_timestamps_sec": targeted_ts,
-                    "scene_cut_timestamps": [t for t in targeted_ts if t > 2.0],
-                    "hook_zone_end_sec": 5.0,
-                    "climax_zone_start_sec": max(targeted_ts) if targeted_ts else 10.0,
-                }
-                store.patch_visual_vectors(clip_data, vectors)
-
-                # Save updated clip intelligence JSON to disk and pool_metadata.json
-                store.save(clip_id, clip_data, clip_folder)
-                result["clip_intelligence"] = clip_data
-                result["visual_vectors"] = vectors
-                logger.info(f"🧠 [ClipIntelligenceStore] Updated clip '{clip_id}' -> speech_mode='{speech_mode}' ({rec_action}).")
-            except Exception as store_err:
-                logger.warning(f"🧠 [ClipIntelligenceStore] Update warning: {store_err}")
-
-            # ── Step 2.6: Write full forensic result to pool_metadata.json ────
-            # Key: gemini_semantic_visual_intelligence
-            # Written & saved by AudioPoolManager so Telegram vault sync is automatic.
-            try:
-                from Audio_Modules.audio_pool_manager import AudioPoolManager
-                _pool_mgr = AudioPoolManager()
-                _semantic_payload = {
-                    "intent":                result.get("intent", "unknown"),
-                    "confidence":            result.get("confidence", 0.0),
-                    "editing_style":         result.get("editing_style", "cinematic"),
-                    "feature_flags":         result.get("feature_flags", {}),
-                    "platform_priority":     result.get("platform_priority", []),
-                    "safety":                result.get("safety", {}),
-                    "speech_intelligence":   result.get("speech_intelligence", {}),
-                    "content_director":      result.get("content_director", {}),
-                    "selected_audio_track":  result.get("selected_audio_track", ""),
-                    "creative_possibilities":result.get("creative_possibilities", []),
-                    "scene_context":         result.get("scene_context", {}),
-                    "updated_at":            __import__("time").time(),
-                }
-                # Remove root level key if present
-                _pool_mgr.metadata.pop("gemini_semantic_visual_intelligence", None)
-
-                # Also inject into matching entry inside files["social_media_id"]
-                files_dict = _pool_mgr.metadata.get("files", {})
-                social_entries = files_dict.get("social_media_id", {})
-                if isinstance(social_entries, dict):
-                    for url_key, entry_dict in social_entries.items():
-                        if isinstance(entry_dict, dict):
-                            sc = str(entry_dict.get("shortcode", "")).strip()
-                            # 1. Exact non-empty shortcode match against clip_id
-                            sc_match = bool(sc and sc == clip_id)
-                            # 2. Exact URL path segment match (prevents 1-2 char substring collision)
-                            url_segments = [p for p in re.split(r'[/_\\?&=]', url_key) if p]
-                            url_match = bool(clip_id and clip_id in url_segments)
-
-                            if sc_match or url_match:
-                                entry_dict["gemini_semantic_visual_intelligence"] = _semantic_payload
-                                logger.info(f"📊 [ForensicAnalyzer] Injected gemini_semantic_visual_intelligence into files['social_media_id']['{url_key}']")
-
-                _pool_mgr._save_metadata(sync_to_vault=True)
-                logger.info(
-                    "📊 [ForensicAnalyzer] Saved gemini_semantic_visual_intelligence -> pool_metadata.json "
-                    f"(intent={_semantic_payload['intent']}, safety={_semantic_payload.get('safety', {}).get('classification', '?')})"
-                )
-            except Exception as _pm_err:
-                logger.warning(f"📊 [ForensicAnalyzer] pool_metadata write warning: {_pm_err}")
-
+            # 4. Clip intelligence store (speech mode, visual context, real visual vectors)
+            self._update_clip_store(video_path, clip_folder, clip_id, result, transcript, p1_audio, proxy)
             return result
 
         except Exception as e:
-            import traceback
-            logger.error(f"🔬 ForensicAnalyzer: unexpected error — {e}\n{traceback.format_exc()}")
-            res = copy.deepcopy(DEFAULT_RESULT)
-            res["scene_context"] = scene_context
-            res.pop("_failed", None)
-            return res
+            logger.error(f"🔬 ForensicAnalyzer: unexpected error — {e}")
+            return self._fallback(f"unexpected: {e}", scene_context)
 
-        finally:
-            # ── Step 3: Cleanup temporary extracted frames ────────────────────
-            if own_frames and tmp_dir and os.path.isdir(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+    # ── Fallback ───────────────────────────────────────────────────────────────
 
-    def _build_sampling_note(self, sample_meta: dict) -> str:
-        """Build a factual sampling-zone note from actual sampler output."""
-        if not sample_meta or not isinstance(sample_meta, dict):
-            return ""
-        hook = sample_meta.get("hook_count")
-        body = sample_meta.get("body_count")
-        climax = sample_meta.get("climax_count")
-        motion = sample_meta.get("motion_count")
-        if hook is None or body is None:
-            return ""
-        return (
-            f"[FRAME SAMPLING CONTEXT] {hook} hook frames (0-5s, dense), "
-            f"{body} body frames (sparse, evenly spaced)"
-            + (f", {climax} climax frames (last 10s, dense)" if climax else "")
-            + (f", {motion} peak-motion frames (optical flow)" if motion else "")
-            + ". Hook zone is intentionally over-represented — weight body/climax frames "
-            "at least equally when judging overall tone, don't let the hook dominate the classification."
-        )
+    def _fallback(self, reason: str, scene_context: Optional[dict] = None, transcript: Optional[dict] = None) -> dict:
+        res = _default_result()
+        res["scene_context"] = scene_context or {}
+        res["_error"] = reason
+        if transcript is not None:
+            res["transcript_meta"] = self._transcript_meta(transcript)
+        return res
 
-    def _extract_frames(self, video_path: str, out_dir: str) -> List[str]:
-        """
-        Extract FRAME_COUNT frames evenly spread across the video using FFmpeg.
-        Returns list of absolute paths to extracted JPEG files.
-        """
-        if not os.path.exists(video_path):
-            logger.warning(f"🔬 Frame extraction: video not found — {video_path}")
-            return []
+    # ── Stage helpers ──────────────────────────────────────────────────────────
 
+    def _scene_intel(self, video_path: str, creator_name: Optional[str]) -> dict:
         try:
-            # Get duration via ffprobe (checking format=duration and stream=duration for v:0)
-            probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "format=duration:stream=duration",
-                 "-of", "json", video_path],
-                capture_output=True, text=True, timeout=15
-            )
-            dur_data = json.loads(probe.stdout)
-            fmt_dur = dur_data.get("format", {}).get("duration")
-            streams = dur_data.get("streams", [])
-            stream_dur = streams[0].get("duration") if streams else None
             try:
-                duration = float(fmt_dur or stream_dur or 10.0)
-            except (ValueError, TypeError):
-                duration = 10.0
-        except Exception as pe:
-            logger.warning(f"🔬 Frame extraction: duration probe failed — {pe}")
-            duration = 10.0
-
-        n = self.FRAME_COUNT
-        interval = max(0.5, duration / (n + 1))
-        frame_paths = []
-
-        for i in range(1, n + 1):
-            ts = round(i * interval, 2)
-            out_path = os.path.join(out_dir, f"frame_{i:02d}.jpg")
-            cmd = [
-                "ffmpeg", "-y", "-ss", str(ts),
-                "-i", video_path,
-                "-vframes", "1",
-                "-vf", f"scale={self.FRAME_WIDTH}:{self.FRAME_HEIGHT}",
-                "-q:v", "3",
-                out_path
-            ]
-            try:
-                subprocess.run(cmd, check=True, capture_output=True, timeout=30)
-                if os.path.exists(out_path) and os.path.getsize(out_path) > 100:
-                    frame_paths.append(out_path)
-            except Exception as fe:
-                logger.debug(f"🔬 Frame {i} extraction failed: {fe}")
-
-        logger.info(f"🔬 Extracted {len(frame_paths)}/{n} forensic frames")
-        return frame_paths
-
-    def _cleanup_uploaded_file(self, uploaded_file: Any) -> None:
-        """Deletes uploaded media file from the Gemini File API to prevent resource leakage."""
-        if not uploaded_file:
-            return
-        try:
-            fname = getattr(uploaded_file, "name", None)
-            if not fname:
-                return
-            if hasattr(self.router, "delete_file"):
-                self.router.delete_file(fname)
-            else:
-                try:
-                    import google.genai as genai_mod
-                    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-                    if api_key and hasattr(genai_mod, "Client"):
-                        client = genai_mod.Client(api_key=api_key)
-                        client.files.delete(name=fname)
-                        logger.debug(f"🗑️ Deleted uploaded file {fname} from Gemini File API.")
-                        return
-                except Exception:
-                    pass
-                try:
-                    import google.generativeai as genai_legacy
-                    genai_legacy.delete_file(fname)
-                    logger.debug(f"🗑️ (Legacy) Deleted uploaded file {fname} from Gemini File API.")
-                except Exception:
-                    pass
-        except Exception as cle:
-            logger.debug(f"File API cleanup notice: {cle}")
-
-    def _call_gemini_with_audio(self, frame_paths: List[str],
-                                creator_name: Optional[str] = None,
-                                clip_dir: Optional[str] = None,
-                                audio_candidates: Optional[List[dict]] = None,
-                                sampling_context: Optional[str] = None,
-                                video_proxy_path: Optional[str] = None) -> dict:
-        """
-        Send keyframes + candidate BGM audio metadata table to Gemini 2.5 Flash Vision.
-        Gemini selects matching audio track and generates structured creative_possibilities edit plan.
-        """
-        audio_table_str = ""
-        if audio_candidates:
-            table_lines = []
-            for idx, c in enumerate(audio_candidates, start=1):
-                table_lines.append(
-                    f"{idx}. Track: '{c.get('track_name')}' | BPM: {c.get('bpm')} | Energy: {c.get('avg_energy')} | Drops: {c.get('drops')}"
-                )
-            audio_table_str = "\n".join(table_lines)
-
-        global_frames = [p for p in frame_paths if "detail_crop" not in p]
-        prompt_text = FORENSIC_PROMPT.format(
-            width=self.FRAME_WIDTH,
-            height=self.FRAME_HEIGHT,
-            frame_count=len(global_frames)
-        )
-        if sampling_context:
-            prompt_text += f"\n\n{sampling_context}\n"
-        prompt_text += f"\nCreator Handle Hint: '{creator_name or 'unknown'}'\n"
-
-        if video_proxy_path and os.path.isfile(video_proxy_path):
-            prompt_text += (
-                "\n\n[MULTIMODAL VIDEO ATTACHMENT NOTICE]\n"
-                "A 480p proxy of the complete video with audio is attached to this request alongside the sampled frames. "
-                "Use the video and its audio as primary evidence for scene pacing, speech detection, and rhythm, "
-                "and treat the sampled frames as high-fidelity visual reference checkpoints.\n"
-            )
-
-        if audio_table_str:
-            prompt_text += f"""
----
-
-TASK 4 — BGM AUDIO SELECTION & CREATIVE POSSIBILITIES
-
-[Candidate Background Music Tracks Available]
-{audio_table_str}
-
-Analyze the visual content against the candidate BGM audio tracks listed above:
-1. `selected_audio_track`: Choose the SINGLE best matching track filename (e.g. 'Fit_girl_2.mp3').
-2. `creative_possibilities`: Provide 2-3 structured edit options as objects:
-   [
-     {{"rank": 1, "clip_label": "hero_hook", "target_duration_sec": 15, "editing_style": "rhythm_driven"}},
-     {{"rank": 2, "clip_label": "action_cut", "target_duration_sec": 30, "editing_style": "fast_cuts"}}
-   ]
-
-Include `selected_audio_track` and `creative_possibilities` in your returned JSON object.
-"""
-
-        # ── Targeted Clip Ground Truth Metadata & Full CBM Injection ──────────
-        target_clip_meta_block = ""
-        cbm_block = ""
-
-        if clip_dir and os.path.isdir(clip_dir):
-            folder_name = os.path.basename(clip_dir)
-
-            # 1. Load local clip metadata.json
-            local_meta = {}
-            local_meta_path = os.path.join(clip_dir, "metadata.json")
-            if os.path.exists(local_meta_path):
-                try:
-                    with open(local_meta_path, "r", encoding="utf-8") as _lmf:
-                        local_meta = json.load(_lmf)
-                except Exception as _lme:
-                    logger.debug(f"🔬 Could not load local metadata.json: {_lme}")
-
-            # 2. Load pool_metadata.json
-            pool_data = None
-            possible_pm_paths = [
-                os.path.join(clip_dir, "pool_metadata.json"),
-                os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json"),
-            ]
-            for pmp in possible_pm_paths:
-                if os.path.exists(pmp):
-                    try:
-                        with open(pmp, "r", encoding="utf-8") as f:
-                            pool_data = json.load(f)
-                        break
-                    except Exception as _pm_e:
-                        logger.debug(f"🔬 Could not load pool_metadata ({pmp}): {_pm_e}")
-
-            # Safe shortcode resolution order:
-            # 1) metadata.json shortcode
-            # 2) exact match against known shortcode values in pool_metadata
-            # 3) suffix after underscore if in pool_metadata or as fallback
-            clean_sc = str(local_meta.get("shortcode", "")).strip()
-
-            known_pool_shortcodes = set()
-            if pool_data and isinstance(pool_data, dict):
-                social_entries = pool_data.get("files", {}).get("social_media_id", {})
-                if isinstance(social_entries, dict):
-                    for k, v in social_entries.items():
-                        if isinstance(v, dict) and v.get("shortcode"):
-                            known_pool_shortcodes.add(str(v["shortcode"]).strip())
-
-            if not clean_sc:
-                base_name = folder_name[len("manual_"):] if folder_name.startswith("manual_") else folder_name
-                if folder_name in known_pool_shortcodes:
-                    clean_sc = folder_name
-                elif base_name in known_pool_shortcodes:
-                    clean_sc = base_name
-                elif "_" in base_name and base_name.split("_", 1)[1] in known_pool_shortcodes:
-                    clean_sc = base_name.split("_", 1)[1]
-                elif "_" in base_name and len(base_name.split("_", 1)[1]) >= 5:
-                    clean_sc = base_name.split("_", 1)[1]
-                else:
-                    clean_sc = base_name
-
-            # 3. Locate the specific clip entry in pool_metadata
-            clip_entry = {}
-            if pool_data and isinstance(pool_data, dict):
-                social_entries = pool_data.get("files", {}).get("social_media_id", {})
-                if isinstance(social_entries, dict):
-                    for k, v in social_entries.items():
-                        if isinstance(v, dict):
-                            sc = str(v.get("shortcode", "")).strip()
-                            sc_match = bool(clean_sc and sc and clean_sc == sc)
-                            folder_match = bool(folder_name and folder_name in k)
-                            if sc_match or folder_match:
-                                clip_entry = v
-                                break
-
-            # Merge fields between local_meta and clip_entry
-            owner_user = local_meta.get("ownerUsername") or clip_entry.get("ownerUsername") or local_meta.get("uploader") or ""
-            if owner_user == "manual":
-                owner_user = ""
-            caption = local_meta.get("caption") or clip_entry.get("caption") or ""
-            hashtags = local_meta.get("hashtags") or clip_entry.get("hashtags") or []
-            tagged_users = local_meta.get("taggedUsers") or clip_entry.get("taggedUsers") or []
-
-            # 4. Construct authoritative targeted grounding block
-            meta_lines = [
-                "### ACTIVE CLIP GROUND TRUTH METADATA (AUTHORITATIVE)",
-                f"- Clip ID / Shortcode: {clean_sc}",
-            ]
-            if owner_user:
-                meta_lines.append(f"- Creator / Account Username: @{owner_user}")
-            if caption:
-                meta_lines.append(f"- Post Caption: {caption}")
-            if hashtags:
-                tag_str = ", ".join(hashtags) if isinstance(hashtags, list) else str(hashtags)
-                meta_lines.append(f"- Hashtags: {tag_str}")
-            if tagged_users:
-                tu_str = ", ".join(tagged_users) if isinstance(tagged_users, list) else str(tagged_users)
-                meta_lines.append(f"- Tagged Accounts: {tu_str}")
-
-            meta_lines.extend([
-                "\nCRITICAL GROUNDING DIRECTIVE FOR `main_subject` & ENTITIES:",
-                "1. Treat the above caption, hashtags, and username as authoritative ground truth for identifying the celebrity or creator.",
-                "2. If the hashtags or caption identify the person, you MUST set `main_subject` to that exact person's name.",
-                "3. NEVER substitute, guess, or hallucinate a different celebrity (e.g. guessing someone else based on visual resemblance alone) when the hashtags or caption already identify the subject.",
-            ])
-            target_clip_meta_block = "\n".join(meta_lines)
-
-            # 5. Extract Full CBM (Creator Behavior Model) with ZERO character/token truncation
-            cbm_data = clip_entry.get("creator_behavior_model")
-            if not cbm_data and pool_data and isinstance(pool_data, dict):
-                cbm_data = pool_data.get("creator_behavior_model") or pool_data.get("cbm")
-                if not cbm_data:
-                    for entry in pool_data.get("files", {}).get("social_media_id", {}).values():
-                        if isinstance(entry, dict) and entry.get("creator_behavior_model"):
-                            cbm_data = entry["creator_behavior_model"]
-                            break
-
-            if cbm_data:
-                cbm_block = (
-                    f"\n---\n\n### CREATOR BEHAVIOR MODEL (CBM) — FULL VERIFIED PROFILE\n"
-                    f"```json\n{json.dumps(cbm_data, indent=2, default=str)}\n```\n"
-                    f"DIRECTOR DIRECTIVE: Align visual rhythm, camera pacing, tone, and audience hook tactics "
-                    f"to this creator's verified behavioral DNA.\n"
-                )
-
-        if target_clip_meta_block:
-            prompt_text += f"\n---\n\n{target_clip_meta_block}\n"
-        if cbm_block:
-            prompt_text += f"{cbm_block}\n"
-
-        payload = [prompt_text]
-        uploaded_file = None
-        pil_images = []
-
-        try:
-            # Attach uploaded proxy video if available
-            if video_proxy_path and os.path.isfile(video_proxy_path):
-                try:
-                    if hasattr(self.router, "upload_file"):
-                        uploaded_file = self.router.upload_file(video_proxy_path)
-                        if uploaded_file:
-                            payload.append(uploaded_file)
-                            logger.info(f"🔬 ForensicAnalyzer: Attached multimodal proxy video to Gemini payload -> {os.path.basename(video_proxy_path)}")
-                except Exception as ve:
-                    logger.warning(f"🔬 ForensicAnalyzer: Video proxy upload notice ({ve}); proceeding with keyframes only")
-
-            try:
-                from PIL import Image
-                for p in frame_paths:
-                    try:
-                        img = Image.open(p)
-                        pil_images.append(img)
-                    except Exception as ie:
-                        logger.debug(f"🔬 Could not open frame {p}: {ie}")
-                payload.extend(pil_images)
+                from Core_Modules.scene_intel import analyze_scene_pre_pipeline
             except ImportError:
-                logger.warning("🔬 PIL not available — sending text-only prompt")
+                from Gemini_Modules.scene_intel import analyze_scene_pre_pipeline
+            ctx = analyze_scene_pre_pipeline(video_path, creator_name=creator_name)
+            logger.info(
+                f"👤 SceneIntel: faces={ctx.get('num_detected_faces')} | "
+                f"subjects={ctx.get('num_subjects')} | face_cache={ctx.get('face_cache_status')}"
+            )
+            return ctx or {}
+        except Exception as sie:
+            logger.debug(f"SceneIntel fallback: {sie}")
+            return {}
 
-            attempt_err = None
-            try:
-                res_txt = self.router.generate(
-                    task_type="vision",
-                    prompt=payload,
-                    module_name="forensic_analyzer",
-                    gen_config={"temperature": 0.2, "response_mime_type": "application/json"}
-                )
-                if res_txt:
-                    parsed = self._parse_response(res_txt)
-                    if parsed:
-                        return parsed
-            except Exception as e:
-                attempt_err = e
-                logger.warning(f"🔬 Multimodal video perception error: {e}")
-
-            # Check if error is quota / rate limit — DO NOT retry on quota exhaustion
-            is_quota_error = False
-            if attempt_err:
-                err_msg = str(attempt_err).lower()
-                status_code = getattr(attempt_err, "code", None) or getattr(attempt_err, "status_code", None)
-                if status_code == 429 or re.search(r'\b429\b', err_msg) or any(term in err_msg for term in ["quota", "resource_exhausted", "rate_limit", "rate limit", "credits"]):
-                    logger.warning("🔬 API Quota/Rate-limit encountered — skipping keyframe retry to preserve quota.")
-                    is_quota_error = True
-
-            # Attempt 2: If proxy video was attached AND router raised an exception that is NOT quota,
-            # retry ONCE with keyframes only (omitting video proxy attachment)
-            if uploaded_file and pil_images and attempt_err is not None and not is_quota_error:
-                logger.info("🔬 Retrying perception with keyframes only (omitting video proxy attachment)...")
-                try:
-                    retry_payload = [prompt_text] + pil_images
-                    res_txt = self.router.generate(
-                        task_type="vision",
-                        prompt=retry_payload,
-                        module_name="forensic_analyzer",
-                        gen_config={"temperature": 0.2, "response_mime_type": "application/json"}
-                    )
-                    if res_txt:
-                        parsed = self._parse_response(res_txt)
-                        if parsed:
-                            return parsed
-                except Exception as retry_err:
-                    logger.error(f"🔬 Keyframe fallback attempt also failed: {retry_err}")
-
-            return copy.deepcopy(DEFAULT_RESULT)
-
-        finally:
-            if uploaded_file:
-                self._cleanup_uploaded_file(uploaded_file)
-    def _parse_response(self, raw: str) -> Optional[dict]:
-        """
-        Parse and validate Gemini JSON response.
-        Handles BOTH schemas:
-          - New (flat): intent/feature_flags/safety.classification at root level
-          - Old (nested): content_strategy.intent / content_strategy.safety string
-        Always returns both formats so orchestrator.py backward-compat is maintained.
-        """
+    def _load_p1_audio(self, clip_folder: str) -> Optional[dict]:
         try:
-            match = re.search(r'(\{.*\})', raw, re.DOTALL)
-            if not match:
-                logger.warning("🔬 Forensic parse: no JSON object found in response")
-                return None
+            from Audio_Modules.audio_extractor import load_audio_analysis
+            return load_audio_analysis(clip_folder)
+        except Exception:
+            return None
 
-            data = json.loads(match.group(1))
-
-            # ── Watermarks ────────────────────────────────────────────────────
-            # Dedicated detection is handled by gemini_enhance_for_watermark.py
-            watermarks = []
-
-            # ── Detect which schema the model returned ────────────────────────
-            # New schema: feature_flags at root level
-            # Old schema: feature_flags inside content_strategy
-            if "feature_flags" in data:
-                # NEW flat schema (director prompt)
-                flags_raw = data.get("feature_flags", {})
-                intent    = str(data.get("intent", "unknown"))
-                confidence = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
-                editing_style = str(data.get("editing_style", "cinematic"))
-                platform_priority = data.get("platform_priority",
-                                    ["youtube_shorts", "instagram_reels", "facebook_reels"])
-
-                # safety is now a nested object
-                safety_obj = data.get("safety", {})
-                if isinstance(safety_obj, dict):
-                    safety_cls   = str(safety_obj.get("classification", "risky")).lower()
-                    mon_safe     = bool(safety_obj.get("monetization_safe", safety_cls == "safe"))
-                else:
-                    # Model returned a string instead of object — tolerate it
-                    safety_cls   = str(safety_obj).lower().strip()
-                    mon_safe     = safety_cls == "safe"
-
-            else:
-                # OLD nested content_strategy schema (backward compat)
-                cs = data.get("content_strategy", {})
-                if not isinstance(cs, dict):
-                    cs = {}
-                flags_raw      = cs.get("feature_flags", {})
-                intent         = str(cs.get("intent", "unknown"))
-                confidence     = max(0.0, min(1.0, float(cs.get("confidence", 0.5))))
-                editing_style  = str(cs.get("recommended_editing_style", "cinematic"))
-                platform_priority = ["youtube_shorts", "instagram_reels", "facebook_reels"]
-                safety_cls     = str(cs.get("safety", "risky")).lower().strip()
-                mon_safe       = safety_cls == "safe"
-
-            if not isinstance(flags_raw, dict):
-                flags_raw = {}
-
-            safety_cls = safety_cls if safety_cls in ("safe", "risky", "blocked") else "risky"
-
-            feature_flags = {
-                "enable_price_tags":      bool(flags_raw.get("enable_price_tags",      False)),
-                "enable_fashion_caption": bool(flags_raw.get("enable_fashion_caption", False)),
-                "enable_cinematic_zoom":  bool(flags_raw.get("enable_cinematic_zoom",  True)),
-                "enable_speed_ramps":     bool(flags_raw.get("enable_speed_ramps",     False)),
-                "enable_fast_pacing":     bool(flags_raw.get("enable_fast_pacing",     False)),
-                "enable_voiceover":       bool(flags_raw.get("enable_voiceover",       True)),
-            }
-
-            # Extract BGM selection fields if present
-            selected_audio_track = str(data.get("selected_audio_track", ""))
-            creative_possibilities = data.get("creative_possibilities", [])
-            if not isinstance(creative_possibilities, list):
-                creative_possibilities = []
-
-            result = {
-                # ── New flat schema ────────────────────────────────────────────
-                "watermarks":             watermarks,
-                "intent":                 intent,
-                "confidence":             round(confidence, 3),
-                "editing_style":          editing_style,
-                "feature_flags":          feature_flags,
-                "platform_priority":      platform_priority,
-                "selected_audio_track":   selected_audio_track,
-                "creative_possibilities": creative_possibilities,
-                "safety": {
-                    "classification":    safety_cls,
-                    "monetization_safe": mon_safe,
-                },
-                # ── Backward-compat content_strategy wrapper ───────────────────
-                # orchestrator.py reads .get("content_strategy", {}) for flags/safety/intent
-                "content_strategy": {
-                    "intent":                    intent,
-                    "confidence":                round(confidence, 3),
-                    "recommended_editing_style": editing_style,
-                    "feature_flags":             feature_flags,
-                    "safety":                    safety_cls,   # str — matches old code
-                },
-            }
-
-            # ── Content Director block (new in this version) ───────────────────
-            # Extract and validate. If missing, embed empty defaults (non-breaking).
+    def _prepare_proxy(self, video_path: str, clip_folder: str) -> Dict[str, Any]:
+        try:
+            from Main_Modules.proxy_encoder import encode_for_gemini
+        except ImportError:
+            from proxy_encoder import encode_for_gemini
+        fps = None
+        if _FPS_ENV not in ("", "auto"):
             try:
-                cd_raw = data.get("content_director", {})
-                if isinstance(cd_raw, dict) and cd_raw:
-                    def _str(k): return str(cd_raw.get(k, ""))
-                    def _lst(k):
-                        v = cd_raw.get(k, [])
-                        return [str(x) for x in v] if isinstance(v, list) else []
+                fps = float(_FPS_ENV)
+            except ValueError:
+                fps = None
+        return encode_for_gemini(video_path, output_dir=clip_folder, fps=fps)
 
-                    allowed_flags = {
-                        "enable_fast_pacing", "enable_cinematic_zoom",
-                        "enable_speed_ramps", "enable_voiceover",
-                        "enable_price_tags",  "enable_fashion_caption",
-                    }
-                    raw_cmds = cd_raw.get("feature_commands", {})
-                    feature_commands = {
-                        k: bool(v)
-                        for k, v in (raw_cmds.items() if isinstance(raw_cmds, dict) else [])
-                        if k in allowed_flags
-                    }
-                    for f in allowed_flags:
-                        feature_commands.setdefault(f, False)
+    def _resolve_transcript(self, provided, video_path, clip_folder, clip_id, proxy, p1_audio, creator_name):
+        if isinstance(provided, dict):
+            return provided
+        if not AUTO_TRANSCRIBE or not proxy.get("audio_present"):
+            return None
+        try:
+            from Audio_Modules.whisper_transcriber import transcribe_audio
+            from Audio_Modules.transcript_corrector import correct_transcript
 
-                    main_subj = _str("main_subject")
-                    is_talking = bool(cd_raw.get("is_talking_on_camera", False))
+            wav = None
+            if p1_audio and p1_audio.get("wav_path") and os.path.isfile(p1_audio["wav_path"]):
+                wav = p1_audio["wav_path"]
+            else:
+                wav = self._extract_speech_wav(video_path, clip_folder, clip_id)
+            if not wav:
+                return None
+            hint = f"Creator/channel: {creator_name}" if creator_name else ""
+            whisper = transcribe_audio(wav, output_json_path=os.path.join(clip_folder, "whisper_transcript.json"))
+            return correct_transcript(wav, whisper, context_hint=hint, cache_dir=clip_folder)
+        except Exception as te:
+            logger.warning(f"🔬 Transcript pipeline failed ({te}) — analyzing video without a transcript.")
+            return None
 
-                    result["content_director"] = {
-                        "main_subject":          main_subj,
-                        "detected_entities":     _lst("detected_entities"),
-                        "visual_event":          _str("visual_event"),
-                        "viewer_attention":      _str("viewer_attention"),
-                        "internet_context":      _lst("internet_context"),
-                        "possible_narratives":   _lst("possible_narratives"),
-                        "recommended_narrative": _str("recommended_narrative"),
-                        "tone":                  _str("tone"),
-                        "editing_style":         _str("editing_style"),
-                        "is_talking_on_camera":  is_talking,
-                        "engagement_hook":       _str("engagement_hook"),
-                        "feature_commands":      feature_commands,
-                    }
-                    result["main_subject"] = main_subj
-                    result["is_talking_on_camera"] = is_talking
-                    result["_failed"] = False
-                    logger.info(
-                        f"🎬 ContentDirector: subject='{main_subj}' "
-                        f"narrative={result['content_director']['recommended_narrative']} "
-                        f"style={result['content_director']['editing_style']} "
-                        f"tone={result['content_director']['tone']} "
-                        f"hook='{result['content_director']['engagement_hook'][:60]}'"
+    def _extract_speech_wav(self, video_path: str, clip_folder: str, clip_id: str) -> Optional[str]:
+        out = os.path.join(clip_folder, f"{clip_id}_speech_16k.wav")
+        if os.path.isfile(out) and os.path.getsize(out) > 4096:
+            return out
+        try:
+            try:
+                from Main_Modules.proxy_encoder import _ffmpeg_bin
+            except ImportError:
+                from proxy_encoder import _ffmpeg_bin
+            subprocess.run(
+                [_ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error", "-i", video_path,
+                 "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out],
+                check=True, capture_output=True, timeout=300,
+            )
+            return out if os.path.isfile(out) else None
+        except Exception as e:
+            logger.warning(f"🔬 Speech WAV extraction failed: {e}")
+            return None
+
+    # ── Prompt assembly ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _transcript_meta(tr: Optional[dict]) -> dict:
+        if tr is None:
+            return {"available": False}
+        return {
+            "available": True,
+            "source": tr.get("_source", "provided"),
+            "language": tr.get("language"),
+            "has_speech": bool(tr.get("has_speech")),
+            "is_singing": bool(tr.get("is_singing")),
+            "segments": len(tr.get("segments") or []),
+            "full_text": tr.get("full_text", ""),
+            "stats": tr.get("stats", {}),
+        }
+
+    @staticmethod
+    def _format_transcript_block(tr: Optional[dict]) -> str:
+        if tr is None:
+            return ("TRANSCRIPT: UNAVAILABLE. Speech content is unverified. You may describe audio you hear, "
+                    "but state any speech claim as unverified in \"uncertainties\". Return an empty transcript_alignment.")
+        segs = tr.get("segments") or []
+        if not segs:
+            return ("TRANSCRIPT: no speech was detected in this clip. Do not invent speech. "
+                    "Return an empty transcript_alignment.")
+        src = tr.get("_source", "provided")
+        note = "corrected against the audio" if src in ("gemini_corrected", "cache_hit", "provided") else \
+               "UNCORRECTED Whisper draft — treat wording with caution"
+        lines = [f"TRANSCRIPT ({note}; language: {tr.get('language', 'unknown')}"
+                 f"{'; singing detected' if tr.get('is_singing') else ''}).",
+                 "Format: [id] start-end (seconds) | text"]
+        for s in segs:
+            low = " | LOW_CONFIDENCE" if (s.get("confidence") is not None and s["confidence"] < 0.6) else ""
+            lines.append(f"[{s['id']}] {s['start']:.2f}-{s['end']:.2f} | {s['text']}{low}")
+        cuts = (tr.get("clean_cut_timestamps") or [])[:20]
+        if cuts:
+            lines.append("Clean cut points (word/sentence ends): " + ", ".join(f"{c['timestamp_sec']}s" for c in cuts))
+        block = "\n".join(lines)
+        if len(block) > _MAX_TRANSCRIPT_CHARS:
+            block = block[:_MAX_TRANSCRIPT_CHARS] + "\n[...transcript truncated...]"
+        return block
+
+    def _build_prompt(self, proxy, transcript, creator_name, audio_candidates) -> str:
+        fps = float(proxy.get("fps", 1.0))
+        prompt = (
+            FORENSIC_PROMPT
+            .replace("<<W>>", str(proxy.get("width", "?")))
+            .replace("<<H>>", str(proxy.get("height", "?")))
+            .replace("<<FPS>>", f"{fps:g}")
+            .replace("<<DUR>>", f"{proxy.get('duration_sec', 0):.1f}")
+            .replace("<<PREC>>", f"{max(0.5, 1.0 / fps):g}")
+            .replace("<<TRANSCRIPT_BLOCK>>", self._format_transcript_block(transcript))
+            .replace("<<CREATOR>>", creator_name or "unknown")
+        )
+        if audio_candidates:
+            rows = [
+                f"{i}. Track: '{c.get('track_name')}' | BPM: {c.get('bpm')} | Energy: {c.get('avg_energy')} | Drops: {c.get('drops')}"
+                for i, c in enumerate(audio_candidates, start=1)
+            ]
+            prompt += _BGM_TASK.replace("<<AUDIO_TABLE>>", "\n".join(rows))
+        return prompt
+
+    def _cache_key(self, proxy, transcript, creator_name, audio_candidates) -> str:
+        h = hashlib.sha1()
+        h.update(str(proxy.get("gemini_ready_path")).encode())
+        h.update(str(proxy.get("gemini_size_mb")).encode())
+        h.update(json.dumps([(s["start"], s["end"], s["text"]) for s in (transcript or {}).get("segments", [])],
+                            ensure_ascii=False).encode())
+        h.update(str(creator_name).encode())
+        h.update(json.dumps(audio_candidates or [], sort_keys=True, default=str).encode())
+        h.update(f"{_PROMPT_VERSION}|{GEMINI_MODEL}|{proxy.get('fps')}".encode())
+        return h.hexdigest()
+
+    def _load_cache(self, path: str, key: str) -> Optional[dict]:
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("_cache_key") == key and "video_analysis" in data:
+                    logger.info("💾 ForensicAnalyzer: cache hit")
+                    return data
+        except Exception:
+            pass
+        return None
+
+    def _save_cache(self, path: str, key: str, result: dict) -> None:
+        try:
+            payload = dict(result)
+            payload["_cache_key"] = key
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.warning(f"🔬 Could not persist forensic analysis: {e}")
+
+    # ── Gemini call ────────────────────────────────────────────────────────────
+
+    def _generate(self, client, content_part, prompt: str) -> str:
+        box: Dict[str, Any] = {}
+
+        def _worker():
+            try:
+                if self.router is not None:
+                    box["out"] = self.router.generate(
+                        task_type="vision",
+                        prompt=[content_part, prompt],
+                        module_name="forensic_analyzer",
+                        gen_config={"temperature": 0.2, "response_mime_type": "application/json"},
                     )
                 else:
-                    logger.info("🎬 ContentDirector: no block in Gemini response — using defaults")
-                    result["content_director"] = {}
-                    result["main_subject"] = ""
-                    result["is_talking_on_camera"] = False
-                    result["_failed"] = False
-            except Exception as _cde:
-                logger.warning(f"🎬 ContentDirector parse error (non-critical): {_cde}")
-                result["content_director"] = {}
-                result["main_subject"] = ""
-                result["is_talking_on_camera"] = False
-                result["_failed"] = False
+                    from google.genai import types
+                    resp = client.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=[content_part, prompt],
+                        config=types.GenerateContentConfig(temperature=0.2, response_mime_type="application/json"),
+                    )
+                    box["out"] = resp.text
+            except Exception as e:
+                box["err"] = e
 
-            logger.info(
-                f"🔬 Forensic result: intent={intent} "
-                f"style={editing_style} safety={safety_cls} "
-                f"watermarks={len(watermarks)} confidence={confidence:.2f} "
-                f"monetizable={mon_safe}"
-            )
-            active_flags = [k.replace("enable_", "") for k, v in feature_flags.items() if v]
-            logger.info(
-                f"🔬 ForensicFlags: intent={intent}, style={editing_style}, "
-                f"flags=[{', '.join(active_flags) or 'none'}]"
-            )
-            return result
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout=GEMINI_TIMEOUT_SEC)
+        if t.is_alive():
+            raise TimeoutError(f"Gemini did not respond within {GEMINI_TIMEOUT_SEC:.0f}s")
+        if "err" in box:
+            raise box["err"]
+        return str(box.get("out") or "")
 
-        except (json.JSONDecodeError, Exception) as e:
-            logger.warning(f"🔬 Forensic parse error: {e}")
-            return None
+    def _call_gemini(self, proxy: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+        """Upload compressed video, ask Gemini, parse JSON. Raises on failure."""
+        from google import genai
+
+        client = genai.Client(api_key=self._api_key)
+        uploaded = None
+        try:
+            path = proxy["gemini_ready_path"]
+            logger.info(f"📤 ForensicAnalyzer: uploading {os.path.basename(path)} ({proxy.get('gemini_size_mb')}MB)...")
+            uploaded = client.files.upload(file=path)
+
+            deadline = time.time() + FILE_ACTIVE_TIMEOUT_SEC
+            while getattr(getattr(uploaded, "state", None), "name", "ACTIVE") == "PROCESSING":
+                if time.time() > deadline:
+                    raise TimeoutError("Gemini video stayed in PROCESSING state")
+                time.sleep(2)
+                uploaded = client.files.get(name=uploaded.name)
+            state = getattr(getattr(uploaded, "state", None), "name", "ACTIVE")
+            if state != "ACTIVE":
+                raise RuntimeError(f"Gemini file upload ended in state {state}")
+
+            content_part: Any = uploaded
+            fps = float(proxy.get("fps", 1.0))
+            if abs(fps - 1.0) > 1e-6:
+                try:
+                    from google.genai import types
+                    content_part = types.Part(
+                        file_data=types.FileData(file_uri=uploaded.uri, mime_type=getattr(uploaded, "mime_type", None) or "video/mp4"),
+                        video_metadata=types.VideoMetadata(fps=fps),
+                    )
+                except Exception as me:
+                    logger.warning(f"🔬 Could not attach VideoMetadata(fps={fps:g}) ({me}); Gemini will sample at 1 fps.")
+
+            logger.info(f"🔬 ForensicAnalyzer: analyzing (~{proxy.get('gemini_token_est')} video tokens, fps={fps:g})...")
+            last_err: Optional[Exception] = None
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                t0 = time.time()
+                raw = self._generate(client, content_part, prompt)
+                logger.info(f"✅ ForensicAnalyzer: Gemini replied in {time.time() - t0:.1f}s (attempt {attempt})")
+                try:
+                    data = json.loads(_clean_json(raw))
+                    if isinstance(data, dict) and (data.get("timeline") is not None or data.get("intent")):
+                        return data
+                    last_err = ValueError("Gemini JSON missing expected fields")
+                except json.JSONDecodeError as je:
+                    last_err = je
+                logger.warning(f"🔬 Unusable Gemini output on attempt {attempt}: {last_err}")
+            raise RuntimeError(f"Gemini output unusable after {MAX_ATTEMPTS} attempts: {last_err}")
+        finally:
+            if uploaded is not None:
+                try:
+                    client.files.delete(name=uploaded.name)
+                except Exception:
+                    pass
+
+    # ── Parse / assemble ───────────────────────────────────────────────────────
+
+    def _build_result(self, data: Dict[str, Any], proxy: Dict[str, Any], transcript: Optional[dict]) -> Dict[str, Any]:
+        duration = float(proxy.get("duration_sec") or proxy.get("source_duration_sec") or 0.0)
+
+        # ── Detailed explanation (video <-> transcript join, done in code) ──
+        timeline, coverage = _normalize_timeline(data.get("timeline"), duration)
+        timeline, alignment, conflicts, uncovered = _attach_transcript(
+            timeline, data.get("transcript_alignment"), data.get("transcript_conflicts"), transcript
+        )
+        ov_raw = data.get("overview") if isinstance(data.get("overview"), dict) else {}
+        overview = {
+            "summary": _s(ov_raw.get("summary")),
+            "setting": _s(ov_raw.get("setting")),
+            "subjects": _str_list(ov_raw.get("subjects")),
+            "spoken_language": _s(ov_raw.get("spoken_language")) or _s((transcript or {}).get("language")),
+            "narrative_arc": _s(ov_raw.get("narrative_arc")),
+            "target_audience": _s(ov_raw.get("target_audience")),
+            "on_screen_text_summary": _s(ov_raw.get("on_screen_text_summary")),
+        }
+        sp_raw = data.get("speaker_analysis") if isinstance(data.get("speaker_analysis"), dict) else {}
+        vmatch = sp_raw.get("voice_matches_visible_speaker")
+        speaker = {
+            "visible_people": int(max(0, _f(sp_raw.get("visible_people"), 0))),
+            "is_talking_on_camera": bool(sp_raw.get("is_talking_on_camera", False)),
+            "voice_matches_visible_speaker": vmatch if isinstance(vmatch, bool) else None,
+            "notes": _s(sp_raw.get("notes")),
+        }
+        uncertainties = _str_list(data.get("uncertainties"))
+        if duration and coverage < 0.9:
+            uncertainties.append(f"Timeline covers only {coverage:.0%} of the video; gaps are unanalyzed.")
+        if uncovered:
+            uncertainties.append(f"Transcript lines {uncovered} fall outside every timeline scene.")
+        if abs(proxy.get("duration_drift_sec", 0.0)) > 0.75:
+            uncertainties.append(
+                f"Proxy duration differs from source by {proxy['duration_drift_sec']:+.2f}s; timestamps may be offset."
+            )
+
+        video_analysis = {
+            "overview": overview,
+            "timeline": timeline,
+            "transcript_alignment": alignment,
+            "key_moments": _normalize_key_moments(data.get("key_moments"), duration),
+            "transcript_conflicts": conflicts,
+            "speaker_analysis": speaker,
+            "uncertainties": uncertainties,
+            "coverage": coverage,
+            "uncovered_transcript_ids": uncovered,
+        }
+
+        # ── Classification (legacy schema) ──
+        intent_valid = _s(data.get("intent")).lower() in ALLOWED_INTENTS
+        intent = _enum(data.get("intent"), ALLOWED_INTENTS, "general_content")
+        confidence = _clamp01(data.get("confidence"), 0.5)
+        if not intent_valid:
+            confidence = min(confidence, 0.49)
+        editing_style = _enum(data.get("editing_style"), ALLOWED_STYLES, "cinematic")
+        flags_raw = data.get("feature_flags") if isinstance(data.get("feature_flags"), dict) else {}
+        defaults = {"enable_cinematic_zoom": True, "enable_voiceover": True}
+        feature_flags = {k: bool(flags_raw.get(k, defaults.get(k, False))) for k in FLAG_NAMES}
+
+        safety_obj = data.get("safety")
+        if isinstance(safety_obj, dict):
+            safety_cls = _s(safety_obj.get("classification")).lower()
+            mon_safe = bool(safety_obj.get("monetization_safe", safety_cls == "safe"))
+        else:
+            safety_cls = _s(safety_obj).lower()
+            mon_safe = safety_cls == "safe"
+        if safety_cls not in ("safe", "risky", "blocked"):
+            safety_cls = "risky"
+        if safety_cls != "safe":
+            mon_safe = False
+
+        platform_priority = data.get("platform_priority")
+        if not (isinstance(platform_priority, list) and platform_priority):
+            platform_priority = ["youtube_shorts", "instagram_reels", "facebook_reels"]
+
+        cd_raw = data.get("content_director") if isinstance(data.get("content_director"), dict) else {}
+        raw_cmds = cd_raw.get("feature_commands") if isinstance(cd_raw.get("feature_commands"), dict) else {}
+        content_director = {
+            "detected_entities": _str_list(cd_raw.get("detected_entities")),
+            "visual_event": _s(cd_raw.get("visual_event")),
+            "viewer_attention": _s(cd_raw.get("viewer_attention")),
+            "internet_context": _str_list(cd_raw.get("internet_context")),
+            "possible_narratives": _str_list(cd_raw.get("possible_narratives")),
+            "recommended_narrative": _s(cd_raw.get("recommended_narrative")),
+            "tone": _s(cd_raw.get("tone")),
+            "editing_style": _s(cd_raw.get("editing_style")),
+            "is_talking_on_camera": bool(cd_raw.get("is_talking_on_camera", speaker["is_talking_on_camera"])),
+            "engagement_hook": _s(cd_raw.get("engagement_hook")),
+            "feature_commands": {k: bool(raw_cmds.get(k, feature_flags[k])) for k in FLAG_NAMES},
+        }
+
+        creative = data.get("creative_possibilities")
+        result = {
+            "watermarks": _convert_watermarks(data.get("watermarks"), proxy.get("source_width", 0),
+                                              proxy.get("source_height", 0), duration),
+            "intent": intent,
+            "confidence": round(confidence, 3),
+            "editing_style": editing_style,
+            "feature_flags": feature_flags,
+            "platform_priority": platform_priority,
+            "selected_audio_track": _s(data.get("selected_audio_track")),
+            "creative_possibilities": creative if isinstance(creative, list) else [],
+            "safety": {"classification": safety_cls, "monetization_safe": mon_safe},
+            "content_strategy": {          # backward-compat wrapper read by orchestrator
+                "intent": intent, "confidence": round(confidence, 3),
+                "recommended_editing_style": editing_style,
+                "feature_flags": dict(feature_flags), "safety": safety_cls,
+            },
+            "content_director": content_director,
+            "video_analysis": video_analysis,
+            "transcript_meta": self._transcript_meta(transcript),
+            "video_proxy": {k: proxy.get(k) for k in (
+                "gemini_ready_path", "fps", "width", "height", "source_width", "source_height",
+                "duration_sec", "duration_drift_sec", "gemini_size_mb", "size_reduction_pct", "gemini_token_est")},
+        }
+        logger.info(
+            f"🎬 ForensicAnalyzer: intent={intent} conf={confidence:.2f} safety={safety_cls} | "
+            f"{len(timeline)} scenes ({coverage:.0%} coverage), {len(alignment)} transcript lines aligned, "
+            f"{len(video_analysis['key_moments'])} key moments, {len(result['watermarks'])} watermark(s), "
+            f"{len(conflicts)} transcript conflict(s)"
+        )
+        return result
+
+    # ── Clip intelligence store ────────────────────────────────────────────────
+
+    def _update_clip_store(self, video_path, clip_folder, clip_id, result, transcript, p1_audio, proxy) -> None:
+        try:
+            from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+
+            store = ClipIntelligenceStore()
+            clip_data = store.load(clip_id, clip_folder) or store.create_blank(clip_id, clip_folder)
+            cd = result.get("content_director", {})
+            va = result.get("video_analysis", {})
+            duration = float(proxy.get("duration_sec") or 0.0)
+
+            # 1. audio_data.math from Phase-1 DSP
+            if p1_audio:
+                store.patch_audio_math(clip_data, {
+                    "tempo_bpm": p1_audio.get("tempo_bpm", 120.0),
+                    "beat_timestamps": p1_audio.get("beats", []),
+                    "drop_timestamps": p1_audio.get("drops", []),
+                    "avg_energy": p1_audio.get("avg_energy", 0.5),
+                    "vibe": p1_audio.get("vibe", "unknown"),
+                    "beat_count": p1_audio.get("beat_count", len(p1_audio.get("beats", []))),
+                    "drop_count": p1_audio.get("drop_count", len(p1_audio.get("drops", []))),
+                    "wav_path": p1_audio.get("wav_path"),
+                })
+
+            # 2. speech intelligence (transcript is now the authority for vocals)
+            is_talking = bool(cd.get("is_talking_on_camera") or va.get("speaker_analysis", {}).get("is_talking_on_camera")
+                              or result.get("intent") == "talking_head")
+            speech_intel = _derive_speech_intel(is_talking, transcript, p1_audio)
+            result["speech_intelligence"] = speech_intel
+
+            # 3. visual_context
+            visual_ctx = {
+                "intent": result.get("intent", "viral_reel"),
+                "tone": cd.get("tone", "aspirational"),
+                "editing_style": result.get("editing_style", "cinematic"),
+                "engagement_hook": cd.get("engagement_hook", ""),
+                "detected_entities": cd.get("detected_entities", []),
+                "possible_narratives": cd.get("possible_narratives", []),
+                "recommended_narrative": cd.get("recommended_narrative", ""),
+                "feature_flags": result.get("feature_flags", {}),
+                "safety": result.get("safety", {}),
+                "creative_possibilities": result.get("creative_possibilities", []),
+                "speech_intelligence": speech_intel,
+                "video_summary": va.get("overview", {}).get("summary", ""),
+            }
+            store.patch_visual_context(clip_data, visual_ctx)
+
+            # 4. audio_data.context
+            store.patch_audio_context(clip_data, {
+                "has_vocals": speech_intel["has_spoken_vocal"],
+                "speech_mode": speech_intel["speech_mode"],
+                "recommended_audio_action": speech_intel["recommended_audio_action"],
+                "dominant_emotion": cd.get("tone", "hype"),
+                "vibe": result.get("editing_style", "rhythm_driven"),
+            })
+
+            # 5. visual_vectors from the REAL timeline
+            vectors = _derive_visual_vectors(va, duration)
+            store.patch_visual_vectors(clip_data, vectors)
+
+            store.save(clip_id, clip_data, clip_folder)
+            result["clip_intelligence"] = clip_data
+            result["visual_vectors"] = vectors
+            logger.info(f"🧠 [ClipIntelligenceStore] '{clip_id}' -> speech_mode='{speech_intel['speech_mode']}' "
+                        f"({speech_intel['recommended_audio_action']}).")
+        except Exception as store_err:
+            logger.warning(f"🧠 [ClipIntelligenceStore] Update warning: {store_err}")
+            result.setdefault("speech_intelligence", _derive_speech_intel(
+                bool(result.get("content_director", {}).get("is_talking_on_camera")), transcript, p1_audio))
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
@@ -1111,35 +1178,33 @@ _analyzer: Optional[ForensicVideoAnalyzer] = None
 
 
 def get_analyzer() -> ForensicVideoAnalyzer:
-    """Return the module-level singleton, creating it on first call."""
     global _analyzer
     if _analyzer is None:
         _analyzer = ForensicVideoAnalyzer()
     return _analyzer
 
 
-def analyze_video(video_path: str,
-                  frame_paths: Optional[List[str]] = None,
-                  creator_name: Optional[str] = None,
-                  audio_candidates: Optional[List[dict]] = None,
-                  intelligence_cache=None) -> dict:
+def analyze_video(video_path: str, frame_paths: Optional[List[str]] = None, intelligence_cache=None, **kwargs) -> dict:
     """
-    Main Orchestrator for Forensic Analysis.
-    Auto-extracts strategic frames if frame_paths is None.
+    Main entry. kwargs pass through to analyze(): creator_name, audio_candidates,
+    transcript, use_cache. frame_paths / intelligence_cache are accepted for
+    compatibility and ignored.
+    """
+    return get_analyzer().analyze(video_path, frame_paths=frame_paths, **kwargs)
 
-    Args:
-        video_path:         Path to source video file.
-        frame_paths:        Optional pre-extracted frame image paths.
-        creator_name:       Optional creator handle/title hint for face cache RAG.
-        audio_candidates:   Optional list of candidate BGM audio metadata dicts.
-        intelligence_cache: Deprecated: unused legacy parameter preserved for caller backward-compatibility.
-    """
-    return get_analyzer().analyze(
-        video_path,
-        frame_paths=frame_paths,
-        creator_name=creator_name,
-        audio_candidates=audio_candidates
-    )
 
 # Alias for legacy support
 analyze = analyze_video
+
+
+if __name__ == "__main__":
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+    if len(sys.argv) < 2:
+        print("usage: python forensic_analyzer.py <video_file> [creator_name]")
+        raise SystemExit(1)
+    res = analyze_video(sys.argv[1], creator_name=sys.argv[2] if len(sys.argv) > 2 else None)
+    if res.get("_error"):
+        print(f"FAILED: {res['_error']}")
+    else:
+        print(render_explanation(res))
