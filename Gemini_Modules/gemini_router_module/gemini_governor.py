@@ -804,26 +804,10 @@ class GeminiGovernor:
 
             if error_type == "429":
                 state["429_count"] += 1
-                err_text = (error_message or "").lower()
-                is_rpd = any(kw in err_text for kw in (
-                    "generaterequestsperday", "requests per day", "perday", "per_day",
-                    "daily requests limit", "free_tier_requests_per_day", "daily limit"
-                ))
-                if is_rpd:
-                    duration_sec = get_seconds_until_midnight()
-                    hours_rem = duration_sec / 3600.0
-                    state["status"] = "BANNED"
-                    state["ban_remaining_seconds"] = duration_sec
-                    logger.warning(
-                        f"🛑 [RPD EXHAUSTED] Model {model_name} hit DAILY quota limit (RPD)!\n"
-                        f"   ⏳ Quarantined for {hours_rem:.1f}h ({duration_sec}s) until 12:00 AM midnight reset.\n"
-                        f"   💡 ACTION: Update GEMINI_API_KEY in Credentials/.env to proceed immediately."
-                    )
-                else:
-                    duration_sec = 45
-                    state["status"] = "BANNED"
-                    state["ban_remaining_seconds"] = duration_sec
-                    logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 (RPM/TPM quota).")
+                duration_sec = 45
+                state["status"] = "BANNED"
+                state["ban_remaining_seconds"] = duration_sec
+                logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 quota (RPM/TPM).")
 
             elif error_type == "timeout":
 
@@ -1615,8 +1599,8 @@ class GeminiGovernor:
 
                 if not recoverable_models:
                     logger.error(
-                        f"🚨 [FATAL QUOTA] All Gemini models are permanently exhausted (403/404) or parked until 12:00 AM midnight (RPD)!\n"
-                        f"🛑 Halting retry loop ({attempts} attempts tried). Please update GEMINI_API_KEY in Credentials/.env to proceed immediately."
+                        f"🚨 [FATAL QUOTA] All candidate models are permanently inaccessible (403/404)!\n"
+                        f"🛑 Halting retry loop ({attempts} attempts tried). Please check your API key and permissions."
                     )
                     break
 

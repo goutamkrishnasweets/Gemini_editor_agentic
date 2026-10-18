@@ -61,9 +61,9 @@ def test_programmatic_governor_rotation():
     m2 = gemini_router.get_available_model(task_type="reasoning")
     assert m2 != m1
 
-    # Simulate 429 RPD daily quota exhaustion (real-time difference until 12:00 AM midnight)
+    # Verify ANY 429 (including daily quota strings) is quarantined for uniform 45s only (no RPD multi-hour ban)
     gemini_router.mark_model_banned(m2, error_type="429", error_message="ResourceExhausted: 429 GenerateRequestsPerDay quota exceeded")
-    assert gemini_router.model_states[m2]["ban_remaining_seconds"] > 60
+    assert gemini_router.model_states[m2]["ban_remaining_seconds"] == 45
 
     # Simulate 403 Permission Denied (24h ban)
     gemini_router.mark_model_banned(m2, error_type="403", error_message="PermissionDenied: 403 Your project has been denied access")
@@ -76,25 +76,23 @@ def test_programmatic_governor_rotation():
             state["ban_remaining_seconds"] = 0
 
 
-def test_rpd_exact_time_difference_to_midnight():
-    """Verify RPD quarantine calculates the exact seconds from any time (e.g. 3pm) to 12:00 AM midnight."""
-    from datetime import datetime
-    from unittest.mock import patch
-    from Gemini_Modules.gemini_router_module.gemini_governor import get_seconds_until_midnight
+def test_no_rpd_multi_hour_bans_on_any_429():
+    """Verify that no 429 error ever results in a multi-hour or midnight quarantine."""
+    with gemini_router.state_lock:
+        gemini_router.model_states["gemini-2.0-flash"]["status"] = "ACTIVE"
+        gemini_router.model_states["gemini-2.0-flash"]["ban_remaining_seconds"] = 0
 
-    # Simulate 3:00 PM (15:00:00) -> 9 hours to 12:00 AM midnight
-    fake_3pm = datetime(2026, 10, 19, 15, 0, 0)
-    with patch("Gemini_Modules.gemini_router_module.gemini_governor.datetime") as mock_dt:
-        mock_dt.now.return_value = fake_3pm
-        diff = get_seconds_until_midnight()
-        assert diff == 9 * 3600  # Exactly 32,400 seconds (9.0 hours)
+    gemini_router.mark_model_banned(
+        "gemini-2.0-flash",
+        error_type="429",
+        error_message="ResourceExhausted: 429 Quota exceeded for quota metric 'GenerateRequestsPerDay' and limit 'GenerateRequestsPerDay per project per day'"
+    )
+    assert gemini_router.model_states["gemini-2.0-flash"]["ban_remaining_seconds"] == 45, \
+        "429 must ALWAYS be quarantined for 45s only, never multi-hour RPD ban"
 
-    # Simulate 10:30 PM (22:30:00) -> 1.5 hours to 12:00 AM midnight
-    fake_1030pm = datetime(2026, 10, 19, 22, 30, 0)
-    with patch("Gemini_Modules.gemini_router_module.gemini_governor.datetime") as mock_dt:
-        mock_dt.now.return_value = fake_1030pm
-        diff = get_seconds_until_midnight()
-        assert diff == 5400  # Exactly 5,400 seconds (1.5 hours)
+    with gemini_router.state_lock:
+        gemini_router.model_states["gemini-2.0-flash"]["status"] = "ACTIVE"
+        gemini_router.model_states["gemini-2.0-flash"]["ban_remaining_seconds"] = 0
 
 
 def test_creative_task_fallback_returns_none_avoiding_json_decode_error():
