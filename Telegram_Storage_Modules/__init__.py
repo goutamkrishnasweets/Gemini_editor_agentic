@@ -9,6 +9,7 @@ from .telegram_http import (
     send_document,
     extract_file_id,
     download_file_by_id,
+    download_telegram_document,
     pin_message,
     get_pinned_message,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "send_document",
     "extract_file_id",
     "download_file_by_id",
+    "download_telegram_document",
     "pin_message",
     "get_pinned_message",
     "TelegramVaultIndexer",

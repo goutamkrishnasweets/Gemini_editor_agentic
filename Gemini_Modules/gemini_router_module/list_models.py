@@ -18,6 +18,7 @@ import re
 import json
 import time
 import logging
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
 logger = logging.getLogger("list_models")
@@ -217,10 +218,9 @@ DEFAULT_MODELS_LIST = [
     "gemini-3.8-flash-lite",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
+    "gemini-2.5-flash-lite",
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
 ]
@@ -315,28 +315,32 @@ def _is_valid_generative_model(model_name: str) -> bool:
     return True
 
 
+def _extract_version_score(name: str) -> float:
+    """Dynamically extracts numeric generation from any model string (e.g. 3.8, 4.0, 5.0) via regex."""
+    nl = name.lower()
+    m = re.search(r"(?:gemini-)?(\d+)[.-](\d+)", nl)
+    if m:
+        try:
+            return float(f"{m.group(1)}.{m.group(2)}")
+        except Exception:
+            pass
+    m_single = re.search(r"(?:gemini-)?(\d+)", nl)
+    if m_single:
+        try:
+            return float(m_single.group(1))
+        except Exception:
+            pass
+    if "latest" in nl:
+        return 2.4
+    return 1.0
+
+
 def _sort_models_by_tier(models: List[str]) -> List[str]:
     """Sorts discovered models into Flash -> Lite -> Other -> Pro tiers, prioritizing higher version numbers."""
-    def _version_key(name: str) -> float:
-        nl = name.lower()
-        if "3.8" in nl or "3-8" in nl:
-            return 3.8
-        if "3.5" in nl or "3-5" in nl:
-            return 3.5
-        if "3." in nl or "3-" in nl:
-            return 3.0
-        if "2.5" in nl or "2-5" in nl:
-            return 2.5
-        if "2.0" in nl or "2-" in nl:
-            return 2.0
-        if "latest" in nl:
-            return 2.4
-        return 1.0
-
-    flash_models = sorted([m for m in models if "flash" in m.lower() and "lite" not in m.lower()], key=_version_key, reverse=True)
-    lite_models = sorted([m for m in models if "lite" in m.lower()], key=_version_key, reverse=True)
-    other_models = sorted([m for m in models if "pro" not in m.lower() and "flash" not in m.lower() and "lite" not in m.lower()], key=_version_key, reverse=True)
-    pro_models = sorted([m for m in models if "pro" in m.lower()], key=_version_key, reverse=True)
+    flash_models = sorted([m for m in models if "flash" in m.lower() and "lite" not in m.lower()], key=_extract_version_score, reverse=True)
+    lite_models = sorted([m for m in models if "lite" in m.lower()], key=_extract_version_score, reverse=True)
+    other_models = sorted([m for m in models if "pro" not in m.lower() and "flash" not in m.lower() and "lite" not in m.lower()], key=_extract_version_score, reverse=True)
+    pro_models = sorted([m for m in models if "pro" in m.lower()], key=_extract_version_score, reverse=True)
 
     # Free/high-RPM tiers first (Flash -> Lite), with paid/expensive Pro models at the very bottom
     ordered = []
@@ -360,23 +364,12 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
     for m in models:
         m_lower = m.lower()
         
-        # Base version score multiplier: prioritize latest generation models (3.8 > 3.5 > 3.0 > 2.5 > 2.0 > 1.5)
-        if "3.8" in m_lower or "3-8" in m_lower:
-            version_score = 3.8
-        elif "3.5" in m_lower or "3-5" in m_lower:
-            version_score = 3.5
-        elif "3." in m_lower or "3-" in m_lower:
-            version_score = 3.0
-        elif "2.5" in m_lower or "2-5" in m_lower:
-            version_score = 2.5
-        elif "2.0" in m_lower or "2-" in m_lower:
-            version_score = 2.0
-        else:
-            version_score = 1.5
+        # Base version score multiplier: extracted dynamically (e.g. 3.8, 4.0, 5.0)
+        version_score = _extract_version_score(m)
 
-        is_lite = "lite" in m_lower
-        is_pro = "pro" in m_lower
-        is_flash = "flash" in m_lower and not is_lite
+        is_lite = any(w in m_lower for w in ("lite", "nano", "small", "mini", "edge"))
+        is_pro = any(w in m_lower for w in ("pro", "ultra", "max", "large"))
+        is_flash = not is_pro and not is_lite
 
         # 1. creative (Lite highest RPM > Flash > Pro)
         if is_lite:
@@ -495,6 +488,45 @@ def refresh_gemini_models_cache(api_key: str = "", force: bool = False) -> dict:
         os.replace(tmp_file, CACHE_FILE)
         _LAST_REFRESH_TIME = now
         logger.info(f"💾 Saved refreshed Gemini model matrix ({len(discovered_models)} models) to {CACHE_FILE}")
+
+        # Automatically populate logs/gemini_routing.json with structured filtered models
+        try:
+            log_routing_file = os.path.join(_REPO_ROOT, "logs", "gemini_routing.json")
+            os.makedirs(os.path.dirname(log_routing_file), exist_ok=True)
+            capability_rankings = {}
+            for task in ["vision", "creative", "reasoning", "caption", "narrative", "cheap", "master", "analysis"]:
+                cap_models = sorted(discovered_models, key=lambda m: task_ratings.get(task, {}).get(m, 0.0), reverse=True)
+                capability_rankings[task] = [
+                    {"model": m, "score": task_ratings.get(task, {}).get(m, 0.0)}
+                    for m in cap_models
+                ]
+
+            model_specs = {}
+            for m in discovered_models:
+                is_lite = "lite" in m.lower()
+                is_pro = "pro" in m.lower()
+                model_specs[m] = {
+                    "tier": "lite" if is_lite else ("pro" if is_pro else "flash"),
+                    "rpm_limit": 30 if is_lite else (15 if not is_pro else 2),
+                    "tpm_limit": 1000000 if not is_pro else 32000,
+                    "supports_vision": True,
+                    "status": "HEALTHY"
+                }
+
+            routing_payload = {
+                "updated_at": now,
+                "updated_at_iso": datetime.utcnow().isoformat() + "Z",
+                "total_valid_models": len(discovered_models),
+                "filtered_valid_models": discovered_models,
+                "capabilities": capability_rankings,
+                "model_specifications": model_specs
+            }
+            with open(log_routing_file, "w", encoding="utf-8") as rf:
+                json.dump(routing_payload, rf, indent=2, ensure_ascii=False)
+            logger.info(f"💾 Saved filtered valid models to {log_routing_file}")
+        except Exception as l_err:
+            logger.warning(f"Failed to populate logs/gemini_routing.json: {l_err}")
+
     except Exception as e:
         logger.warning(f"Failed to save models cache: {e}")
 
@@ -550,6 +582,63 @@ def get_models_by_capability(capability: str = "reasoning") -> List[str]:
     if not cap_ratings:
         return valid
     return sorted(valid, key=lambda m: cap_ratings.get(m, 0.0), reverse=True)
+
+
+def save_filtered_valid_models(output_file: Optional[str] = None, api_key: str = "", force: bool = False) -> dict:
+    """
+    Exports the verified, filtered valid production Gemini models to a clean JSON file.
+    Always ensures logs/gemini_routing.json and storage/gemini_models_cache.json are populated.
+    """
+    cached = refresh_gemini_models_cache(api_key=api_key, force=force)
+    models = cached.get("models", [])
+    task_ratings = cached.get("task_ratings", {})
+
+    capability_rankings = {}
+    for task in ["vision", "creative", "reasoning", "caption", "narrative", "cheap", "master", "analysis"]:
+        cap_models = sorted(models, key=lambda m: task_ratings.get(task, {}).get(m, 0.0), reverse=True)
+        capability_rankings[task] = [
+            {"model": m, "score": task_ratings.get(task, {}).get(m, 0.0)}
+            for m in cap_models
+        ]
+
+    model_specs = {}
+    for m in models:
+        is_lite = "lite" in m.lower()
+        is_pro = "pro" in m.lower()
+        model_specs[m] = {
+            "tier": "lite" if is_lite else ("pro" if is_pro else "flash"),
+            "rpm_limit": 30 if is_lite else (15 if not is_pro else 2),
+            "tpm_limit": 1000000 if not is_pro else 32000,
+            "supports_vision": True,
+            "status": "HEALTHY"
+        }
+
+    export_payload = {
+        "updated_at": cached.get("updated_at", time.time()),
+        "updated_at_iso": datetime.utcnow().isoformat() + "Z",
+        "total_valid_models": len(models),
+        "filtered_valid_models": models,
+        "capabilities": capability_rankings,
+        "model_specifications": model_specs
+    }
+
+    targets = []
+    if output_file:
+        targets.append(output_file)
+    else:
+        log_json = os.path.join(_REPO_ROOT, "logs", "gemini_routing.json")
+        targets.extend([log_json, CACHE_FILE])
+
+    for target in targets:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                json.dump(export_payload, f, indent=2, ensure_ascii=False)
+            logger.info(f"💾 [LIST_MODELS] Saved filtered valid models ({len(models)} models) to: {target}")
+        except Exception as e:
+            logger.warning(f"Could not save models to {target}: {e}")
+
+    return export_payload
 
 
 if __name__ == "__main__":

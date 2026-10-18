@@ -17,9 +17,9 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-_STORAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-if _STORAGE_DIR not in sys.path:
-    sys.path.insert(0, _STORAGE_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from Telegram_Storage_Modules.telegram_user_manager import load_all_users
 from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer

@@ -214,7 +214,7 @@ class GeminiGovernor:
 
         # Granular Locks for high-performance concurrency
 
-        self.state_lock = threading.Lock()
+        self.state_lock = threading.RLock()
 
         self.rate_limit_lock = threading.Lock()
         self.memory_lock = threading.Lock()
@@ -248,7 +248,8 @@ class GeminiGovernor:
 
         self.STATE_FILE = os.getenv("GEMINI_STATE_FILE", "Credentials/gemini_states.json")
 
-        self.LOG_FILE = os.getenv("GEMINI_LOG_FILE", "logs/gemini_routing.json")
+        self.LOG_FILE = os.getenv("GEMINI_LOG_FILE", "logs/gemini_governor.log")
+        self.ROUTING_JSON = os.getenv("GEMINI_ROUTING_JSON", "logs/gemini_routing.json")
 
         self.REQUEST_DEADLINE = 300  # seconds — raised from 90s; heavy vision payloads take ~40-60s per model
 

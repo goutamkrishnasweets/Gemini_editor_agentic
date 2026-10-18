@@ -25,6 +25,7 @@ class TelegramSessionManager:
 
     def __init__(self, sessions_file: str = SESSIONS_FILE):
         self.sessions_file = sessions_file
+        self._last_vault_sync_time = 0.0
         os.makedirs(os.path.dirname(self.sessions_file), exist_ok=True)
         self.sessions: Dict[str, Dict[str, Any]] = self._load_sessions()
 
@@ -42,20 +43,23 @@ class TelegramSessionManager:
             with open(self.sessions_file, "w", encoding="utf-8") as f:
                 json.dump(self.sessions, f, indent=2, ensure_ascii=False)
             
-            # Automatic sync to Telegram Storage Group Vault
+            # Automatic sync to Telegram Storage Group Vault (debounced: max once per 15s to prevent pin flood 429)
             try:
-                from Telegram_Storage_Modules.telegram_user_manager import _upload_file_to_telegram_storage
-                from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
-                storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
-                if storage_group_id and os.path.exists(self.sessions_file):
-                    caption = f"📝 **[VAULT BACKUP]** `telegram_sessions.json` (Updated {time.strftime('%H:%M:%S')})"
-                    ts_doc_id = _upload_file_to_telegram_storage(self.sessions_file, caption=caption)
-                    if ts_doc_id:
-                        indexer = TelegramVaultIndexer()
-                        indexer.vault_index["telegram_sessions_file_id"] = ts_doc_id
-                        indexer._save_local_index()
-                        indexer.upload_and_pin_vault_index_sync()
-                        logger.info("✅ [SESSION VAULT BACKUP] Uploaded & PINNED updated telegram_sessions.json to Storage Group (file_id: %s)", ts_doc_id[:15])
+                now = time.time()
+                if (now - self._last_vault_sync_time) >= 15.0:
+                    from Telegram_Storage_Modules.telegram_user_manager import _upload_file_to_telegram_storage
+                    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                    storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+                    if storage_group_id and os.path.exists(self.sessions_file):
+                        caption = f"📝 **[VAULT BACKUP]** `telegram_sessions.json` (Updated {time.strftime('%H:%M:%S')})"
+                        ts_doc_id = _upload_file_to_telegram_storage(self.sessions_file, caption=caption)
+                        if ts_doc_id:
+                            self._last_vault_sync_time = now
+                            indexer = TelegramVaultIndexer()
+                            indexer.vault_index["telegram_sessions_file_id"] = ts_doc_id
+                            indexer._save_local_index()
+                            indexer.upload_and_pin_vault_index_sync()
+                            logger.info("✅ [SESSION VAULT BACKUP] Uploaded & PINNED updated telegram_sessions.json to Storage Group (file_id: %s)", ts_doc_id[:15])
             except Exception as _ts_err:
                 logger.debug("Notice uploading telegram_sessions.json to vault: %s", _ts_err)
         except Exception as e:

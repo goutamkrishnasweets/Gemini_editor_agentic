@@ -251,7 +251,9 @@ def process_video_with_watermark(input_path: str, output_path: str, retry_mode: 
         logger.error(f"Watermark process failed: {e}")
         return {"success": False, "watermark_detected": None, "context": None}
     finally:
-        pass
+        if job_dir and os.path.exists(job_dir):
+            shutil.rmtree(job_dir, ignore_errors=True)
+            logger.debug(f"🧹 [WATERMARK_AUTO] Purged ephemeral job directory: {job_dir}")
 
 def apply_text_watermark(*args, **kwargs): return False
 

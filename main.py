@@ -161,6 +161,7 @@ from Main_Modules.master_ai_editor import MasterAIEditor
 from Publishing_Modules.queue_publisher import PublishQueue
 from Telegram_Storage_Modules.telegram_session_manager import session_manager
 from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+from Telegram_Storage_Modules import download_telegram_document
 from Core_Modules import MAX_RETRIES
 
 vault_indexer = TelegramVaultIndexer()
@@ -2351,11 +2352,19 @@ async def handle_telegram_incoming_msg(update, context):
             "📥 **[VIDEO UPLOAD RECEIVED]**\n\n"
             "📁 **Status**: Downloading uploaded video file to local staging..."
         )
-        file_obj = await (msg.video or msg.document).get_file()
+        media_obj = msg.video or msg.document
         temp_dir = os.path.join(_REPO_ROOT, "downloads", f"telegram_{chat_id}_{int(time.time())}")
         os.makedirs(temp_dir, exist_ok=True)
         local_video_path = os.path.join(temp_dir, "video.mp4")
-        await file_obj.download_to_drive(custom_path=local_video_path)
+        try:
+            await download_telegram_document(media_obj, msg, local_video_path, status_msg=status_msg)
+        except Exception as dl_err:
+            logger.error(f"❌ Failed to download user video: {dl_err}", exc_info=True)
+            try:
+                await status_msg.edit_text(f"❌ **Download Failed**\n\nCould not download video: {dl_err}")
+            except Exception:
+                pass
+            return
 
         upload_goal = f"Process uploaded video at '{local_video_path}', edit with beat-synced rhythm and BGM, audit quality, and publish to social platforms."
         logger.info(f"🤖 [UNIVERSAL AGENT] Routing uploaded video to Gemini Director: '{upload_goal}'")
@@ -2683,20 +2692,21 @@ def run_master_pipeline(
                                     master_file_id=master_file_id,
                                 )
 
-                                # 3. Ephemeral Scratchpad Eraser: Wipes temporary downloads & beat cache now that
-                                # delivery & vault backups are safely completed.
-                                try:
-                                    from Core_Modules.disk_cleaner import clean_clip_artifacts
-                                    clean_clip_artifacts(real_cid)
-                                    clean_clip_artifacts(clean_cid)
-                                    logger.info(f"🧹 [ZERO-LEAK DISK CLEANER] Wiped ephemeral scratchpad artifacts for '{real_cid}'")
-                                except Exception as _cln_e:
-                                    logger.warning(f"⚠️ [ZERO-LEAK DISK CLEANER] Ephemeral wipe notice: {_cln_e}")
                             except Exception as _sg_e:
                                 if "Chat not found" in str(_sg_e) or "chat not found" in str(_sg_e).lower():
                                     logger.warning(f"⚠️ Vault storage group backup skipped: Storage group chat not found. Check TELEGRAM_STORAGE_GROUP_ID in .env")
                                 else:
                                     logger.warning(f"⚠️ Vault storage group backup warning: {_sg_e}")
+                            finally:
+                                # 3. Ephemeral Scratchpad Eraser: Wipes temporary downloads, beat cache & local master reel
+                                # in a guaranteed finally block now that delivery & vault backups have finished.
+                                try:
+                                    from Core_Modules.disk_cleaner import clean_clip_artifacts
+                                    clean_clip_artifacts(real_cid, master_video_path=active_reel_path)
+                                    clean_clip_artifacts(clean_cid, master_video_path=active_reel_path)
+                                    logger.info(f"🧹 [ZERO-LEAK DISK CLEANER] Wiped ephemeral scratchpad artifacts for '{real_cid}'")
+                                except Exception as _cln_e:
+                                    logger.warning(f"⚠️ [ZERO-LEAK DISK CLEANER] Ephemeral wipe notice: {_cln_e}")
 
                     import threading
 
@@ -3361,10 +3371,28 @@ def start_telegram_bot_service():
         app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
         try:
-            from Core_Modules.disk_cleaner import sweep_stale_temp_artifacts
-            sweep_stale_temp_artifacts(max_age_hours=2)
+            from Core_Modules.disk_cleaner import sweep_all_stale_storage, check_storage_circuit_breaker
+            check_storage_circuit_breaker(min_free_gb=3.0)
+            sweep_all_stale_storage(max_age_hours=2)
         except Exception as _sw_err:
             logger.debug(f"Startup disk sweeper notice: {_sw_err}")
+
+        # Start periodic background storage guardian thread (sweeps every 30 mins)
+        def _storage_maintenance_worker():
+            import time
+            while True:
+                time.sleep(1800)  # 30 minutes
+                try:
+                    from Core_Modules.disk_cleaner import sweep_all_stale_storage, check_storage_circuit_breaker
+                    check_storage_circuit_breaker(min_free_gb=3.0)
+                    sweep_all_stale_storage(max_age_hours=2)
+                except Exception as _m_err:
+                    logger.debug(f"Periodic storage sweeper notice: {_m_err}")
+
+        import threading
+        _m_thread = threading.Thread(target=_storage_maintenance_worker, daemon=True, name="StorageGuardianThread")
+        _m_thread.start()
+        logger.info("🛡️ [STORAGE GUARDIAN] Periodic 30-minute storage sweeper thread active.")
 
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
         app.run_polling(poll_interval=2.0, drop_pending_updates=False)
@@ -3436,8 +3464,9 @@ if __name__ == "__main__":
                 logger.warning(f"⚠️ Startup vault hydration notice: {_h_err}")
 
             try:
-                from Core_Modules.disk_cleaner import sweep_stale_temp_artifacts
-                sweep_stale_temp_artifacts(max_age_hours=2)
+                from Core_Modules.disk_cleaner import sweep_all_stale_storage, check_storage_circuit_breaker
+                check_storage_circuit_breaker(min_free_gb=3.0)
+                sweep_all_stale_storage(max_age_hours=2)
             except Exception as _sw_err:
                 logger.debug(f"Startup disk sweeper notice: {_sw_err}")
 

@@ -140,7 +140,24 @@ class AutonomousDirector:
 
         if not model_name:
             env_model = os.getenv("GEMINI_DIRECTOR_MODEL") or os.getenv("GEMINI_MODEL")
-            model_name = env_model or "gemini-2.5-flash"
+            if env_model:
+                model_name = env_model
+            elif _HAS_GOVERNOR and gemini_router is not None:
+                # 100% dynamic: Governor provides the real-time highest ranked unbanned model
+                model_name = gemini_router.get_available_model(task_type="reasoning")
+
+            # Fallback to dynamic discovered roster from API cache if Governor has no state yet
+            if not model_name:
+                try:
+                    from Gemini_Modules.gemini_router_module.list_models import get_active_models_and_ratings
+                    active_roster, _ = get_active_models_and_ratings()
+                    if active_roster:
+                        model_name = active_roster[0]
+                except Exception:
+                    pass
+
+        if not model_name:
+            raise RuntimeError("Gemini Governor found zero active, unbanned generative models.")
 
         self.model_name = model_name
         try:
@@ -190,14 +207,27 @@ class AutonomousDirector:
                 pass
 
     def _make_config(self) -> "types.GenerateContentConfig":
-        """Director only routes tool calls — thinking tokens just add latency. Disable on 2.5 Flash."""
+        """Builds generation config with dynamic model tier awareness and thinking token suppression."""
+        name_lower = (self.model_name or "").lower()
+        if "pro" in name_lower or "ultra" in name_lower:
+            tier_guidance = "Operating Tier: DEEP REASONING (Thorough multi-step validation and rigorous quality audit)."
+        elif any(w in name_lower for w in ("lite", "nano", "small", "mini")):
+            tier_guidance = "Operating Tier: WORKHORSE (High-throughput, ultra-concise JSON tool calling, zero unnecessary prose)."
+        else:
+            tier_guidance = "Operating Tier: BALANCED FLASH (High-speed multi-tool execution, fast tool chaining, aggressive pacing)."
+
+        dynamic_instruction = (
+            f"You are the Autonomous Creative Director for Gemini Editor (Active Model: {self.model_name}).\n"
+            f"{tier_guidance}\n\n"
+            f"{DIRECTOR_SYSTEM_INSTRUCTION}"
+        )
+
         kwargs: Dict[str, Any] = dict(
-            system_instruction=DIRECTOR_SYSTEM_INSTRUCTION,
+            system_instruction=dynamic_instruction,
             tools=self.tools,
             temperature=0.2,
         )
-        name = (self.model_name or "").lower()
-        if "2.5" in name and "flash" in name and os.getenv("DIRECTOR_THINKING", "off").lower() != "on":
+        if os.getenv("DIRECTOR_THINKING", "off").lower() != "on":
             try:
                 kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
             except Exception:
@@ -304,16 +334,35 @@ class AutonomousDirector:
                         current_input = self._summary_input(goal, execution_log)
                         continue
 
-                    # quota / server / model_gone
+                    # Route model failure through Governor (the Director NEVER rotates models on its own)
+                    if _HAS_GOVERNOR and gemini_router is not None and kind in ("model_gone", "quota", "server"):
+                        ban_reason = "404" if kind == "model_gone" else ("429" if kind == "quota" else "5xx")
+                        gemini_router.mark_model_banned(self.model_name, error_type=ban_reason)
+
+                        # Request the next best unbanned model dynamically from Governor
+                        next_model = gemini_router.get_available_model(task_type="reasoning")
+                        if next_model and next_model != self.model_name:
+                            logger.warning(
+                                f"🔄 [GOVERNOR ROTATION] Model '{self.model_name}' banned ({kind}). "
+                                f"Governor dynamically assigned active model '{next_model}'. Rebinding session..."
+                            )
+                            self.model_name = next_model
+                            chat = self.client.chats.create(model=self.model_name, config=self._make_config())
+                            current_input = self._summary_input(goal, execution_log)
+                            api_attempts = 0
+                            continue
+
+                    # If no alternative model could be provided by Governor, fail cleanly
+                    if kind == "model_gone":
+                        return _fail("model_gone", f"Model '{self.model_name}' is unavailable (all model fallbacks exhausted): {api_err}", turn)
+
+                    # quota / server retry tracking
                     api_attempts += 1
 
-                    # Fast-fail for daily/long-term quota exhaustion (fail immediately rather than burning retries)
+                    # Fast-fail for daily/long-term quota exhaustion if no other models available
                     err_lower = str(api_err).lower()
                     if kind == "quota" and any(k in err_lower for k in ("free_tier_requests", "freetier", "limit: 20", "retry in 12h", "retry in 11h", "generativelanguage.googleapis.com")):
-                        return _fail("quota_exhausted", f"Daily quota exhausted on {self.model_name}: {api_err}", turn)
-
-                    if kind == "model_gone":
-                        return _fail("model_gone", f"Model '{self.model_name}' is unavailable: {api_err}", turn)
+                        return _fail("quota_exhausted", f"Daily quota exhausted across all available models: {api_err}", turn)
 
                     if api_attempts > _MAX_API_RETRIES:
                         return _fail(kind, f"Gemini API still failing on {self.model_name} after {_MAX_API_RETRIES} retries ({kind}): {api_err}", turn)

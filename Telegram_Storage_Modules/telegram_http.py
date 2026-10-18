@@ -201,6 +201,33 @@ def is_mtproto_configured() -> bool:
     return True
 
 
+def _calibrate_mtproto_clock() -> None:
+    """
+    Synchronizes MTProto clock offset with Telegram servers to prevent BadMsgNotification [17]
+    errors on cloud VMs, Docker containers, and GitHub Actions runners with system clock drift.
+    """
+    try:
+        import email.utils
+        import urllib.request
+        from pyrogram.session.internals import msg_id
+
+        server_date = urllib.request.urlopen("https://api.telegram.org", timeout=5).headers.get("Date")
+        if server_date:
+            server_ts = email.utils.parsedate_to_datetime(server_date).timestamp()
+            time_offset = server_ts - time.time()
+            if abs(time_offset) > 1.0:
+                def calibrated_msg_id(cls):
+                    now = int(time.time() + time_offset)
+                    cls.offset = (cls.offset + 4) if now == cls.last_time else 0
+                    m_id = (now * 2 ** 32) + cls.offset
+                    cls.last_time = now
+                    return m_id
+                msg_id.MsgId.__new__ = calibrated_msg_id
+                logger.info("[telegram_http] Synchronized MTProto clock offset with Telegram: %+.2fs", time_offset)
+    except Exception as e:
+        logger.debug("[telegram_http] Clock calibration notice: %s", e)
+
+
 # ── UPLOAD ────────────────────────────────────────────────────────────────────
 
 def upload_file_with_pyrogram(
@@ -227,6 +254,7 @@ def upload_file_with_pyrogram(
                 filename, file_size_mb, chat_id)
     try:
         _ensure_event_loop()
+        _calibrate_mtproto_clock()
         from pyrogram import Client
 
         token = _token()
@@ -440,6 +468,7 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
 
     try:
         _ensure_event_loop()
+        _calibrate_mtproto_clock()
         from pyrogram import Client
 
         token = _token()
@@ -487,6 +516,78 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
     except Exception as e:
         logger.warning("[telegram_http] Pyrogram MTProto download failed for file_id=%s: %s", file_id[:12], e)
         return False
+
+
+async def download_telegram_document(media_obj, message_obj, destination_path: str, status_msg=None) -> str:
+    """
+    Downloads a document or video from a Telegram message.
+    Uses standard Bot API get_file if under 19.5MB.
+    Automatically switches to Pyrogram MTProto for files >= 19.5MB up to 2GB,
+    bypassing Telegram's 20MB Bot API download ceiling.
+    """
+    file_size = getattr(media_obj, "file_size", 0) or 0
+    file_size_mb = file_size / (1024 * 1024)
+    use_mtproto = file_size_mb >= 19.5
+
+    if not use_mtproto:
+        try:
+            tg_file = await media_obj.get_file()
+            await tg_file.download_to_drive(custom_path=str(destination_path))
+            return str(destination_path)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "file is too big" in err_str or "too large" in err_str:
+                logger.info("[telegram_http] Bot API reported file is too big (%.1fMB); switching to MTProto.", file_size_mb)
+                use_mtproto = True
+            else:
+                raise e
+
+    if use_mtproto:
+        if status_msg:
+            try:
+                await status_msg.edit_text(
+                    f"📥 **Large Video Detected ({file_size_mb:.1f} MB)**\n\n"
+                    f"🚀 Downloading via Telegram MTProto engine (bypassing 20MB limit)..."
+                )
+            except Exception:
+                pass
+
+        _calibrate_mtproto_clock()
+        from pyrogram import Client
+        token = _token()
+        api_id, api_hash = get_mtproto_credentials()
+        session_name = f"vault_pyro_doc_{uuid.uuid4().hex[:8]}"
+        chat_id = message_obj.chat.id
+        msg_id = message_obj.message_id
+
+        async with Client(
+            session_name,
+            api_id=int(api_id),
+            api_hash=api_hash,
+            bot_token=token,
+            in_memory=True
+        ) as app:
+            target_chat = int(chat_id) if (isinstance(chat_id, int) or (isinstance(chat_id, str) and chat_id.lstrip("-").isdigit())) else chat_id
+            pyro_msg = await app.get_messages(chat_id=target_chat, message_ids=int(msg_id))
+            os.makedirs(os.path.dirname(destination_path) or ".", exist_ok=True)
+            tmp_path = destination_path + ".tmp"
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            downloaded = await app.download_media(message=pyro_msg, file_name=tmp_path)
+            if downloaded and os.path.exists(str(downloaded)):
+                if os.path.abspath(str(downloaded)) != os.path.abspath(destination_path):
+                    if os.path.exists(destination_path):
+                        try:
+                            os.remove(destination_path)
+                        except Exception:
+                            pass
+                    os.replace(str(downloaded), destination_path)
+                logger.info("[telegram_http] MTProto download of user media successful -> %s", destination_path)
+                return str(destination_path)
+            raise RuntimeError(f"Pyrogram MTProto download failed for message {msg_id}")
 
 
 _OVERSIZED_FILE_IDS = set()

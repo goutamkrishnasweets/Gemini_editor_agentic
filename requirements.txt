@@ -61,10 +61,6 @@ scenedetect[opencv-headless]>=0.6.0
 scenedetect>=0.6.2
 scikit-image>=0.22.0
 
-# --- MANGA / COMIC / PDF DOCUMENT ---
-pymupdf>=1.23.0
-pypdfium2>=4.30.0
-
 # --- NUMERICAL / ML ---
 joblib>=1.3.0
 matplotlib>=3.8.0
