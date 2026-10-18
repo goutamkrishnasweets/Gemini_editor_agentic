@@ -254,7 +254,7 @@ class HybridWatermarkDetector:
 
             # ── v2: unpack tuple (watermark boxes, niche) ──────────────────
             raw_result = None
-            max_gemini_retries = 3
+            max_gemini_retries = 1
             for attempt in range(max_gemini_retries):
                 # --- v10.0 Resolution Synchronization ---
                 raw_result = gemini_enhance.detect_watermark(

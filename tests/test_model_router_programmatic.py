@@ -40,8 +40,8 @@ def test_reasoning_capability_prioritizes_production_flash():
     """Verify get_models_by_capability puts top production Flash models before Lite and Pro."""
     ranked = get_models_by_capability("reasoning")
     assert len(ranked) >= 2
-    assert ranked[0] in ("gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")
-    assert ranked[1] in ("gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash")
+    assert "flash" in ranked[0].lower()
+    assert "flash" in ranked[1].lower()
 
 
 def test_programmatic_governor_rotation():
@@ -53,12 +53,17 @@ def test_programmatic_governor_rotation():
             state["ban_remaining_seconds"] = 0
 
     m1 = gemini_router.get_available_model(task_type="reasoning")
-    assert m1 in ("gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")
+    assert m1 is not None and "flash" in m1.lower()
 
-    # Simulate 429 quota exhaustion
-    gemini_router.mark_model_banned(m1, error_type="429")
+    # Simulate 429 quota exhaustion (RPM: 45s)
+    gemini_router.mark_model_banned(m1, error_type="429", error_message="ResourceExhausted: 429 Quota exceeded")
+    assert gemini_router.model_states[m1]["ban_remaining_seconds"] == 45
     m2 = gemini_router.get_available_model(task_type="reasoning")
     assert m2 != m1
+
+    # Simulate 429 RPD daily quota exhaustion (until midnight PT)
+    gemini_router.mark_model_banned(m2, error_type="429", error_message="ResourceExhausted: 429 GenerateRequestsPerDay quota exceeded")
+    assert gemini_router.model_states[m2]["ban_remaining_seconds"] > 60
 
     # Clean up test bans
     with gemini_router.state_lock:

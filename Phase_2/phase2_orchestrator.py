@@ -213,20 +213,19 @@ def run_phase2_pipeline(
                             logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(watermark_boxes)} inpaint coordinate box(es) from sidecar.")
                     except Exception as _ce:
                         logger.warning(f"⚠️ [WATERMARK ALIGNMENT] Failed to load coords sidecar: {_ce}")
-            else:
-                # 3. Detect and Inpaint Watermarks Upfront
+            elif is_inpaint_requested:
+                # 3. Detect and Inpaint Watermarks Upfront ONLY when explicitly requested
                 try:
                     from Watermark_and_Inpainting.gemini_enhance_for_watermark import detect_watermark_from_video
                     from Watermark_and_Inpainting.watermark_main import run_watermark_removal
 
-                    logger.info(f"🧼 [UPFRONT INPAINTING] Running watermark detection & inpainting on: {os.path.basename(video_path)}")
+                    logger.info(f"🧼 [UPFRONT INPAINTING] User requested inpainting. Running detection on: {os.path.basename(video_path)}")
                     detect_kw = ""
-                    if is_inpaint_requested:
-                        try:
-                            from Watermark_and_Inpainting.watermark_directive_helper import extract_watermark_keywords
-                            detect_kw = extract_watermark_keywords(user_edit_directive)
-                        except Exception:
-                            detect_kw = user_edit_directive or ""
+                    try:
+                        from Watermark_and_Inpainting.watermark_directive_helper import extract_watermark_keywords
+                        detect_kw = extract_watermark_keywords(user_edit_directive)
+                    except Exception:
+                        detect_kw = user_edit_directive or ""
                     items, _ = detect_watermark_from_video(video_path=video_path, keywords=detect_kw)
                     if items:
                         watermark_boxes = items
@@ -237,7 +236,7 @@ def run_phase2_pipeline(
                         output_path=clean_raw_path,
                         predetected_watermarks=items if items else None,
                         keywords=detect_kw,
-                        retry_level=1 if is_inpaint_requested else 0
+                        retry_level=1
                     )
                     if inpainted_path and os.path.exists(inpainted_path) and os.path.getsize(inpainted_path) > 1024:
                         working_video_path = inpainted_path
@@ -270,7 +269,11 @@ def run_phase2_pipeline(
                             except Exception as _clean_up_err:
                                 logger.warning(f"⚠️ [UPFRONT INPAINTING] Clean vault upload notice: {_clean_up_err}")
                 except Exception as _inp_err:
-                    logger.warning(f"⚠️ [UPFRONT INPAINTING] Notice: {_inp_err}")
+                    logger.warning(f"⚠️ [UPFRONT INPAINTING] Inpainting notice: {_inp_err}")
+                    working_video_path = video_path
+            else:
+                logger.info(f"⏭️ [UPFRONT INPAINTING] Skipped — no inpaint directive requested by user (0 Gemini calls).")
+                working_video_path = video_path
 
             # ─────────────────────────────────────────────────────────────────
             # STEP 2B: SCENE INTEL & GEMINI CALL 1 FORENSIC PERCEPTION

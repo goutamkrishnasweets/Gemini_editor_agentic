@@ -172,6 +172,22 @@ def _reset_gemini_circuit():
         _GLOBAL_GEMINI_STATE["last_fail_latency"] = 0.0
         _GLOBAL_GEMINI_STATE["gemini_down_until"] = 0.0
 
+
+def get_seconds_until_midnight_pt() -> int:
+    """
+    Calculates exact real-time seconds remaining until 12:00 AM (Midnight) US Pacific Time (PT).
+    Google GenAI Daily Quotas (RPD) reset at 00:00:00 Pacific Time every day.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+    except Exception:
+        from datetime import timezone
+        now_pt = datetime.now(timezone(timedelta(hours=-7)))
+    tomorrow_pt = (now_pt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    seconds_remaining = int((tomorrow_pt - now_pt).total_seconds())
+    return max(seconds_remaining, 60)
+
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -761,7 +777,7 @@ class GeminiGovernor:
 
 
 
-    def mark_model_banned(self, model_name, error_type="429", seconds: Optional[int] = None):
+    def mark_model_banned(self, model_name, error_type="429", seconds: Optional[int] = None, error_message: str = ""):
 
         with self.state_lock:
 
@@ -783,43 +799,33 @@ class GeminiGovernor:
                 }
                 state = self.model_states[model_name]
 
-
-
             if seconds is not None:
-
                 state["status"] = "BANNED"
-
                 state["ban_remaining_seconds"] = seconds
-
                 logger.warning(f"🚫 Model {model_name} BANNED for {seconds}s (manual override).")
-
                 return
 
-
-
             if error_type == "429":
-
                 state["429_count"] += 1
-
-                if state["429_count"] == 1:
-
-                    duration_sec = 45
-
-                elif state["429_count"] == 2:
-
-                    duration_sec = 90
-
+                err_text = (error_message or "").lower()
+                is_rpd = any(kw in err_text for kw in (
+                    "generaterequestsperday", "per day", "perday", "daily requests limit", "free_tier_requests_per_day"
+                ))
+                if is_rpd:
+                    duration_sec = get_seconds_until_midnight_pt()
+                    hours_rem = duration_sec / 3600.0
+                    state["status"] = "BANNED"
+                    state["ban_remaining_seconds"] = duration_sec
+                    logger.warning(
+                        f"🛑 [RPD EXHAUSTED] Model {model_name} hit DAILY quota limit!\n"
+                        f"   ⏳ Quarantined for {hours_rem:.1f}h ({duration_sec}s) until 12:00 AM Pacific Time reset.\n"
+                        f"   💡 ACTION: Update GEMINI_API_KEY in Credentials/.env to proceed immediately."
+                    )
                 else:
-
-                    duration_sec = 240
-
-               
-
-                state["status"] = "BANNED"
-
-                state["ban_remaining_seconds"] = duration_sec
-
-                logger.warning(f"🚫 Model {model_name} BANNED for {duration_sec}s due to 429.")
+                    duration_sec = 45
+                    state["status"] = "BANNED"
+                    state["ban_remaining_seconds"] = duration_sec
+                    logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 (RPM/TPM quota).")
 
             elif error_type == "timeout":
 
@@ -1573,6 +1579,7 @@ class GeminiGovernor:
 
         start_time = time.time()
         attempts = 0
+        cooldown_cycles = 0
         tried_models = set()
         last_error = "Unknown"
 
@@ -1609,13 +1616,42 @@ class GeminiGovernor:
                 current_model = self.get_available_model(task_type, session_id=session_id, exclude_models=tried_models)
 
             if not current_model:
-                # Total Gemini Exhaustion -> Trigger Global Circuit Breaker
-                if attempts > 0:
-                    with _GLOBAL_STATE_LOCK:
-                         cooldown = 60.0
-                         _GLOBAL_GEMINI_STATE["gemini_down_until"] = time.time() + cooldown
-                    logger.error(f"🛑 [VANGUARD] ALL Gemini models exhausted ({attempts} tried). Circuit Breaker ACTIVE ({cooldown:.0f}s).")
-                break
+                with self.state_lock:
+                    self._tick_ban_timers_unlocked()
+                    recoverable_models = [
+                        m for m, s in self.model_states.items()
+                        if s.get("ban_remaining_seconds", 0) <= 95
+                    ]
+
+                if not recoverable_models:
+                    logger.error(
+                        f"🚨 [FATAL QUOTA] All Gemini models are permanently exhausted or parked until 12:00 AM PT (RPD)!\n"
+                        f"🛑 Halting retry loop. Please update GEMINI_API_KEY in Credentials/.env to proceed immediately."
+                    )
+                    break
+
+                if cooldown_cycles < 2:
+                    cooldown_cycles += 1
+                    logger.warning(
+                        f"⏳ [ALL MODELS QUOTA HIT] All available models in quarantine for '{task_type}'.\n"
+                        f"   😴 Entering 90s master cooldown to guarantee full rolling RPM/TPM reset across all models... (Pass {cooldown_cycles}/2)\n"
+                        f"   💡 TIP: If you want to continue immediately, update GEMINI_API_KEY in Credentials/.env"
+                    )
+                    time.sleep(90)
+                    with self.state_lock:
+                        self._tick_ban_timers_unlocked()
+                        for m in recoverable_models:
+                            if self.model_states[m]["ban_remaining_seconds"] <= 0:
+                                self.model_states[m]["status"] = "ACTIVE"
+                                self.model_states[m]["ban_remaining_seconds"] = 0
+                    tried_models.clear()
+                    continue
+                else:
+                    logger.error(
+                        f"🛑 [VANGUARD] Maximum 90s cooldown passes (2) exceeded. Circuit breaker ACTIVE.\n"
+                        f"💡 Please update GEMINI_API_KEY in Credentials/.env"
+                    )
+                    break
 
             # 3. Prompt Degradation based on attempt intensity
             # Tier: high (0-3 attempts), mid (4-5), low (6+)
@@ -1869,11 +1905,14 @@ class GeminiGovernor:
 
                     logger.warning(f"⚠️ [VANGUARD] Quota hit on {current_model}. Banning and rotating to next model...")
 
-                    self.mark_model_banned(current_model, "429")
+                    self.mark_model_banned(current_model, "429", error_message=err_msg)
 
                     tried_models.add(current_model)
 
                     attempts += 1
+
+                    # Exact 2.6s live rotation gap (Danger 3 guard: triggers only on actual HTTP failure)
+                    time.sleep(2.6)
 
                     continue # ← try next model
 
@@ -1902,12 +1941,14 @@ class GeminiGovernor:
                     error_type = "timeout"
                 elif "safety" in err_lower or "blocked" in err_lower:
                     error_type = "safety"
+                elif "400" in err_lower or "invalid_argument" in err_lower or "invalid argument" in err_lower:
+                    error_type = "404"
                 else:
-                    error_type = "5xx" if "5" in err_lower else "timeout"
+                    error_type = "client_error"
 
-               
+                logger.error(f"❌ [VANGUARD] Call failed on model '{current_model}': {e} (Classified as: {error_type})")
 
-                self.mark_model_banned(current_model, error_type=error_type)
+                self.mark_model_banned(current_model, error_type=error_type, error_message=err_msg)
 
                 tried_models.add(current_model)
 
@@ -1933,10 +1974,9 @@ class GeminiGovernor:
                         break
                 # ────────────────────────────────────────────────────────────
 
-                # ── MODEL ROTATION BACKOFF (Storm Shield) ───────────────────
-                backoff_sec = min(1.0 + (attempts * 0.4), 4.0)
-                wait = backoff_sec + random.uniform(0, 0.5)
-                logger.info(f"⏳ [BACKOFF] Waiting {wait:.1f}s before next attempt (attempt {attempts})...")
+                # ── MODEL ROTATION COOLDOWN ───────────────────
+                wait = 2.6
+                logger.info(f"⏳ [ROTATION GAP] Waiting {wait:.1f}s before next model attempt (attempt {attempts})...")
                 time.sleep(wait)
 
 

@@ -185,13 +185,7 @@ Voiceover legibility beats fast pacing when they conflict.
   footage (sports leagues, films, TV) as the primary subject.
 Any "blocked" trigger forces monetization_safe=false.
 
-TASK 3 — WATERMARKS
-Only overlay elements added during recording/editing: burned-in app logos, usernames/handles, platform UI
-chrome (TikTok/CapCut/screen-recorder icons), timestamps, post-added captions, repeated corner/edge branding.
-NOT: shop signage, packaging text, text on clothing, background posters, or any text physically in the scene.
-If unsure whether something is overlay or in-scene, do not report it — a missed watermark is better than a
-false box a downstream tool might crop or blur.
-Give box_2d as [ymin, xmin, ymax, xmax] normalized to 0-1000 over the full frame.
+
 
 TASK 4 — CONTENT DIRECTOR (brief a human editor who has never seen the footage)
 detected_entities (only visible ones, e.g. "person:female", "environment:indoor"), visual_event (1-2 concrete
@@ -247,9 +241,7 @@ Return ONLY one valid JSON object. No markdown, no commentary.
     "notes": ""
   },
   "uncertainties": [],
-  "watermarks": [
-    {"box_2d": [<ymin>, <xmin>, <ymax>, <xmax>], "label": "", "first_seen": <float>, "last_seen": <float>, "confidence": <float>}
-  ],
+
   "intent": "<intent>",
   "confidence": <float 0.0-1.0>,
   "editing_style": "educational_tutorial|playful_animation|fast_social|cinematic|documentary|product_review|fashion_showcase|vlog|news|podcast_clip",
@@ -1061,8 +1053,7 @@ class ForensicVideoAnalyzer:
 
         creative = data.get("creative_possibilities")
         result = {
-            "watermarks": _convert_watermarks(data.get("watermarks"), proxy.get("source_width", 0),
-                                              proxy.get("source_height", 0), duration),
+            "watermarks": [],
             "intent": intent,
             "confidence": round(confidence, 3),
             "editing_style": editing_style,
