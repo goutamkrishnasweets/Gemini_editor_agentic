@@ -55,15 +55,15 @@ def test_programmatic_governor_rotation():
     m1 = gemini_router.get_available_model(task_type="reasoning")
     assert m1 is not None and "flash" in m1.lower()
 
-    # Simulate 429 quota exhaustion (RPM: 45s)
+    # Simulate 429 quota exhaustion (RPM/TPM: 45s uniform quarantine)
     gemini_router.mark_model_banned(m1, error_type="429", error_message="ResourceExhausted: 429 Quota exceeded")
     assert gemini_router.model_states[m1]["ban_remaining_seconds"] == 45
     m2 = gemini_router.get_available_model(task_type="reasoning")
     assert m2 != m1
 
-    # Simulate 429 RPD daily quota exhaustion (until midnight PT)
-    gemini_router.mark_model_banned(m2, error_type="429", error_message="ResourceExhausted: 429 GenerateRequestsPerDay quota exceeded")
-    assert gemini_router.model_states[m2]["ban_remaining_seconds"] > 60
+    # Simulate 403 Permission Denied (24h ban)
+    gemini_router.mark_model_banned(m2, error_type="403", error_message="PermissionDenied: 403 Your project has been denied access")
+    assert gemini_router.model_states[m2]["ban_remaining_seconds"] == 86400
 
     # Clean up test bans
     with gemini_router.state_lock:

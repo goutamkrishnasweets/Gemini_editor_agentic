@@ -807,25 +807,10 @@ class GeminiGovernor:
 
             if error_type == "429":
                 state["429_count"] += 1
-                err_text = (error_message or "").lower()
-                is_rpd = any(kw in err_text for kw in (
-                    "generaterequestsperday", "per day", "perday", "daily requests limit", "free_tier_requests_per_day"
-                ))
-                if is_rpd:
-                    duration_sec = get_seconds_until_midnight_pt()
-                    hours_rem = duration_sec / 3600.0
-                    state["status"] = "BANNED"
-                    state["ban_remaining_seconds"] = duration_sec
-                    logger.warning(
-                        f"🛑 [RPD EXHAUSTED] Model {model_name} hit DAILY quota limit!\n"
-                        f"   ⏳ Quarantined for {hours_rem:.1f}h ({duration_sec}s) until 12:00 AM Pacific Time reset.\n"
-                        f"   💡 ACTION: Update GEMINI_API_KEY in Credentials/.env to proceed immediately."
-                    )
-                else:
-                    duration_sec = 45
-                    state["status"] = "BANNED"
-                    state["ban_remaining_seconds"] = duration_sec
-                    logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 (RPM/TPM quota).")
+                duration_sec = 45
+                state["status"] = "BANNED"
+                state["ban_remaining_seconds"] = duration_sec
+                logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 (RPM/TPM quota).")
 
             elif error_type == "timeout":
 
@@ -843,10 +828,10 @@ class GeminiGovernor:
 
                 logger.warning(f"🔥 Model {model_name} isolated for 90s due to Server Error.")
 
-            elif error_type in ("404", "400", "not_found", "model_deprecated"):
+            elif error_type in ("404", "403", "400", "not_found", "model_deprecated", "permission_denied", "client_error"):
                 state["status"] = "BANNED"
-                state["ban_remaining_seconds"] = 86400  # 24-hour ban for deprecated/missing model
-                logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to 404/400 Deprecation error.")
+                state["ban_remaining_seconds"] = 86400  # 24-hour ban for deprecated/inaccessible model
+                logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to {error_type} error.")
                 if refresh_gemini_models_cache:
                     try:
                         refresh_gemini_models_cache(force=True)
@@ -1586,16 +1571,8 @@ class GeminiGovernor:
         # Dynamic model exhaustion calculation based on task type
         valid_models = self.get_valid_models_for_task(task_type)
         total_candidates = len(valid_models) if valid_models else len(self.model_states)
-        try:
-            env_max_attempts = int(os.getenv("GEMINI_MAX_ATTEMPTS", "20"))
-        except (ValueError, TypeError):
-            env_max_attempts = 20
-        try:
-            env_cb_thresh = int(os.getenv("GEMINI_CIRCUIT_BREAKER_THRESHOLD", "10"))
-        except (ValueError, TypeError):
-            env_cb_thresh = 10
-        MAX_ATTEMPTS = max(total_candidates, env_max_attempts)
-        circuit_threshold = max(total_candidates, env_cb_thresh)
+        MAX_ATTEMPTS = total_candidates if total_candidates > 0 else 5
+        circuit_threshold = max(total_candidates, 10)
 
         # --- THE RELIABILITY LOOP ---
         while attempts < MAX_ATTEMPTS:
@@ -1616,42 +1593,11 @@ class GeminiGovernor:
                 current_model = self.get_available_model(task_type, session_id=session_id, exclude_models=tried_models)
 
             if not current_model:
-                with self.state_lock:
-                    self._tick_ban_timers_unlocked()
-                    recoverable_models = [
-                        m for m, s in self.model_states.items()
-                        if s.get("ban_remaining_seconds", 0) <= 95
-                    ]
-
-                if not recoverable_models:
-                    logger.error(
-                        f"🚨 [FATAL QUOTA] All Gemini models are permanently exhausted or parked until 12:00 AM PT (RPD)!\n"
-                        f"🛑 Halting retry loop. Please update GEMINI_API_KEY in Credentials/.env to proceed immediately."
-                    )
-                    break
-
-                if cooldown_cycles < 2:
-                    cooldown_cycles += 1
-                    logger.warning(
-                        f"⏳ [ALL MODELS QUOTA HIT] All available models in quarantine for '{task_type}'.\n"
-                        f"   😴 Entering 90s master cooldown to guarantee full rolling RPM/TPM reset across all models... (Pass {cooldown_cycles}/2)\n"
-                        f"   💡 TIP: If you want to continue immediately, update GEMINI_API_KEY in Credentials/.env"
-                    )
-                    time.sleep(90)
-                    with self.state_lock:
-                        self._tick_ban_timers_unlocked()
-                        for m in recoverable_models:
-                            if self.model_states[m]["ban_remaining_seconds"] <= 0:
-                                self.model_states[m]["status"] = "ACTIVE"
-                                self.model_states[m]["ban_remaining_seconds"] = 0
-                    tried_models.clear()
-                    continue
-                else:
-                    logger.error(
-                        f"🛑 [VANGUARD] Maximum 90s cooldown passes (2) exceeded. Circuit breaker ACTIVE.\n"
-                        f"💡 Please update GEMINI_API_KEY in Credentials/.env"
-                    )
-                    break
+                logger.warning(
+                    f"⚠️ [VANGUARD] All available models for '{task_type}' are exhausted or quarantined ({attempts} tried). "
+                    f"Exiting retry loop to allow immediate local fallback."
+                )
+                break
 
             # 3. Prompt Degradation based on attempt intensity
             # Tier: high (0-3 attempts), mid (4-5), low (6+)
@@ -1935,6 +1881,8 @@ class GeminiGovernor:
                 err_lower = err_msg.lower()
                 if "404" in err_lower or "not_found" in err_lower or "not found" in err_lower or "deprecated" in err_lower:
                     error_type = "404"
+                elif "403" in err_lower or "permission_denied" in err_lower or "denied access" in err_lower or "permission denied" in err_lower:
+                    error_type = "403"
                 elif any(code in err_lower for code in ["503", "500", "502", "504", "server error", "internal error", "service unavailable", "bad gateway"]):
                     error_type = "5xx"
                 elif "timeout" in err_lower or "deadline" in err_lower or "timed out" in err_lower:
