@@ -1572,7 +1572,7 @@ class GeminiGovernor:
         circuit_threshold = max(total_candidates, 10)
 
         # --- THE RELIABILITY LOOP ---
-        while attempts < MAX_ATTEMPTS:
+        while True:
             # 1. Check Global Deadline
             elapsed = time.time() - start_time
             if elapsed > self.REQUEST_DEADLINE:
@@ -1586,10 +1586,10 @@ class GeminiGovernor:
                 if self.is_model_available(model_name):
                     current_model = model_name
 
-            if not current_model:
+            if not current_model and attempts < MAX_ATTEMPTS:
                 current_model = self.get_available_model(task_type, session_id=session_id, exclude_models=tried_models)
 
-            if not current_model:
+            if not current_model or attempts >= MAX_ATTEMPTS:
                 with self.state_lock:
                     self._tick_ban_timers_unlocked()
                     recoverable_models = [
