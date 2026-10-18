@@ -1606,11 +1606,74 @@ class GeminiGovernor:
                 current_model = self.get_available_model(task_type, session_id=session_id, exclude_models=tried_models)
 
             if not current_model:
-                logger.warning(
-                    f"⚠️ [VANGUARD] All available models for '{task_type}' are exhausted or quarantined ({attempts} tried). "
-                    f"Exiting retry loop to allow immediate local fallback."
-                )
-                break
+                with self.state_lock:
+                    self._tick_ban_timers_unlocked()
+                    recoverable_models = [
+                        m for m, s in self.model_states.items()
+                        if s.get("status") == "ACTIVE" or s.get("ban_remaining_seconds", 0) <= 95
+                    ]
+
+                if not recoverable_models:
+                    logger.error(
+                        f"🚨 [FATAL QUOTA] All Gemini models are permanently exhausted (403/404) or parked until 12:00 AM midnight (RPD)!\n"
+                        f"🛑 Halting retry loop ({attempts} attempts tried). Please update GEMINI_API_KEY in Credentials/.env to proceed immediately."
+                    )
+                    break
+
+                if cooldown_cycles < 2:
+                    cooldown_cycles += 1
+                    logger.warning(
+                        f"⏳ [ALL MODELS QUOTA HIT] All candidate models in quarantine for '{task_type}'.\n"
+                        f"   😴 Entering 90s master cooldown to guarantee full rolling RPM/TPM reset across models... (Pass {cooldown_cycles}/2)\n"
+                        f"   💡 TIP: If you want to continue immediately, update GEMINI_API_KEY in Credentials/.env"
+                    )
+                    # Interruptible sleep in 1s slices to detect live API key updates in .env
+                    initial_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+                    key_updated = False
+                    for _ in range(90):
+                        time.sleep(1.0)
+                        try:
+                            from dotenv import dotenv_values
+                            cands = [
+                                os.path.join(os.getcwd(), "Credentials", ".env"),
+                                os.path.join(os.getcwd(), ".env"),
+                            ]
+                            for c in cands:
+                                if os.path.exists(c):
+                                    vals = dotenv_values(c)
+                                    new_k = vals.get("GEMINI_API_KEY") or vals.get("GOOGLE_API_KEY")
+                                    if new_k and new_k != initial_key:
+                                        os.environ["GEMINI_API_KEY"] = new_k
+                                        key_updated = True
+                                        logger.info("🔑 [HOT RELOAD] New GEMINI_API_KEY detected during cooldown! Waking up immediately.")
+                                        break
+                            if key_updated:
+                                break
+                        except Exception:
+                            pass
+
+                    with self.state_lock:
+                        if key_updated:
+                            for m, s in self.model_states.items():
+                                s["status"] = "ACTIVE"
+                                s["ban_remaining_seconds"] = 0
+                                s["429_count"] = 0
+                        else:
+                            self._tick_ban_timers_unlocked()
+                            for m in recoverable_models:
+                                if self.model_states.get(m, {}).get("ban_remaining_seconds", 0) <= 0:
+                                    self.model_states[m]["status"] = "ACTIVE"
+                                    self.model_states[m]["ban_remaining_seconds"] = 0
+
+                    tried_models.clear()
+                    attempts = 0  # Reset attempt counter so the new rotation pass executes fully
+                    continue
+                else:
+                    logger.error(
+                        f"🛑 [VANGUARD] Maximum 90s cooldown passes (2) exceeded for '{task_type}'. Exiting to local fallback.\n"
+                        f"💡 Please update GEMINI_API_KEY in Credentials/.env"
+                    )
+                    break
 
             # 3. Prompt Degradation based on attempt intensity
             # Tier: high (0-3 attempts), mid (4-5), low (6+)
@@ -1981,11 +2044,9 @@ class GeminiGovernor:
        
 
         # [mkpv-fix] Final Silent Fallback: Prevent error leaks in public captions/scripts
-
-        if task_type in ("caption", "creative", "narrative"):
-
+        # Note: 'creative', 'watermark', 'vision' expect JSON and must return None so callers trigger structured defaults cleanly
+        if task_type in ("caption", "narrative"):
              logger.info(f"🛡️ [VANGUARD] ABSOLUTE FALLBACK triggered for '{task_type}'. Returning clean default.")
-
              return "Trending Fashion Style"
 
        

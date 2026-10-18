@@ -95,3 +95,35 @@ def test_rpd_exact_time_difference_to_midnight():
         mock_dt.now.return_value = fake_1030pm
         diff = get_seconds_until_midnight()
         assert diff == 5400  # Exactly 5,400 seconds (1.5 hours)
+
+
+def test_creative_task_fallback_returns_none_avoiding_json_decode_error():
+    """Verify governor absolute fallback returns None for 'creative' to avoid JSON parsing errors in synthesis."""
+    # When all models and Ollama are unavailable, 'creative' should return None, but 'caption' returns clean string
+    with gemini_router.state_lock:
+        for s in gemini_router.model_states.values():
+            s["status"] = "BANNED"
+            s["ban_remaining_seconds"] = 86400
+
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key-for-test"}), patch.object(gemini_router, "_call_ollama", return_value=None):
+        creative_res = gemini_router.generate(
+            prompt="test prompt",
+            task_type="creative",
+            module_name="test_synthesis"
+        )
+        assert creative_res is None, "Expected None for 'creative' fallback so callers trigger structured defaults"
+
+        caption_res = gemini_router.generate(
+            prompt="test prompt",
+            task_type="caption",
+            module_name="test_caption"
+        )
+        assert isinstance(caption_res, str) and len(caption_res) > 0, "Expected string for 'caption' text fallback"
+
+    # Reset states
+    with gemini_router.state_lock:
+        for s in gemini_router.model_states.values():
+            s["status"] = "ACTIVE"
+            s["ban_remaining_seconds"] = 0
+
