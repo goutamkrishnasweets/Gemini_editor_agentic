@@ -1333,110 +1333,6 @@ def _dispatch_pipeline_in_background(**kwargs):
     t.start()
 
 
-def _dispatch_manga_stickman_in_background(input_path: str, requestor_chat_id: int):
-    """Spawns non-blocking daemon thread to run Manga extraction and Stickman animation directing."""
-    job_id = f"manga_{requestor_chat_id}_{time.time()}"
-    ACTIVE_PIPELINE_JOBS.add(job_id)
-    logger.info(f"🚀 [MANGA STICKMAN DISPATCH] Spawning background worker thread for requestor {requestor_chat_id} ({os.path.basename(input_path)})")
-
-    def _worker():
-        acquired = False
-        try:
-            _PIPELINE_SEMAPHORE.acquire()
-            acquired = True
-            logger.info(f"▶️ [MANGA STICKMAN START] Processing '{input_path}'...")
-
-            # 1. Run Phase 1 Manga Director -> Stickman Director
-            import sys
-            manga_dir = os.path.join(_REPO_ROOT, "Manga or Comic page extractor")
-            if manga_dir not in sys.path:
-                sys.path.insert(0, manga_dir)
-            from director import Phase1Director
-            p1_director = Phase1Director()
-            package = p1_director.direct_to_stickman(
-                input_source=input_path,
-                style="Style 3 (Prehistoric Dark Comedy)",
-                duration_sec=60
-            )
-
-            # 2. Check result
-            if package.get("status") != "success":
-                err = package.get("error") or package.get("message") or "Extraction error"
-                send_telegram_text_sync(
-                    requestor_chat_id,
-                    f"❌ **Manga Stickman Directing Failed**\n\n"
-                    f"⚠️ Error: `{err}`\n\n"
-                    f"💡 Please verify the PDF is readable and contains comic/manga pages."
-                )
-                return
-
-            # 3. Format complete production proposal
-            title = package.get("title", "Manga Animated Stickman Sketch")
-            logline = package.get("logline", "")
-            clips = package.get("clips", [])
-            dur = package.get("target_duration_sec", 60)
-            style_name = package.get("visual_style", "Style 3")
-
-            summary_text = (
-                f"🎉 **[MANGA STICKMAN STORYBOARD READY]**\n\n"
-                f"📖 **Manga**: `{os.path.basename(input_path)}`\n"
-                f"🎭 **Title**: *{title}*\n"
-                f"💡 **Logline**: {logline}\n"
-                f"⏱️ **Duration**: {dur}s ({len(clips)} clips) | **Style**: `{style_name}`\n\n"
-                f"🎬 **VOICEOVER SCRIPT (20-25 words/clip):**\n"
-            )
-            for c in clips:
-                c_idx = c.get("clip_index")
-                stage = c.get("stage")
-                vo = c.get("voiceover_dialogue")
-                summary_text += f"\n• **Clip {c_idx} ({stage})**:\n\"{vo}\"\n"
-
-            send_telegram_text_sync(requestor_chat_id, summary_text)
-
-            # 4. Deliver production package JSON file to Telegram
-            base_name = os.path.splitext(os.path.basename(input_path))[0]
-            clean_name = "".join(c if c.isalnum() else "_" for c in base_name).strip("_")
-            json_path = os.path.join(_REPO_ROOT, "output", f"stickman_production_package_{clean_name}.json")
-            if os.path.exists(json_path):
-                from telegram import Bot
-                token = os.getenv("TELEGRAM_BOT_TOKEN")
-                if token:
-                    import asyncio
-                    async def _send_doc():
-                        bot = Bot(token=token)
-                        with open(json_path, "rb") as f:
-                            await bot.send_document(
-                                chat_id=requestor_chat_id,
-                                document=f,
-                                filename=os.path.basename(json_path),
-                                caption=f"📦 **Full Veo / Omni Flash Video Generation Prompts**\n`{os.path.basename(json_path)}`"
-                            )
-                    asyncio.run(_send_doc())
-
-        except Exception as _pe:
-            logger.error(f"❌ Background manga stickman error: {_pe}", exc_info=True)
-            if requestor_chat_id:
-                try:
-                    send_telegram_text_sync(
-                        requestor_chat_id,
-                        f"❌ **Manga Stickman Processing Error**\n\n"
-                        f"An unexpected error occurred while processing your manga document:\n`{_pe}`\n\n"
-                        f"💡 Please try again with a valid PDF."
-                    )
-                except Exception as _ne:
-                    logger.debug(f"Notice sending manga error: {_ne}")
-        finally:
-            if acquired:
-                _PIPELINE_SEMAPHORE.release()
-            ACTIVE_PIPELINE_JOBS.discard(job_id)
-            logger.info(f"🏁 [MANGA STICKMAN FINISHED] Worker thread finished job '{job_id}'")
-            sys.stdout.flush()
-
-    import threading
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-
-
 def _dispatch_phase4_publishing_in_background(
     bot_obj,
     chat_id: int,
@@ -1970,11 +1866,6 @@ def _dispatch_direct_route(route, chat_id: int) -> str:
             raise FileNotFoundError(f"Uploaded video not found on disk: {route.path}")
         _dispatch_pipeline_in_background(mode="manual", input_path=route.path, platform=route.platform, requestor_chat_id=chat_id)
         return "Uploaded-video pipeline started"
-    if kind == "manga_stickman":
-        if not (route.path and os.path.isfile(route.path)):
-            raise FileNotFoundError(f"Uploaded manga document not found on disk: {route.path}")
-        _dispatch_manga_stickman_in_background(input_path=route.path, requestor_chat_id=chat_id)
-        return f"Manga/Comic panel extraction & Stickman Director started for {os.path.basename(route.path)}"
     raise ValueError(f"Not a direct route: {kind}")
 
 
@@ -2449,27 +2340,9 @@ async def handle_telegram_incoming_msg(update, context):
         ext = os.path.splitext(orig_filename)[1].lower()
         mime = (doc.mime_type if doc else "").lower()
 
-        is_manga_doc = ext in (".pdf", ".cbz", ".cbr") or "pdf" in mime or "comic" in mime
-
-        if is_manga_doc:
-            await _check_and_notify_busy_state(msg, str(from_user.get("id") or chat_id))
-            status_msg = await msg.reply_text(
-                "📚 **[MANGA / COMIC PDF RECEIVED]**\n\n"
-                f"📄 **File**: `{orig_filename or 'manga.pdf'}`\n"
-                "⚡ **Status**: Downloading to staging for Manga panel extraction & Stickman Director..."
-            )
-            file_obj = await doc.get_file()
-            temp_dir = os.path.join(_REPO_ROOT, "downloads", f"telegram_manga_{chat_id}_{int(time.time())}")
-            os.makedirs(temp_dir, exist_ok=True)
-            clean_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in orig_filename).strip() or "manga_input.pdf"
-            if not clean_name.lower().endswith((".pdf", ".cbz", ".cbr")):
-                clean_name += ".pdf"
-            local_doc_path = os.path.join(temp_dir, clean_name)
-            await file_obj.download_to_drive(custom_path=local_doc_path)
-
-            manga_goal = f"Process uploaded manga/comic PDF at '{local_doc_path}', extract panels, analyze story, and direct an animated stickman sketch."
-            logger.info(f"🤖 [UNIVERSAL AGENT] Routing uploaded manga document to Director: '{manga_goal}'")
-            await _dispatch_agent_goal(update, manga_goal, existing_status_msg=status_msg)
+        # Check if non-video document was received
+        if doc and not (mime.startswith("video/") or ext in (".mp4", ".mov", ".avi", ".mkv", ".webm")):
+            await msg.reply_text("⚠️ **Unsupported Document Format**\nPlease upload a valid video file (.mp4, .mov, .mkv, .webm).")
             return
 
         # Normal Video Upload

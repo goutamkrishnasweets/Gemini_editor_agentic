@@ -104,9 +104,10 @@ jobs:
         restore-keys: |
           ai-models-v1-
 
-    # ── 5. Python Dependencies ────────────────────────────────────────────────
-    - name: Install Python Dependencies
+    # ── 5. System Utilities & Python Dependencies ───────────────────────────
+    - name: Install System & Python Dependencies
       run: |
+        sudo apt-get update -y && sudo apt-get install -y poppler-utils
         python -m pip install --upgrade pip
         pip install --prefer-binary -r requirements.txt
 
