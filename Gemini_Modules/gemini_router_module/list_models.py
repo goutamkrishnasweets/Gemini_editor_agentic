@@ -95,131 +95,15 @@ except ImportError:
 _LAST_REFRESH_TIME = 0.0
 
 
-# ── Hardcoded Baseline Default Task Matrix (Fallback) ─────────────────────────
+# ── Dynamic Task Categories ──────────────────────────────────────────────────
 
-DEFAULT_TASK_MODEL_RATINGS = {
-    "creative": {
-        "gemini-3.8-flash-lite": 4.3,
-        "gemini-3.5-flash-lite": 4.0,
-        "gemini-3.8-flash": 4.0,
-        "gemini-3.5-flash": 3.7,
-        "gemini-2.5-flash-lite": 3.0,
-        "gemini-flash-lite-latest": 2.9,
-        "gemini-2.0-flash-lite": 2.8,
-        "gemini-2.5-flash": 2.7,
-        "gemini-2.0-flash": 2.6,
-        "gemini-flash-latest": 2.5,
-    },
-    "reasoning": {
-        "gemini-3.8-flash": 5.1,
-        "gemini-3.5-flash": 4.8,
-        "gemini-3.8-flash-lite": 4.1,
-        "gemini-3.5-flash-lite": 3.8,
-        "gemini-2.5-flash": 3.8,
-        "gemini-2.0-flash": 3.6,
-        "gemini-flash-latest": 3.5,
-        "gemini-2.5-flash-lite": 2.8,
-        "gemini-2.0-flash-lite": 2.7,
-        "gemini-flash-lite-latest": 2.2,
-    },
-    "cheap": {
-        "gemini-3.8-flash-lite": 5.2,
-        "gemini-3.5-flash-lite": 4.9,
-        "gemini-2.5-flash-lite": 3.9,
-        "gemini-flash-lite-latest": 3.8,
-        "gemini-2.0-flash-lite": 3.7,
-        "gemini-2.0-flash-lite-001": 3.6,
-        "gemini-3.8-flash": 3.3,
-        "gemini-3.5-flash": 3.0,
-        "gemini-2.5-flash": 2.0,
-        "gemini-2.0-flash": 1.8,
-    },
-    "master": {
-        "gemini-3.8-flash": 4.5,
-        "gemini-3.5-flash": 4.2,
-        "gemini-3.8-flash-lite": 4.0,
-        "gemini-3.5-flash-lite": 3.7,
-        "gemini-2.5-flash": 3.2,
-        "gemini-2.0-flash": 3.0,
-        "gemini-flash-latest": 2.9,
-        "gemini-2.5-flash-lite": 2.7,
-        "gemini-2.0-flash-lite": 2.6,
-    },
-    "watermark": {
-        "gemini-3.8-flash": 5.3,
-        "gemini-3.5-flash": 5.0,
-        "gemini-2.5-flash": 4.0,
-        "gemini-3.8-flash-lite": 3.8,
-        "gemini-2.0-flash": 3.8,
-        "gemini-flash-latest": 3.6,
-        "gemini-3.5-flash-lite": 3.5,
-        "gemini-2.5-flash-lite": 2.5,
-        "gemini-2.0-flash-lite": 2.4,
-    },
-    "vision": {
-        "gemini-3.8-flash": 5.1,
-        "gemini-3.5-flash": 4.8,
-        "gemini-3.8-flash-lite": 4.1,
-        "gemini-2.5-flash": 3.8,
-        "gemini-3.5-flash-lite": 3.8,
-        "gemini-2.0-flash": 3.6,
-        "gemini-flash-latest": 3.5,
-        "gemini-2.5-flash-lite": 2.6,
-        "gemini-2.0-flash-lite": 2.5,
-    },
-    "caption": {
-        "gemini-3.8-flash": 4.8,
-        "gemini-3.5-flash": 4.5,
-        "gemini-3.8-flash-lite": 4.3,
-        "gemini-3.5-flash-lite": 4.0,
-        "gemini-2.5-flash": 3.5,
-        "gemini-2.0-flash": 3.3,
-        "gemini-flash-latest": 3.2,
-        "gemini-2.5-flash-lite": 3.0,
-        "gemini-2.0-flash-lite": 2.9,
-    },
-    "narrative": {
-        "gemini-3.8-flash": 4.6,
-        "gemini-3.5-flash": 4.3,
-        "gemini-3.8-flash-lite": 4.1,
-        "gemini-3.5-flash-lite": 3.8,
-        "gemini-2.5-flash": 3.3,
-        "gemini-2.0-flash": 3.1,
-        "gemini-flash-latest": 3.0,
-        "gemini-2.5-flash-lite": 2.8,
-        "gemini-2.0-flash-lite": 2.7,
-    },
-    "price": {
-        "gemini-3.8-flash-lite": 5.1,
-        "gemini-3.5-flash-lite": 4.8,
-        "gemini-3.8-flash": 4.6,
-        "gemini-3.5-flash": 4.3,
-        "gemini-2.5-flash-lite": 3.8,
-        "gemini-2.0-flash-lite": 3.7,
-        "gemini-flash-lite-latest": 3.6,
-        "gemini-2.5-flash": 3.3,
-        "gemini-2.0-flash": 3.1,
-    },
-    "analysis": {
-        "gemini-3.8-flash-lite": 5.0,
-        "gemini-3.8-flash": 4.7,
-        "gemini-3.5-flash-lite": 4.7,
-        "gemini-3.5-flash": 4.4,
-        "gemini-2.5-flash-lite": 3.7,
-        "gemini-2.0-flash-lite": 3.6,
-        "gemini-2.5-flash": 3.4,
-        "gemini-2.0-flash": 3.2,
-        "gemini-flash-latest": 3.0,
-    },
-}
-
-DEFAULT_MODELS_LIST = [
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-pro",
+TASK_CATEGORIES = [
+    "creative", "reasoning", "cheap", "master", "watermark",
+    "vision", "caption", "narrative", "price", "analysis"
 ]
+
+DEFAULT_MODELS_LIST: List[str] = []
+DEFAULT_TASK_MODEL_RATINGS: Dict[str, Dict[str, float]] = {task: {} for task in TASK_CATEGORIES}
 
 
 # ── Dynamic Model Discovery Engine ───────────────────────────────────────────
@@ -231,8 +115,8 @@ def discover_api_models(api_key: str = "") -> List[str]:
     """
     key = api_key or os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     if not key:
-        logger.warning("⚠️ No API key found for model discovery — returning default list.")
-        return DEFAULT_MODELS_LIST
+        logger.warning("⚠️ No API key found for model discovery. Set GEMINI_API_KEY in Credentials/.env.")
+        return []
 
     discovered = []
 
@@ -290,7 +174,8 @@ def discover_api_models(api_key: str = "") -> List[str]:
     except Exception as e:
         logger.debug(f"Direct REST API list_models failed: {e}")
 
-    return DEFAULT_MODELS_LIST
+    logger.warning("⚠️ No active generative models discovered from Google GenAI API.")
+    return []
 
 
 def _is_valid_generative_model(model_name: str) -> bool:
@@ -340,10 +225,6 @@ def _sort_models_by_tier(models: List[str]) -> List[str]:
 
     # Free/high-RPM tiers first (Flash -> Lite), with paid/expensive Pro models at the very bottom
     ordered = []
-    # Include default known models if discovered
-    for m in DEFAULT_MODELS_LIST:
-        if m in models and m not in ordered:
-            ordered.append(m)
     for m in flash_models + lite_models + other_models + pro_models:
         if m not in ordered:
             ordered.append(m)
@@ -355,7 +236,7 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
     Computes heuristic category rating matrices for all 10 task categories
     based on model version, speed tier (lite vs flash vs pro), and accuracy characteristics.
     """
-    matrix = {task: {} for task in DEFAULT_TASK_MODEL_RATINGS.keys()}
+    matrix = {task: {} for task in TASK_CATEGORIES}
 
     for m in models:
         m_lower = m.lower()
@@ -559,11 +440,11 @@ def get_active_models_and_ratings(force: bool = False) -> Tuple[List[str], Dict[
     """
     if not force:
         cached = load_cached_models()
-        if cached:
-            return cached.get("models", DEFAULT_MODELS_LIST), cached.get("task_ratings", DEFAULT_TASK_MODEL_RATINGS)
+        if cached and cached.get("models"):
+            return cached.get("models", []), cached.get("task_ratings", {})
     
     refreshed = refresh_gemini_models_cache(force=force)
-    return refreshed.get("models", DEFAULT_MODELS_LIST), refreshed.get("task_ratings", DEFAULT_TASK_MODEL_RATINGS)
+    return refreshed.get("models", []), refreshed.get("task_ratings", {})
 
 
 def get_models_by_capability(capability: str = "reasoning") -> List[str]:
