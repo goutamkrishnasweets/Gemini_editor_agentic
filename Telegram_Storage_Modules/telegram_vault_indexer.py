@@ -538,6 +538,8 @@ class TelegramVaultIndexer:
 
                         for k, v in files_dict.items():
                             if isinstance(v, dict) and k != "social_media_id":
+                                if v.get("is_source_extract") or v.get("is_unusable_bgm"):
+                                    continue
                                 if clip_stem and clip_stem in k.lower():
                                     continue
                                 fid = v.get("file_id") or v.get("telegram_file_id")
@@ -571,11 +573,19 @@ class TelegramVaultIndexer:
                                 if _is_bl(audio_filename=f"{sc}.wav", audio_shortcode=sc, telegram_file_id=ext_fid):
                                     continue
 
-                                # ── STRICT SPEECH & NOISE GATE ────────────────────────
+                                # ── STRICT CURATED BGM GATE ───────────────────────────
                                 # Harvested tracks from other clips can only enter the candidate
-                                # BGM pool if they are confirmed musical audio.
-                                # Pure spoken dialogue, podcasts, interviews, crowd noise, and
-                                # low-energy noise must NEVER masquerade as background music.
+                                # BGM pool if they are confirmed musical tracks or explicitly curated.
+                                # Raw source extracts, spoken dialogue, and uncurated noise must
+                                # NEVER masquerade as background music for other clips.
+                                is_src = (
+                                    sm_entry.get("is_source_extract") or
+                                    a_data.get("is_source_extract") or
+                                    sm_entry.get("is_unusable_bgm") or
+                                    a_data.get("is_unusable_bgm")
+                                )
+                                if is_src and not (sm_entry.get("is_curated_bgm") or a_data.get("is_curated_bgm")):
+                                    continue
                                 if sm_entry.get("is_unusable") or a_data.get("is_unusable"):
                                     continue
                                 if sm_entry.get("is_speech_only") or a_data.get("is_speech_only"):

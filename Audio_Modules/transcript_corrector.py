@@ -534,6 +534,71 @@ def _log_changes(result: Dict[str, Any]) -> None:
         logger.info(f"🗑️ [CORRECTOR] removed {r['start']:.1f}s: '{r['original_text'][:60]}' {r.get('issues')}")
 
 
+def _sync_to_speech_boundaries_and_pool_metadata(audio_path: str, cache_dir: Optional[str], result: Dict[str, Any]) -> None:
+    """
+    Persist verified transcript into:
+      1. clip_folder/speech_boundaries.json (so downstream timeline cut-points are exact)
+      2. Original_audio/pool_metadata.json (under social_media_id for the clip)
+    """
+    target_dir = cache_dir or os.path.dirname(os.path.abspath(audio_path))
+    if not os.path.isdir(target_dir):
+        return
+
+    # 1. Write speech_boundaries.json in target_dir
+    sb_path = os.path.join(target_dir, "speech_boundaries.json")
+    sb_payload = {
+        "has_speech": result.get("has_speech", True),
+        "language": result.get("language", "unknown"),
+        "is_singing": result.get("is_singing", False),
+        "words": result.get("words", []),
+        "sentences": result.get("segments", []),
+        "clean_cut_timestamps": result.get("clean_cut_timestamps", []),
+        "full_text": result.get("full_text", ""),
+        "_source": result.get("_source", "gemini_corrected"),
+    }
+    try:
+        tmp_sb = sb_path + ".tmp"
+        with open(tmp_sb, "w", encoding="utf-8") as f:
+            json.dump(sb_payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_sb, sb_path)
+        logger.info(f"💾 [CORRECTOR] Saved verified transcript to {sb_path}")
+    except Exception as _sbe:
+        logger.debug(f"[CORRECTOR] Could not persist speech_boundaries.json: {_sbe}")
+
+    # 2. Write into pool_metadata.json under social_media_id
+    try:
+        from Audio_Modules.audio_pool_manager import AudioPoolManager
+        from Telegram_Storage_Modules.telegram_vault_indexer import extract_clean_shortcode
+        pm = AudioPoolManager()
+        folder_name = os.path.basename(target_dir)
+        sc = extract_clean_shortcode(folder_name) or folder_name.replace("manual_", "").strip()
+
+        with pm.lock:
+            files_root = pm.metadata.setdefault("files", {})
+            clips = files_root.setdefault("social_media_id", {})
+            updated = False
+            for k, entry in clips.items():
+                if isinstance(entry, dict):
+                    entry_sc = str(entry.get("shortcode") or "")
+                    if (sc and entry_sc.lower() == sc.lower()) or (sc and sc.lower() in k.lower()):
+                        a_data = entry.setdefault("audio_data", {})
+                        a_data["whisper_transcript"] = sb_payload
+                        a_data["transcript"] = result.get("full_text", "")
+                        a_data["has_speech"] = result.get("has_speech", True)
+                        a_data["language"] = result.get("language", "unknown")
+                        entry["speech_intelligence"] = {
+                            "has_speech": result.get("has_speech", True),
+                            "language": result.get("language", "unknown"),
+                            "transcript": result.get("full_text", ""),
+                        }
+                        updated = True
+            if updated:
+                pm._save_metadata()
+                logger.info(f"📦 [CORRECTOR] Synced verified transcript to pool_metadata.json for shortcode '{sc}'")
+    except Exception as _pme:
+        logger.debug(f"[CORRECTOR] Notice syncing transcript to pool_metadata: {_pme}")
+
+
 def correct_transcript(
     audio_path: str,
     whisper_result: Optional[Dict[str, Any]] = None,
@@ -579,6 +644,7 @@ def correct_transcript(
                 if cached.get("_cache_key") == key:
                     cached["_source"] = "cache_hit"
                     logger.info(f"💾 [CORRECTOR] Cache hit: {cache_file}")
+                    _sync_to_speech_boundaries_and_pool_metadata(audio_path, cache_dir, cached)
                     return cached
             except Exception:
                 pass
@@ -601,6 +667,8 @@ def correct_transcript(
             os.replace(tmp, cache_file)
         except Exception as we:
             logger.warning(f"[CORRECTOR] Failed to persist transcript: {we}")
+
+        _sync_to_speech_boundaries_and_pool_metadata(audio_path, cache_dir, result)
 
         s = result["stats"]
         logger.info(

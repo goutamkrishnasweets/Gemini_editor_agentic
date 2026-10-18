@@ -422,30 +422,9 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(index_data, f, indent=2, ensure_ascii=False)
 
-        # Step 5: Upfront Faster-Whisper + Gemini Semantic Enrichment
-        try:
-            from Gemini_Modules.lyric_rhythm_aligner import analyze_music
-            logger.info("🧠 [UPFRONT INTEL] Running unified Faster-Whisper + Gemini analysis for harvested audio: %s", stem)
-            report = analyze_music(target_wav)
-            if report and report.get("_source") != "fallback":
-                analysis["semantic_context"] = {
-                    "dominant_emotion": report.get("dominant_emotion", "neutral"),
-                    "vibe_tags": report.get("vibe_tags", []),
-                    "energy_profile": report.get("energy_profile", "medium"),
-                    "has_vocals": report.get("has_vocals", False),
-                    "language": report.get("language", "Unknown"),
-                    "lyrics_count": len(report.get("lyrics", [])),
-                    "directives_count": len(report.get("shot_directives", [])),
-                }
-                # Re-save enriched audio_analysis.json
-                clip_dir = os.path.dirname(wav_path)
-                analysis_path = os.path.join(clip_dir, "audio_analysis.json")
-                with open(analysis_path, "w", encoding="utf-8") as f:
-                    json.dump(analysis, f, indent=2, ensure_ascii=False)
-                logger.info("✅ [UPFRONT INTEL SUCCESS] Pre-computed and saved semantic audio data for '%s': emotion=%s, vibe=%s",
-                            stem, report.get("dominant_emotion"), report.get("vibe_tags"))
-        except Exception as _up_err:
-            logger.warning("⚠️ Upfront semantic audio enrichment notice for '%s': %s", stem, _up_err)
+        # Step 5: Upfront semantic speech analysis is handled cleanly downstream by
+        # transcript_corrector in Step 02 (Forensic Perception) and lyric_rhythm_aligner
+        # on the selected BGM in Step 05 (Rhythm Timeline).
 
         # Update pool_metadata.json (unified audio handler)
         try:
@@ -467,15 +446,8 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
                 "audio_hash": pm._calculate_hash(target_wav),
                 "version": pm.CURRENT_VERSION,
                 "is_source_extract": True,
+                "is_unusable_bgm": True,
             })
-            if "semantic_context" in analysis:
-                sem = analysis["semantic_context"]
-                meta["dominant_emotion"] = sem.get("dominant_emotion", "neutral")
-                meta["vibe_tags"] = sem.get("vibe_tags", [])
-                meta["energy_profile"] = sem.get("energy_profile", "medium")
-                meta["has_vocals"] = sem.get("has_vocals", False)
-                meta["language"] = sem.get("language", "Unknown")
-
             pm._set_file_metadata(track_name, meta)
             pm._save_metadata()
             logger.info("📦 [POOL METADATA UPDATED] Audio intelligence for '%s' saved to pool_metadata.json", track_name)
