@@ -2569,7 +2569,7 @@ def run_master_pipeline(
                             _inpainted_upfront = True
 
                         if _inpainted_upfront:
-                            logger.info(f"✅ [PHASE 2.1] Watermark handled UPFRONT in Phase 2 — skipping post-render inpainting gate for {os.path.basename(active_reel_path)}.")
+                            logger.info(f"⏭️ [PHASE 2.1] Skipping post-render watermark inpainting for {os.path.basename(active_reel_path)} (0 Gemini calls).")
                         else:
                             try:
                                 from Watermark_and_Inpainting.watermark_main import run_watermark_removal

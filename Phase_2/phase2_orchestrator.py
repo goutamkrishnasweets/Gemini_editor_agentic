@@ -213,13 +213,17 @@ def run_phase2_pipeline(
                             logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(watermark_boxes)} inpaint coordinate box(es) from sidecar.")
                     except Exception as _ce:
                         logger.warning(f"⚠️ [WATERMARK ALIGNMENT] Failed to load coords sidecar: {_ce}")
-            elif is_inpaint_requested:
-                # 3. Detect and Inpaint Watermarks Upfront ONLY when explicitly requested
+            else:
+                # 3. Detect and Inpaint Watermarks Upfront (Compulsory on fresh inputs OR when requested via directive)
                 try:
                     from Watermark_and_Inpainting.gemini_enhance_for_watermark import detect_watermark_from_video
                     from Watermark_and_Inpainting.watermark_main import run_watermark_removal
 
-                    logger.info(f"🧼 [UPFRONT INPAINTING] User requested inpainting. Running detection on: {os.path.basename(video_path)}")
+                    if is_inpaint_requested:
+                        logger.info(f"🧼 [UPFRONT INPAINTING] User requested inpainting: '{user_edit_directive}'. Running detection on: {os.path.basename(video_path)}")
+                    else:
+                        logger.info(f"🧼 [UPFRONT INPAINTING] Compulsory upfront watermark check on raw video: {os.path.basename(video_path)}")
+
                     detect_kw = ""
                     try:
                         from Watermark_and_Inpainting.watermark_directive_helper import extract_watermark_keywords
@@ -230,6 +234,8 @@ def run_phase2_pipeline(
                     if items:
                         watermark_boxes = items
                         logger.info(f"💎 [STEP 02 WATERMARK DETECTED] Found {len(items)} watermark bounding box vector(s).")
+                    else:
+                        logger.info(f"✨ [STEP 02 WATERMARK CHECK] No watermark detected in video. Proceeding with original footage.")
 
                     inpainted_path, _ = run_watermark_removal(
                         input_path=video_path,
@@ -268,12 +274,11 @@ def run_phase2_pipeline(
                                     logger.info(f"☁️ [CLEAN VAULT UPLOAD] Uploaded clean video to vault (file_id: {clean_fid[:15]}...)")
                             except Exception as _clean_up_err:
                                 logger.warning(f"⚠️ [UPFRONT INPAINTING] Clean vault upload notice: {_clean_up_err}")
+                    else:
+                        working_video_path = video_path
                 except Exception as _inp_err:
                     logger.warning(f"⚠️ [UPFRONT INPAINTING] Inpainting notice: {_inp_err}")
                     working_video_path = video_path
-            else:
-                logger.info(f"⏭️ [UPFRONT INPAINTING] Skipped — no inpaint directive requested by user (0 Gemini calls).")
-                working_video_path = video_path
 
             # ─────────────────────────────────────────────────────────────────
             # STEP 2B: SCENE INTEL & GEMINI CALL 1 FORENSIC PERCEPTION
