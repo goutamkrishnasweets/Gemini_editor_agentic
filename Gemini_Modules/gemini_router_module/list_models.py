@@ -348,6 +348,16 @@ def refresh_gemini_models_cache(api_key: str = "", force: bool = False) -> dict:
 
     logger.info("🔄 [MODEL REFRESH] Querying Google GenAI API for active Gemini models...")
     discovered_models = discover_api_models(api_key)
+    if not discovered_models:
+        logger.warning("⚠️ No models discovered from API — preserving existing cache if available.")
+        try:
+            if os.path.exists(CACHE_FILE):
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                    if isinstance(existing, dict) and existing.get("models"):
+                        return existing
+        except Exception:
+            pass
     task_ratings = calculate_task_matrix(discovered_models)
 
     cache_payload = {

@@ -173,20 +173,17 @@ def _reset_gemini_circuit():
         _GLOBAL_GEMINI_STATE["gemini_down_until"] = 0.0
 
 
-def get_seconds_until_midnight_pt() -> int:
+def get_seconds_until_midnight() -> int:
     """
-    Calculates exact real-time seconds remaining until 12:00 AM (Midnight) US Pacific Time (PT).
-    Google GenAI Daily Quotas (RPD) reset at 00:00:00 Pacific Time every day.
+    Calculates exact real-time seconds remaining from current moment until 12:00 AM (Midnight) of the new day.
+    For example: if RPD hits at 3:00 PM, calculates the exact time difference to 12:00 AM (9 hours = 32,400s).
     """
-    try:
-        from zoneinfo import ZoneInfo
-        now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
-    except Exception:
-        from datetime import timezone
-        now_pt = datetime.now(timezone(timedelta(hours=-7)))
-    tomorrow_pt = (now_pt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    seconds_remaining = int((tomorrow_pt - now_pt).total_seconds())
+    now = datetime.now()
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    seconds_remaining = int((midnight - now).total_seconds())
     return max(seconds_remaining, 60)
+
+get_seconds_until_midnight_pt = get_seconds_until_midnight  # backward compatibility alias
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -807,10 +804,26 @@ class GeminiGovernor:
 
             if error_type == "429":
                 state["429_count"] += 1
-                duration_sec = 45
-                state["status"] = "BANNED"
-                state["ban_remaining_seconds"] = duration_sec
-                logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 (RPM/TPM quota).")
+                err_text = (error_message or "").lower()
+                is_rpd = any(kw in err_text for kw in (
+                    "generaterequestsperday", "requests per day", "perday", "per_day",
+                    "daily requests limit", "free_tier_requests_per_day", "daily limit"
+                ))
+                if is_rpd:
+                    duration_sec = get_seconds_until_midnight()
+                    hours_rem = duration_sec / 3600.0
+                    state["status"] = "BANNED"
+                    state["ban_remaining_seconds"] = duration_sec
+                    logger.warning(
+                        f"🛑 [RPD EXHAUSTED] Model {model_name} hit DAILY quota limit (RPD)!\n"
+                        f"   ⏳ Quarantined for {hours_rem:.1f}h ({duration_sec}s) until 12:00 AM midnight reset.\n"
+                        f"   💡 ACTION: Update GEMINI_API_KEY in Credentials/.env to proceed immediately."
+                    )
+                else:
+                    duration_sec = 45
+                    state["status"] = "BANNED"
+                    state["ban_remaining_seconds"] = duration_sec
+                    logger.warning(f"🚫 Model {model_name} BANNED for 45s due to 429 (RPM/TPM quota).")
 
             elif error_type == "timeout":
 
