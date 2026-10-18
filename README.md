@@ -16,7 +16,7 @@
 * **Zero Data Loss Vault**: Automatically back up and hydrate `master_vault_index.json`, user sessions, and `source_accounts.json` from Telegram Storage Group.
 
 ### ⏰ Anti-Duplicate Scheduled Harvester
-* **Automated Clock Schedules**: Runs at fixed 6-hour windows (**04:20 AM, 10:20 AM, 04:20 PM, 10:20 PM IST**).
+* **Automated Clock Schedules**: Runs in two fixed 6-hour shifts (**04:20 AM to 10:20 AM IST** and **04:20 PM to 10:20 PM IST**).
 * **Anti-Duplicate Rotation**: Selects up to 2 accounts per session prioritized by `account_last_scraped` timestamp so morning and evening runs never duplicate scraping on the same accounts.
 * **30-Day Rolling Expiration**: Automatically purges source accounts older than 30 days.
 
@@ -128,11 +128,9 @@ The workflow in `.github/workflows/gemini-editor-runner.yml` automatically trigg
 
 ```yaml
   schedule:
-    # 4 clean 6-hour windows (Indian Standard Time — IST):
-    - cron: '50 22 * * *'  # 04:20 AM IST
-    - cron: '50 4 * * *'   # 10:20 AM IST
-    - cron: '50 10 * * *'  # 04:20 PM IST
-    - cron: '50 16 * * *'  # 10:20 PM IST
+    # 2 clean 6-hour windows (Indian Standard Time — IST):
+    - cron: '50 22 * * *'  # Morning window: 04:20 AM to 10:20 AM IST
+    - cron: '50 10 * * *'  # Evening window: 04:20 PM to 10:20 PM IST
 ```
 
 ---

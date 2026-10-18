@@ -37,11 +37,9 @@ on:
       - main
 
   schedule:
-    # 4 clean 6-hour windows (Indian Standard Time — IST):
-    - cron: '50 22 * * *'  # 04:20 AM IST
-    - cron: '50 4 * * *'   # 10:20 AM IST
-    - cron: '50 10 * * *'  # 04:20 PM IST
-    - cron: '50 16 * * *'  # 10:20 PM IST
+    # 2 clean 6-hour windows (Indian Standard Time — IST):
+    - cron: '50 22 * * *'  # Morning window: 04:20 AM to 10:20 AM IST
+    - cron: '50 10 * * *'  # Evening window: 04:20 PM to 10:20 PM IST
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
 # All runs share a single concurrency group.
