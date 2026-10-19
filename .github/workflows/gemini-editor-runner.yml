@@ -38,16 +38,18 @@ on:
 
   schedule:
     # 2 clean 6-hour windows (Indian Standard Time — IST):
-    - cron: '50 22 * * *'  # Morning window: 04:20 AM to 10:20 AM IST
-    - cron: '50 10 * * *'  # Evening window: 04:20 PM to 10:20 PM IST
+    # Morning window: 04:20 AM IST trigger -> 10:20 AM IST stop (6 hours)
+    - cron: '50 22 * * *'
+    # Evening window: 04:20 PM IST trigger -> 10:20 PM IST stop (6 hours)
+    - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
 # All runs share a single concurrency group.
-# cancel-in-progress: true — Ensures old hanging runs are automatically terminated
-# when a new scheduled 6-hour window arrives so scheduled runs start promptly.
+# cancel-in-progress: false — A running 6-hour session will NEVER be killed
+# by a new scheduled cron or manual dispatch. GitHub queues them safely.
 concurrency:
   group: rawgrab-bot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-rawgrab:
@@ -259,17 +261,11 @@ jobs:
         mkdir -p "Phase_1/The jsons/Github_Actions_json"
         python3 -c "
         import json, time, os
-        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 9000}
+        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 21300}
         with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
             json.dump(lock, f)
-        print('🔐 Bot lock written (expires in ~150 min)')
+        print('🔐 Bot lock written (expires in ~355 min)')
         "
-        # ── Clean up bot lock on script exit ────────────────────────────────
-        cleanup() {
-          rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json"
-          echo "🔓 Bot lock released."
-        }
-        trap cleanup EXIT
         # ─────────────────────────────────────────────────────────────────────
         echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
         python -u main.py
@@ -292,8 +288,7 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
         fi
 
-        # Wipe leftover clip files and lock file before committing state
-        rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json" 2>/dev/null || true
+        # Wipe leftover clip files before committing state
         find downloads/ -name "*.mp4" -type f -delete 2>/dev/null || true
         find downloads/ -empty -type d -delete 2>/dev/null || true
 
@@ -304,7 +299,7 @@ jobs:
         if git diff --cached --quiet; then
           echo "No state changes to commit."
         else
-          git commit -m "ci: release bot lock and update state [skip ci]"
+          git commit -m "ci: update state and bot lock [skip ci]"
           git fetch origin main
           git rebase origin/main --strategy-option=theirs || git rebase --abort
           git push origin HEAD:main || echo "Push skipped (concurrent run or auth failure)"
