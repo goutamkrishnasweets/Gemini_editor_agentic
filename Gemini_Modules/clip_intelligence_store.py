@@ -307,6 +307,11 @@ class ClipIntelligenceStore:
                 TelegramVaultIndexer().sync_visual_pool_metadata(clip_id, data)
             except Exception as _vp_err:
                 logger.debug(f"[ClipStore] Visual pool metadata sync notice: {_vp_err}")
+            try:
+                from Audio_Modules.audio_pool_manager import AudioPoolManager
+                AudioPoolManager()._sync_to_telegram_vault()
+            except Exception as _pm_err:
+                logger.debug(f"[ClipStore] Pool metadata vault sync notice: {_pm_err}")
         except Exception as e:
             logger.warning(f"[ClipStore] Pool write failed: {e}")
 

@@ -1815,9 +1815,50 @@ class TelegramVaultIndexer:
         try:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
+
+            # 1. Unify storage: save into authoritative files.social_media_id
+            social_dict = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
+            existing_key = None
+            if shortcode_val:
+                for k, v in list(social_dict.items()):
+                    if isinstance(v, dict):
+                        v_sc = v.get("shortcode") or extract_clean_shortcode(k) or extract_clean_shortcode(v.get("social_media_id"))
+                        if v_sc and v_sc.lower() == shortcode_val.lower():
+                            existing_key = k
+                            break
+
+            target_entry = social_dict.get(existing_key) if existing_key else social_dict.get(target_key, {})
+            target_entry.update(clip_entry)
+            target_entry["media_file_ids"] = {
+                "raw_video_file_id": raw_file_id,
+                "extracted_audio_file_id": extracted_audio_file_id,
+            }
+            if existing_key and existing_key != target_key:
+                social_dict.pop(existing_key, None)
+            social_dict[target_key] = target_entry
+
+            # 2. Register extracted audio into candidate audio pool
+            if extracted_audio_file_id and shortcode_val:
+                audio_track_name = f"{shortcode_val}.wav"
+                files_dict = pm.metadata.setdefault("files", {})
+                if audio_track_name not in files_dict or not isinstance(files_dict[audio_track_name], dict):
+                    files_dict[audio_track_name] = {}
+                track_entry = files_dict[audio_track_name]
+                track_entry["shortcode"] = shortcode_val
+                track_entry["file_id"] = extracted_audio_file_id
+                track_entry["telegram_file_id"] = extracted_audio_file_id
+                track_entry["filename"] = audio_track_name
+                if audio_math:
+                    track_entry["bpm"] = float(audio_math.get("tempo_bpm", 120.0) or 120.0)
+                    track_entry["energy"] = float(audio_math.get("avg_energy", 0.7) or 0.7)
+                    track_entry["duration"] = float(audio_math.get("duration", audio_math.get("duration_sec", 15.0)) or 15.0)
+                    track_entry["vibe"] = audio_math.get("vibe", "energetic")
+                track_entry.setdefault("usage_count", 0)
+                track_entry.setdefault("last_used", 0.0)
+
             csm = pm.metadata.setdefault("clip_source_math", {})
             csm[target_key] = clip_entry
-            pm._save_metadata()
+            pm._save_metadata(sync_to_vault=True)
 
             if storage_group_id and upload_fn and os.path.exists(pm.meta_path):
                 pool_upload_res = upload_fn("sendDocument", storage_group_id, "document", pm.meta_path, caption=f"📦 **[VAULT BACKUP]** `pool_metadata.json` (Updated {time.strftime('%H:%M:%S')})")
@@ -1825,6 +1866,7 @@ class TelegramVaultIndexer:
                     pool_doc_id = pool_upload_res.get("document", {}).get("file_id")
                     self.vault_index["pool_metadata_file_id"] = pool_doc_id
                     self.vault_index["metadata_pool_file_id"] = pool_doc_id
+                    self.upload_and_pin_vault_index_sync(upload_fn)
 
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import USERS_JSON_PATH
@@ -2049,6 +2091,24 @@ class TelegramVaultIndexer:
             if user_id:
                 entry["user_id"] = user_id
 
+            if audio_file_id and sc_val:
+                audio_track_name = f"{sc_val}.wav"
+                files_dict = pm.metadata.setdefault("files", {})
+                if audio_track_name not in files_dict or not isinstance(files_dict[audio_track_name], dict):
+                    files_dict[audio_track_name] = {}
+                track_entry = files_dict[audio_track_name]
+                track_entry["shortcode"] = sc_val
+                track_entry["file_id"] = audio_file_id
+                track_entry["telegram_file_id"] = audio_file_id
+                track_entry["filename"] = audio_track_name
+                if beat_math:
+                    track_entry["bpm"] = float(beat_math.get("tempo_bpm", 120.0) or 120.0)
+                    track_entry["energy"] = float(beat_math.get("avg_energy", 0.7) or 0.7)
+                    track_entry["duration"] = float(beat_math.get("duration", beat_math.get("duration_sec", 15.0)) or 15.0)
+                    track_entry["vibe"] = beat_math.get("vibe", "groove")
+                track_entry.setdefault("usage_count", 0)
+                track_entry.setdefault("last_used", 0.0)
+
             # Remove old dirty/duplicate key if it differed from canonical key
             if existing_key and existing_key != target_key:
                 clips.pop(existing_key, None)
@@ -2056,7 +2116,7 @@ class TelegramVaultIndexer:
                 clips.pop(social_url, None)
 
             clips[target_key] = entry
-            pm._save_metadata()
+            pm._save_metadata(sync_to_vault=True)
         except Exception as _pe:
             logger.debug("Notice on record_downloaded_source pool_metadata save: %s", _pe)
 

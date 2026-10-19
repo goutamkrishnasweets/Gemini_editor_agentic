@@ -534,8 +534,10 @@ class AudioPoolManager:
                 if doc_id:
                     indexer = TelegramVaultIndexer()
                     indexer.vault_index["pool_metadata_file_id"] = doc_id
+                    indexer.vault_index["metadata_pool_file_id"] = doc_id
                     indexer._save_local_index()
-                    logger.info("✅ [POOL METADATA VAULT BACKUP] Uploaded pool_metadata.json to Telegram Storage Group (file_id: %s)", doc_id[:15])
+                    indexer.upload_and_pin_vault_index_sync()
+                    logger.info("✅ [POOL METADATA VAULT BACKUP] Uploaded & PINNED pool_metadata.json to Telegram Storage Group (file_id: %s)", doc_id[:15])
         except Exception as _e:
             logger.warning("⚠️ Notice triggering pool metadata sync: %s", _e)
 
