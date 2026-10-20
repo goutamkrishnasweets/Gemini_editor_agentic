@@ -3394,6 +3394,22 @@ def start_telegram_bot_service():
         _m_thread.start()
         logger.info("🛡️ [STORAGE GUARDIAN] Periodic 30-minute storage sweeper thread active.")
 
+        # Auto-shutdown timer for timed CI sessions (e.g. 4-hour morning/evening slot)
+        max_run_h = os.getenv("MAX_RUN_HOURS")
+        if max_run_h:
+            try:
+                run_seconds = float(max_run_h) * 3600.0
+                def _auto_stop_worker():
+                    time.sleep(run_seconds)
+                    logger.info(f"🛑 [AUTO-STOP] Configured max runtime of {max_run_h}h reached ({run_seconds/60:.0f}m). Gracefully exiting...")
+                    os._exit(0)
+
+                _stop_thread = threading.Thread(target=_auto_stop_worker, daemon=True, name="AutoStopThread")
+                _stop_thread.start()
+                logger.info(f"⏱️ [SESSION TIMER] Auto-stop timer active: Process will gracefully shut down in {max_run_h}h ({run_seconds/60:.0f} mins).")
+            except Exception as _te:
+                logger.warning(f"Failed to start auto-stop timer: {_te}")
+
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
         app.run_polling(poll_interval=2.0, drop_pending_updates=False)
     except KeyboardInterrupt:

@@ -37,19 +37,19 @@ on:
       - main
 
   schedule:
-    # 2 clean 6-hour windows (Indian Standard Time — IST):
-    # Morning window: 04:20 AM IST trigger -> 10:20 AM IST stop (6 hours)
+    # 2 clean 4-hour windows (Indian Standard Time — IST):
+    # Morning window: 04:20 AM IST trigger -> 08:20 AM IST stop (4 hours)
     - cron: '50 22 * * *'
-    # Evening window: 04:20 PM IST trigger -> 10:20 PM IST stop (6 hours)
+    # Evening window: 04:20 PM IST trigger -> 08:20 PM IST stop (4 hours)
     - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
 # All runs share a single concurrency group.
-# cancel-in-progress: false — A running 6-hour session will NEVER be killed
-# by a new scheduled cron or manual dispatch. GitHub queues them safely.
+# cancel-in-progress: true — Cancels stale/overlapping runs immediately
+# so runs never queue up and exhaust Action minutes.
 concurrency:
   group: rawgrab-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run-rawgrab:
@@ -57,9 +57,9 @@ jobs:
     env:
       TZ: "Asia/Kolkata"
       GITHUB_CRON: ${{ github.event.schedule }}
-      # FIX: Was 'both' (invalid choice) — corrected to 'auto'
       DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
-    timeout-minutes: 360   # 6-hour daemon ceiling — runs continuously for full 6-hour window until next schedule replaces it
+      MAX_RUN_HOURS: "3.95"
+    timeout-minutes: 245   # 4-hour daemon ceiling (strictly enforces 4h morning + 4h evening)
     permissions:
       contents: write
       actions: write
@@ -261,10 +261,10 @@ jobs:
         mkdir -p "Phase_1/The jsons/Github_Actions_json"
         python3 -c "
         import json, time, os
-        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 21300}
+        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 14400}
         with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
             json.dump(lock, f)
-        print('🔐 Bot lock written (expires in ~355 min)')
+        print('🔐 Bot lock written (expires in ~240 min)')
         "
         # ─────────────────────────────────────────────────────────────────────
         echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
