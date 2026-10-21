@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Execution mode (auto = 6h daemon scheduler, manual = targeted run)'
+        description: 'Execution mode (batch = scrape/edit batch & exit, manual = targeted run)'
         required: false
-        default: 'auto'
+        default: 'batch'
         type: choice
         options:
-          - auto
+          - batch
           - manual
       platform:
         description: 'Target platform to scrape'
@@ -37,10 +37,10 @@ on:
       - main
 
   schedule:
-    # 2 clean 4-hour windows (Indian Standard Time — IST):
-    # Morning window: 04:20 AM IST trigger -> 08:20 AM IST stop (4 hours)
+    # 2 clean daily schedule triggers (Indian Standard Time — IST):
+    # Morning batch run: 04:20 AM IST
     - cron: '50 22 * * *'
-    # Evening window: 04:20 PM IST trigger -> 08:20 PM IST stop (4 hours)
+    # Evening batch run: 04:20 PM IST
     - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
@@ -57,9 +57,8 @@ jobs:
     env:
       TZ: "Asia/Kolkata"
       GITHUB_CRON: ${{ github.event.schedule }}
-      DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
-      MAX_RUN_HOURS: "3.95"
-    timeout-minutes: 245   # 4-hour daemon ceiling (strictly enforces 4h morning + 4h evening)
+      DISPATCH_MODE: ${{ github.event.inputs.mode || 'batch' }}
+    timeout-minutes: 60   # Batch execution ceiling (runs batch, renders reels, commits, and exits)
     permissions:
       contents: write
       actions: write
@@ -253,7 +252,7 @@ jobs:
           NOW=$(date +%s)
           if [ "$LOCK_EXPIRES" -gt "$NOW" ]; then
             MINS_LEFT=$(( (LOCK_EXPIRES - NOW) / 60 ))
-            echo "🔒 [CI GUARD] Active bot lock found (~${MINS_LEFT}m remaining). Skipping duplicate cron run."
+            echo "🔒 [CI GUARD] Active batch run found (~${MINS_LEFT}m remaining). Skipping duplicate cron run."
             exit 0
           fi
         fi
@@ -261,14 +260,20 @@ jobs:
         mkdir -p "Phase_1/The jsons/Github_Actions_json"
         python3 -c "
         import json, time, os
-        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 14400}
+        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 1800}
         with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
             json.dump(lock, f)
-        print('🔐 Bot lock written (expires in ~240 min)')
+        print('🔐 Batch lock written (expires in ~30 min)')
         "
         # ─────────────────────────────────────────────────────────────────────
-        echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
-        python -u main.py
+        echo "🤖 Executing RawGrab batch cycle ($DISPATCH_MODE)..."
+        if [ "$DISPATCH_MODE" = "manual" ] && [ -n "$DISPATCH_TARGET_URL" ]; then
+          python -u main.py --url "$DISPATCH_TARGET_URL"
+        elif [ "$DISPATCH_MODE" = "manual" ] && [ -n "$DISPATCH_TARGET_ACCOUNTS" ]; then
+          python -u main.py --target-accounts "$DISPATCH_TARGET_ACCOUNTS"
+        else
+          python -u main.py --batch
+        fi
 
     # ── 7. Commit State Back to Repo ─────────────────────────────────────────
     - name: Commit Dedup State to Git
@@ -288,7 +293,8 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
         fi
 
-        # Wipe leftover clip files before committing state
+        # Wipe leftover clip files and batch lock before committing state
+        rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json" 2>/dev/null || true
         find downloads/ -name "*.mp4" -type f -delete 2>/dev/null || true
         find downloads/ -empty -type d -delete 2>/dev/null || true
 
@@ -299,7 +305,7 @@ jobs:
         if git diff --cached --quiet; then
           echo "No state changes to commit."
         else
-          git commit -m "ci: update state and bot lock [skip ci]"
+          git commit -m "ci: update state and release lock [skip ci]"
           git fetch origin main
           git rebase origin/main --strategy-option=theirs || git rebase --abort
           git push origin HEAD:main || echo "Push skipped (concurrent run or auth failure)"

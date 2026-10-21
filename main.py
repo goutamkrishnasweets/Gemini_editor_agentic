@@ -3394,22 +3394,6 @@ def start_telegram_bot_service():
         _m_thread.start()
         logger.info("🛡️ [STORAGE GUARDIAN] Periodic 30-minute storage sweeper thread active.")
 
-        # Auto-shutdown timer for timed CI sessions (e.g. 4-hour morning/evening slot)
-        max_run_h = os.getenv("MAX_RUN_HOURS")
-        if max_run_h:
-            try:
-                run_seconds = float(max_run_h) * 3600.0
-                def _auto_stop_worker():
-                    time.sleep(run_seconds)
-                    logger.info(f"🛑 [AUTO-STOP] Configured max runtime of {max_run_h}h reached ({run_seconds/60:.0f}m). Gracefully exiting...")
-                    os._exit(0)
-
-                _stop_thread = threading.Thread(target=_auto_stop_worker, daemon=True, name="AutoStopThread")
-                _stop_thread.start()
-                logger.info(f"⏱️ [SESSION TIMER] Auto-stop timer active: Process will gracefully shut down in {max_run_h}h ({run_seconds/60:.0f} mins).")
-            except Exception as _te:
-                logger.warning(f"Failed to start auto-stop timer: {_te}")
-
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
         app.run_polling(poll_interval=2.0, drop_pending_updates=False)
     except KeyboardInterrupt:
@@ -3425,27 +3409,37 @@ if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description="Master AI Video Factory Orchestrator & Telegram Bot")
         parser.add_argument("input", type=str, nargs="?", default=None, help="Target video URL, local .mp4 file, or clip folder")
-        parser.add_argument("--mode", type=str, choices=["auto", "manual"], default=None, help="Ingestion mode ('auto' or 'manual')")
+        parser.add_argument("--mode", type=str, choices=["auto", "manual", "batch"], default=None, help="Ingestion mode ('auto', 'manual', or 'batch')")
         parser.add_argument("--url", "-u", type=str, default=None, help="Target video URL for manual ingestion")
         parser.add_argument("--target-accounts", "-t", type=str, default=None, help="Target Instagram handle(s) to scrape (comma-separated, max 2)")
         parser.add_argument("--bot", action="store_true", help="Launch Telegram Bot polling listener mode + timed auto-input scheduler")
         parser.add_argument("--legacy", action="store_true", help="Force legacy procedural pipeline instead of Universal Agent")
+        parser.add_argument("--batch", action="store_true", help="Run a single scheduled batch scrape & edit cycle and exit")
 
         args = parser.parse_args()
 
         # Resolve mode from argument or environment variable
         env_mode = os.getenv("DISPATCH_MODE")
+        is_batch_run = args.batch or (args.mode == "batch") or (env_mode == "batch") or (os.getenv("CI_BATCH_MODE") == "1")
+
+        if is_batch_run:
+            from Downloader_Modules.scheduled_scraper_manager import run_scheduled_scraper_batch
+            logger.info("🚀 [BATCH RUN] Triggering single scheduled batch scrape & master edit cycle...")
+            rendered = run_scheduled_scraper_batch(max_accounts=2)
+            logger.info(f"✅ [BATCH RUN] Batch completed successfully: {len(rendered)} reel(s) rendered.")
+            sys.exit(0)
+
         mode_val = args.mode or (env_mode if env_mode in ["auto", "manual"] else None)
 
         env_target_accs = os.getenv("DISPATCH_TARGET_ACCOUNTS")
         env_target_url = os.getenv("DISPATCH_TARGET_URL")
 
-        # AUTO mode = 6h continuous daemon scheduler (Telegram bot polling + async static scheduler task)
+        # AUTO mode = continuous 24/7 daemon (Telegram bot polling + async static scheduler task)
         # MANUAL mode = targeted single run for specific URL or accounts
         is_manual_targeted = (mode_val == "manual") or bool(args.input or args.url or args.target_accounts or env_target_url or env_target_accs)
 
         if not is_manual_targeted:
-            # Launch 6-hour continuous daemon scheduler (Telegram Bot + background scraper scheduler)
+            # Launch 24/7 continuous daemon (Telegram Bot + background scraper scheduler)
             start_telegram_bot_service()
         else:
             target_input = args.input or args.url or env_target_url
