@@ -3394,6 +3394,24 @@ def start_telegram_bot_service():
         _m_thread.start()
         logger.info("🛡️ [STORAGE GUARDIAN] Periodic 30-minute storage sweeper thread active.")
 
+        # CI Session Timer: ONLY active inside GitHub Actions!
+        # On Oracle Cloud (or local server), GITHUB_ACTIONS is not set, so this timer NEVER runs
+        # and the bot runs 24/7/365 continuously without interruption.
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            max_run_h = os.getenv("MAX_RUN_HOURS", "3.95")
+            try:
+                run_seconds = float(max_run_h) * 3600.0
+                def _ci_auto_stop_worker():
+                    time.sleep(run_seconds)
+                    logger.info(f"🛑 [CI AUTO-STOP] Configured max runtime of {max_run_h}h reached ({run_seconds/60:.0f}m). Gracefully exiting...")
+                    os._exit(0)
+
+                _ci_thread = threading.Thread(target=_ci_auto_stop_worker, daemon=True, name="CIAutoStopThread")
+                _ci_thread.start()
+                logger.info(f"⏱️ [CI SESSION TIMER] Auto-stop timer active: Runner will shut down in {max_run_h}h ({run_seconds/60:.0f} mins).")
+            except Exception as _te:
+                logger.warning(f"Failed to start CI auto-stop timer: {_te}")
+
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
         app.run_polling(poll_interval=2.0, drop_pending_updates=False)
     except KeyboardInterrupt:

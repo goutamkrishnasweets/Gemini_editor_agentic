@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Execution mode (batch = scrape/edit batch & exit, manual = targeted run)'
+        description: 'Execution mode (auto = 4h daemon scheduler, manual = targeted run, batch = single batch)'
         required: false
-        default: 'batch'
+        default: 'auto'
         type: choice
         options:
-          - batch
+          - auto
           - manual
+          - batch
       platform:
         description: 'Target platform to scrape'
         required: false
@@ -37,10 +38,10 @@ on:
       - main
 
   schedule:
-    # 2 clean daily schedule triggers (Indian Standard Time — IST):
-    # Morning batch run: 04:20 AM IST
+    # 2 clean 4-hour windows (Indian Standard Time — IST):
+    # Morning window: 04:20 AM IST trigger -> 08:20 AM IST stop (4 hours)
     - cron: '50 22 * * *'
-    # Evening batch run: 04:20 PM IST
+    # Evening window: 04:20 PM IST trigger -> 08:20 PM IST stop (4 hours)
     - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
@@ -57,8 +58,9 @@ jobs:
     env:
       TZ: "Asia/Kolkata"
       GITHUB_CRON: ${{ github.event.schedule }}
-      DISPATCH_MODE: ${{ github.event.inputs.mode || 'batch' }}
-    timeout-minutes: 60   # Batch execution ceiling (runs batch, renders reels, commits, and exits)
+      DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
+      MAX_RUN_HOURS: "3.95"
+    timeout-minutes: 245   # 4-hour daemon ceiling (strictly enforces 4h morning + 4h evening)
     permissions:
       contents: write
       actions: write
@@ -252,7 +254,7 @@ jobs:
           NOW=$(date +%s)
           if [ "$LOCK_EXPIRES" -gt "$NOW" ]; then
             MINS_LEFT=$(( (LOCK_EXPIRES - NOW) / 60 ))
-            echo "🔒 [CI GUARD] Active batch run found (~${MINS_LEFT}m remaining). Skipping duplicate cron run."
+            echo "🔒 [CI GUARD] Active bot lock found (~${MINS_LEFT}m remaining). Skipping duplicate cron run."
             exit 0
           fi
         fi
@@ -260,19 +262,21 @@ jobs:
         mkdir -p "Phase_1/The jsons/Github_Actions_json"
         python3 -c "
         import json, time, os
-        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 1800}
+        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 14400}
         with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
             json.dump(lock, f)
-        print('🔐 Batch lock written (expires in ~30 min)')
+        print('🔐 Bot lock written (expires in ~240 min)')
         "
         # ─────────────────────────────────────────────────────────────────────
-        echo "🤖 Executing RawGrab batch cycle ($DISPATCH_MODE)..."
-        if [ "$DISPATCH_MODE" = "manual" ] && [ -n "$DISPATCH_TARGET_URL" ]; then
+        echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
+        if [ "$DISPATCH_MODE" = "batch" ]; then
+          python -u main.py --batch
+        elif [ "$DISPATCH_MODE" = "manual" ] && [ -n "$DISPATCH_TARGET_URL" ]; then
           python -u main.py --url "$DISPATCH_TARGET_URL"
         elif [ "$DISPATCH_MODE" = "manual" ] && [ -n "$DISPATCH_TARGET_ACCOUNTS" ]; then
           python -u main.py --target-accounts "$DISPATCH_TARGET_ACCOUNTS"
         else
-          python -u main.py --batch
+          python -u main.py
         fi
 
     # ── 7. Commit State Back to Repo ─────────────────────────────────────────
