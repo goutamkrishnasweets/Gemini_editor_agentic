@@ -1,719 +1,1137 @@
 """
-Gemini_Modules/platform_seo_generator.py
-=========================================
-Platform-Specific SEO Content Generator
+Gemini_Modules/platform_seo_generator.py   (v2.0)
+=================================================
+Platform-specific SEO generator with a self-optimizing loop.
 
-Generates optimized titles, hashtags, and descriptions for multiple platforms
-(YouTube, Instagram, Facebook, Telegram) using Gemini AI with platform-specific
-SEO algorithms and best practices.
+Flow
+----
+1. build_evidence()      Collapse every upstream signal (whisper transcript, forensic/visual intel,
+                         editing plan, creator behavior model, source caption/hashtags, analytics,
+                         user hint/title, affiliate slots) into ONE compact evidence packet.
+2. GENERATE   (Gemini)   Analyze the evidence first (primary keyword, intent, hook angle), then write
+                         3 title candidates per platform, pick the best, write description + hashtags.
+3. FINALIZE   (code)     Deterministic enforcement: restore affiliate URLs byte-for-byte, scrub banned
+                         phrases/tracking junk, enforce limits WITHOUT cutting URLs, force the
+                         disclosure line, cap/clean hashtags.
+4. LINT       (code)     Verifiable checks only (length, links, disclosure, hashtag budget, keyword
+                         placement, whitespace, CTA). Produces a 0-100 `seo_score` that is computed,
+                         not self-reported by the model.
+5. CRITIQUE   (Gemini)   Editor pass: scores the draft against a rubric, lists weaknesses, rewrites.
+                         A rewrite is ACCEPTED only if it is hard-lint-clean and does not score lower
+                         than the current draft. Otherwise the previous version is kept.
+6. Repeat 5 up to `optimize_rounds` (env SEO_OPTIMIZE_ROUNDS, default 1) or until every platform
+   reaches TARGET_SCORE.
 
-Features:
-- Platform-specific title optimization (character limits, keyword placement)
-- Hashtag generation with platform-specific volume and relevance
-- SEO-optimized descriptions with CTAs and engagement triggers
-- Cache injection for context preservation
-- User approval workflow with edit capability
-- Multi-platform batch generation
+Cost: 1 generation call + `optimize_rounds` critique calls. FAST_OFFLINE_SEO=yes -> 0 calls (heuristic).
 
-Author: AMTCE Platform SEO Engine v1.0
+Public API is backward compatible with v1: generate_platform_seo, approve_and_finalize,
+format_for_telegram_preview, extract_cache_for_regeneration, PLATFORM_LIMITS, clean_entity_name,
+strip_system_and_tracking_tokens, extract_main_subject_and_context, extract_celebrity_human_name,
+sanitize_raw_handles_out. New kwargs on generate_platform_seo are optional and trailing.
 """
 
+from __future__ import annotations
+
+import importlib
 import json
 import logging
+import math
 import os
 import re
-from typing import Dict, Any, Optional, List
-from datetime import datetime
+import string
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger("platform_seo_generator")
 
-# ── Router Import ─────────────────────────────────────────────────────────────
-try:
-    from Gemini_Modules.gemini_router_module.gemini_governor import GeminiGovernor
-    _router = GeminiGovernor()
-    _HAS_ROUTER = True
-except ImportError:
-    try:
-        from gemini_router_module.gemini_governor import GeminiGovernor
-        _router = GeminiGovernor()
-        _HAS_ROUTER = True
-    except ImportError:
-        _router = None
-        _HAS_ROUTER = False
-        logger.warning("⚠️ GeminiGovernor not found. SEO generator will use heuristic fallback.")
+__all__ = [
+    "PLATFORM_SPECS", "PLATFORM_LIMITS",
+    "generate_platform_seo", "approve_and_finalize", "format_for_telegram_preview",
+    "extract_cache_for_regeneration", "lint_platform", "build_evidence",
+    "clean_entity_name", "strip_system_and_tracking_tokens",
+    "extract_main_subject_and_context", "extract_celebrity_human_name",
+    "sanitize_raw_handles_out",
+]
 
-# ── Platform SEO Constraints ───────────────────────────────────────────────────
-PLATFORM_LIMITS = {
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Reuse the routing key the governor already knows. Do NOT invent new task types
+# (e.g. "seo_critique") unless GeminiGovernor has a profile for them.
+GEN_TASK_TYPE = "seo_generation"
+GEN_TEMPERATURE = 0.6      # hooks need some variance
+CRITIC_TEMPERATURE = 0.2   # editing needs discipline
+TARGET_SCORE = 90          # stop optimizing once every platform reaches this and has no hard issues
+
+_COMMON_CRITERIA = [
+    "evidence_grounding",   # every claim traceable to EVIDENCE, nothing invented
+    "keyword_placement",    # primary keyword early + natural variants, no stuffing
+    "hook_strength",        # would a stranger stop scrolling / click this
+    "scannability",         # whitespace, short lines, mobile-readable
+    "cta_fit",              # CTA native to the platform
+    "hashtag_relevance",    # tags describe THIS video, nothing generic
+]
+
+# Single source of truth. The prompt, the validators and PLATFORM_LIMITS are all derived from this,
+# so they can no longer drift apart (v1 had 100 vs 70 for YT titles, 30 vs 4-6 for IG tags, etc.).
+PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
     "youtube": {
-        "title_max": 100,
+        "label": "YouTube Shorts (Google/YouTube search indexing + browse velocity)",
+        "title_max": 70,
+        "title_suffix": "#Shorts",
         "description_max": 5000,
-        "hashtags_max": 15,
-        "hashtag_style": "#",
-        "title_emoji": "moderate",
-        "description_style": "detailed",
-        "cta_style": "subscribe",
+        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 15,
+        "disclosure": "(Disclosure: #ad #affiliate — qualifying purchases earn commission)",
+        "links_label": "🛍️ FEATURED PRODUCTS / LINKS:",
+        "cta_re": r"(comment|below|drop|which|would you|thoughts|your (?:take|pick|opinion)|\?|👇)",
+        "rules": [
+            "Title: front-load the highest-intent search query for this product/topic (comparison, "
+            "'best X', honest review, unboxing/setup, specific problem it solves). Price words ONLY if a price is in EVIDENCE.",
+            "Description lines 1-2 are the search snippet: plain-language summary using the primary + secondary keywords naturally.",
+            "Then (only if product slots exist) the links block: the label, then one slot per line.",
+            "Then the disclosure line exactly as given.",
+            "Last line: ONE question that invites a comment (comment velocity ranks).",
+        ],
     },
     "instagram": {
-        "title_max": 2200,  # Caption limit
+        "label": "Instagram Reels (above-the-fold hook + semantic caption indexing)",
+        "title_max": 80,
         "description_max": 2200,
-        "hashtags_max": 30,
-        "hashtag_style": "#",
-        "title_emoji": "high",
-        "description_style": "engaging",
-        "cta_style": "link",
+        "hook_visible_chars": 125,
+        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 5,
+        "disclosure": "(#ad)",
+        "links_label": "🔗 FEATURED ITEM / SHOP LINK:",
+        "cta_re": r"(save|share|send)",
+        "rules": [
+            "Title = the hook: a sharp curiosity gap, no keyword soup.",
+            "Caption line 1 must work ALONE: only ~125 characters show before '… more'.",
+            "The caption is indexed as search text: use the primary keyword and natural variants in plain language, once or twice.",
+            "Then (only if product slots exist) the links block, then the disclosure line exactly as given. "
+            "Never write #affiliate on Instagram: the hashtag cap counts EVERY # in caption + comments and #ad already uses one.",
+            "End with a save/share trigger.",
+            "Hashtags: niche/topic/community tags only. Total # in caption + hashtag list must fit the cap above.",
+        ],
     },
     "facebook": {
+        "label": "Facebook Reels (comment velocity + social graph)",
         "title_max": 255,
         "description_max": 63206,
-        "hashtags_max": 10,
-        "hashtag_style": "#",
-        "title_emoji": "moderate",
-        "description_style": "conversational",
-        "cta_style": "share",
+        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 10,
+        "disclosure": "(#ad #affiliate)",
+        "links_label": "🛍️ Featured Items:",
+        "cta_re": r"(which|would you|comment|below|thoughts|vote|👇|\?)",
+        "rules": [
+            "Title: conversational, specific, no clickbait the video doesn't pay off.",
+            "Description: a relatable binary-choice or opinion prompt that makes people argue in comments; keep it under ~600 chars.",
+            "Then (only if product slots exist) the links block and the disclosure line exactly as given.",
+        ],
     },
     "telegram": {
+        "label": "Telegram broadcast (direct-messenger UX)",
         "title_max": 255,
-        "description_max": 4096,
-        "hashtags_max": 10,
-        "hashtag_style": "#",
-        "title_emoji": "moderate",
-        "description_style": "concise",
-        "cta_style": "join",
+        "description_max": 1000,   # bot video captions cap at 1024; keep a margin
+        "soft_text_max": 300,      # text length EXCLUDING URLs
+        "hashtags_min": 1, "hashtags_max": 3, "hashtags_total_max": 10,
+        "disclosure": "(#ad #affiliate)",
+        "links_label": "",
+        "cta_re": None,
+        "rules": [
+            "Format: one bold headline line (🔥 **Title**), ONE punchy takeaway/verdict sentence, product slots one per line, "
+            "disclosure line exactly as given. Zero filler.",
+        ],
     },
 }
 
-def clean_entity_name(entity_str: str) -> str:
-    """
-    Cleans entity strings like 'celebrity:Avneet_Kaur', 'outfit:olive_suit', 'person:John_Doe'
-    into human-readable names like 'Avneet Kaur', 'Olive Suit', 'John Doe'.
-    Strips entity category prefixes, removes underscores, and strips 'None'/null literals.
-    """
-    if not entity_str or not isinstance(entity_str, str):
-        return ""
-    text = entity_str.strip()
-    text = re.sub(r'^(?:celebrity|outfit|accessory|environment|concept|niche|person|actor|actress|model|influencer|brand|subject|star|celeb|tag):\s*', '', text, flags=re.IGNORECASE)
-    # Strip None / null / unknown attached at end of word or standalone
-    text = re.sub(r'(?i)(?<=[a-zA-Z0-9_]{2})(?:None|null|unknown)\b', '', text)
-    text = re.sub(r'(?i)\b(?:None|null|unknown)\b', '', text)
-    text = text.replace("_", " ")
-    text = re.sub(r'\s+', ' ', text).strip()
-    words = [w.capitalize() for w in text.split() if w.lower() not in {"none", "null", "unknown"}]
-    return " ".join(words)
+# Back-compat view (v1 exposed this dict).
+PLATFORM_LIMITS: Dict[str, Dict[str, Any]] = {
+    p: {
+        "title_max": s["title_max"],
+        "description_max": s["description_max"],
+        "hashtags_max": s["hashtags_max"],
+        "hashtags_min": s["hashtags_min"],
+    }
+    for p, s in PLATFORM_SPECS.items()
+}
+
+_GENERIC_TAGS = frozenset({
+    "viral", "trending", "reels", "reel", "fyp", "foryou", "foryoupage", "explore", "instagood",
+    "love", "followforfollow", "like4like", "instadaily", "viralvideo", "viralreels", "trend",
+})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUTER (lazy: importing this module no longer instantiates a Gemini client)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ROUTER: Any = None
+_ROUTER_TRIED = False
+
+
+def _get_router():
+    global _ROUTER, _ROUTER_TRIED
+    if _ROUTER_TRIED:
+        return _ROUTER
+    _ROUTER_TRIED = True
+    for mod in ("Gemini_Modules.gemini_router_module.gemini_governor",
+                "gemini_router_module.gemini_governor"):
+        try:
+            _ROUTER = importlib.import_module(mod).GeminiGovernor()
+            return _ROUTER
+        except Exception as exc:  # ImportError or constructor failure
+            logger.debug("[PlatformSEO] router import via %s failed: %s", mod, exc)
+    logger.warning("⚠️ GeminiGovernor not available. SEO generator will use heuristic fallback.")
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEXT UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+_URL_RE = re.compile(r'https?://[^\s<>"]+')
+_SLOT_RE = re.compile(r"\[\[AFF_LINK_\d+\]\]")
+
+# URLs and slot tokens are swapped for private-use placeholders before ANY regex scrubbing,
+# then restored. v1 ran its scrubbers over raw URLs (it could eat "none"/"AQ..." inside a link).
+_ML, _MR = "\ue000", "\ue001"
+_MASK_RE = re.compile(_ML + r"(\d+)" + _MR)
+
+
+def _mask(text: str) -> Tuple[str, List[str]]:
+    saved: List[str] = []
+
+    def _sub(m: "re.Match[str]") -> str:
+        saved.append(m.group(0))
+        return f"{_ML}{len(saved) - 1}{_MR}"
+
+    return _SLOT_RE.sub(_sub, _URL_RE.sub(_sub, text)), saved
+
+
+def _unmask(text: str, saved: List[str]) -> str:
+    return _MASK_RE.sub(lambda m: saved[int(m.group(1))], text)
+
+
+_ENTITY_PREFIXES = ("celebrity|outfit|accessory|environment|concept|niche|person|actor|actress|"
+                    "model|influencer|brand|subject|star|celeb|tag")
+_RE_IG_TRACK = re.compile(r"#?AQ(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{10,}")
+_RE_HASH_SIG = re.compile(r"#(?=[A-Za-z0-9_-]{26,})(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]+")
+_RE_PLACEHOLDER = re.compile(r"(?i)#?(?:creator_?unknown|niche_?unknown)\b|#(?:none|null|unknown)\b")
+# '#celebrity_Avneet_Kaur' / '#model:Name' -> '#Avneet_Kaur'. Needs a separator, so '#celebrityNews' and
+# '#personalfinance' survive (v1 mangled both).
+_RE_ENTITY_TAG = re.compile(rf"(?i)#(?:celebrity|model|actress|actor|influencer|star|person)[_:]\s*([A-Za-z0-9_]+)")
+# 'celebrity:Avneet_Kaur' (pipeline namespace, no space after the colon).
+_RE_ENTITY_PREFIX = re.compile(rf"(?i)\b(?:{_ENTITY_PREFIXES}):(?=\S)")
+_RE_NULL_LITERAL = re.compile(r"(?<![\w#])(?:None|null|NaN)(?!\w)")  # case-sensitive: leaked str(None)
+_SNAKE = re.compile(r"^[^\W\d_]+(?:_[^\W\d_]+)+[.,!?:;]*$")
+_NONWORD = re.compile(r"[^\w\u0900-\u0DFF]+")  # keep Devanagari..Malayalam so Indic tags survive
+
+
+def _sanitize_str(text: str) -> str:
+    masked, saved = _mask(text)
+    t = _RE_IG_TRACK.sub("", masked)
+    t = _RE_HASH_SIG.sub("", t)
+    t = _RE_PLACEHOLDER.sub("", t)
+    t = _RE_ENTITY_TAG.sub(r"#\1", t)
+    t = _RE_ENTITY_PREFIX.sub("", t)
+    t = _RE_NULL_LITERAL.sub("", t)
+
+    lines_out: List[str] = []
+    for line in t.split("\n"):          # line-by-line: paragraph structure is preserved
+        seen: set = set()
+        toks: List[str] = []
+        for tok in line.split():
+            if tok.startswith("#"):
+                inner = tok[1:].replace("_", "")
+                if not inner:
+                    continue
+                key = inner.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                toks.append("#" + inner)
+            elif _SNAKE.match(tok):
+                toks.append(tok.replace("_", " "))
+            else:
+                toks.append(tok)
+        lines_out.append(" ".join(toks))
+    t = re.sub(r"\n{3,}", "\n\n", "\n".join(lines_out)).strip()
+    return _unmask(t, saved)
+
 
 def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
-    """
-    Recursively scrubs Instagram internal tracking tokens (#AQ...), raw system hashes,
-    entity category prefixes (celebrity:), appended 'None' literals, and placeholder tags
-    from text, lists, sets, tuples, and dictionary objects.
-    """
+    """Recursively scrub IG tracking tokens, placeholder tags, entity prefixes, leaked None/null,
+    duplicate hashtags. URLs and [[AFF_LINK_n]] slots are never touched. Newlines are preserved."""
     if isinstance(text_or_obj, str):
-        text = text_or_obj
-
-        # 1. Strip IG tracking tokens (#?AQ...)
-        text = re.sub(r'#?AQ[a-zA-Z0-9_-]{10,}', '', text)
-
-        # 2. Strip hashtags > 25 chars containing mixed alphanumeric hash signatures
-        text = re.sub(r'#(?=[a-zA-Z0-9_-]{26,})(?=[a-zA-Z0-9_-]*\d)(?=[a-zA-Z0-9_-]*[a-zA-Z])[a-zA-Z0-9_-]+', '', text)
-
-        # 3. Strip system placeholders & None / null tags (case-insensitive)
-        text = re.sub(r'(?i)#?(?:creator_?unknown|niche_?unknown|unknown|none|null)\b', '', text)
-
-        # 4. Strip entity prefixes from text and hashtags (e.g. celebrity:Avneet_Kaur -> Avneet Kaur, #celebrityAvneet_Kaur -> #AvneetKaur)
-        text = re.sub(r'(?i)#(?:celebrity|model|actress|actor|influencer|star|person)_?:?\s*([A-Za-z0-9_]+)', r'#\1', text)
-        text = re.sub(r'(?i)\b(?:celebrity|outfit|accessory|environment|concept|niche|person|actor|actress|model|influencer|brand|subject|star|celeb):\s*', '', text)
-
-        # 5. Clean appended "None" or "null" from hashtags (e.g. #AvneetkaurNone -> #Avneetkaur)
-        text = re.sub(r'(?i)(?<=#[a-zA-Z0-9_]{2})None\b', '', text)
-        text = re.sub(r'(?i)(?<=#[a-zA-Z0-9_]{2})null\b', '', text)
-
-        # 6. Clean orphaned '#' symbols and standalone 'None' strings in text
-        text = re.sub(r'#(?![a-zA-Z0-9_])', '', text)
-        text = re.sub(r'(?i)\bNone\b', '', text)
-
-        # 7. Convert remaining underscores in entity names to spaces where appropriate, and deduplicate hashtags case-insensitively
-        lines = text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            tokens = line.split()
-            cleaned_tokens = []
-            seen_tags_lower = set()
-            for tok in tokens:
-                if tok.startswith("#"):
-                    tag_inner = tok[1:].replace("_", "")
-                    if tag_inner:
-                        tag_lower = tag_inner.lower()
-                        if tag_lower not in seen_tags_lower:
-                            seen_tags_lower.add(tag_lower)
-                            cleaned_tokens.append(f"#{tag_inner}")
-                elif tok.startswith("http://") or tok.startswith("https://"):
-                    cleaned_tokens.append(tok)
-                else:
-                    tok_clean = tok.replace("_", " ")
-                    if tok_clean.strip():
-                        cleaned_tokens.append(tok_clean)
-            sub_l = " ".join(cleaned_tokens)
-            sub_l = re.sub(r'[ \t]{2,}', ' ', sub_l).strip()
-            cleaned_lines.append(sub_l)
-
-        text = '\n'.join(cleaned_lines)
-        text = re.sub(r'\n{3,}', '\n\n', text).strip()
-        return text
-
-    elif isinstance(text_or_obj, list):
-        cleaned_list = []
-        seen_tags_lower = set()
+        return _sanitize_str(text_or_obj)
+    if isinstance(text_or_obj, list):
+        out: List[Any] = []
+        seen: set = set()
         for item in text_or_obj:
             res = strip_system_and_tracking_tokens(item)
-            if res or isinstance(res, (bool, int, float)):
-                if isinstance(res, str) and res.startswith("#"):
-                    t_lower = res.lower().replace("_", "")
-                    if t_lower not in seen_tags_lower:
-                        seen_tags_lower.add(t_lower)
-                        cleaned_list.append(res)
-                else:
-                    cleaned_list.append(res)
-        return cleaned_list
-
-    elif isinstance(text_or_obj, set):
-        cleaned_set = set()
-        for item in text_or_obj:
-            res = strip_system_and_tracking_tokens(item)
-            if res or isinstance(res, (bool, int, float)):
-                cleaned_set.add(res)
-        return cleaned_set
-
-    elif isinstance(text_or_obj, tuple):
+            if isinstance(res, str) and res.startswith("#"):
+                key = res.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(res)
+            elif res or isinstance(res, (bool, int, float)):
+                out.append(res)
+        return out
+    if isinstance(text_or_obj, set):
+        return {r for r in (strip_system_and_tracking_tokens(i) for i in text_or_obj)
+                if r or isinstance(r, (bool, int, float))}
+    if isinstance(text_or_obj, tuple):
         return tuple(strip_system_and_tracking_tokens(list(text_or_obj)))
-
-    elif isinstance(text_or_obj, dict):
-        cleaned_dict = {}
-        for key, val in text_or_obj.items():
-            cleaned_dict[key] = strip_system_and_tracking_tokens(val)
-        return cleaned_dict
-
+    if isinstance(text_or_obj, dict):
+        return {k: strip_system_and_tracking_tokens(v) for k, v in text_or_obj.items()}
     return text_or_obj
 
+
+def clean_entity_name(entity_str: str) -> str:
+    """'celebrity:Avneet_Kaur' -> 'Avneet Kaur'. Only ALL-LOWERCASE words are capitalized, so
+    'iPhone', 'OnePlus', 'USB-C', 'AirPods' keep their casing (v1 turned them into 'Iphone', 'Usb-c')."""
+    if not entity_str or not isinstance(entity_str, str):
+        return ""
+    text = re.sub(rf"(?i)^(?:{_ENTITY_PREFIXES}):\s*", "", entity_str.strip())
+    text = re.sub(r"(?<=[a-z0-9]{2})(?:None|null)\b", "", text)
+    text = text.replace("_", " ")
+    words = []
+    for w in text.split():
+        if w.lower() in {"none", "null", "unknown"}:
+            continue
+        words.append(w.capitalize() if w.islower() else w)
+    return " ".join(words)
+
+
 def extract_celebrity_human_name(handle: str) -> str:
-    """Extract a human name or clean title from a handle string."""
+    """Extract a human-ish name from an account handle."""
     if not handle:
         return ""
-    clean = handle.strip().lstrip("@")
-    clean = re.sub(r"[._\-\d]+", " ", clean).strip()
-    words = [w.capitalize() for w in clean.split() if w.lower() not in {"official", "real", "daily", "page", "fp", "club", "fan"}]
-    return " ".join(words)
+    clean = re.sub(r"[._\-\d]+", " ", handle.strip().lstrip("@")).strip()
+    noise = {"official", "real", "daily", "page", "fp", "club", "fan"}
+    return " ".join(w.capitalize() for w in clean.split() if w.lower() not in noise)
+
+
+def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_subject: str = "") -> Any:
+    """Replace the creator's raw handle in titles/captions/tags with the discovered subject name.
+    URL-safe, and keeps paragraph breaks (v1 collapsed ALL whitespace, flattening every description).
+    Bare-word handles are only replaced when they look like IDs (contain _ . or digits) or carry @/#,
+    so a handle like 'fashion' can't delete the word from the copy."""
+    handle = (raw_handle or "").strip().lstrip("@")
+    if len(handle) < 3:
+        return text_or_obj
+    name = (discovered_subject or "").strip()
+    tag_name = re.sub(r"[^\w]", "", name)
+    h = re.escape(handle)
+    id_like = bool(re.search(r"[_.\d]", handle))
+
+    def _clean(text: str) -> str:
+        masked, saved = _mask(text)
+        masked = re.sub(rf"#{h}(?!\w)", f"#{tag_name}" if tag_name else "", masked, flags=re.I)
+        masked = re.sub(rf"@{h}(?!\w)", name, masked, flags=re.I)
+        if id_like:
+            masked = re.sub(rf"(?<![\w@#]){h}(?!\w)", name, masked, flags=re.I)
+        masked = re.sub(r"[ \t]{2,}", " ", masked)
+        masked = re.sub(r" +\n", "\n", masked)
+        return _unmask(masked, saved).strip()
+
+    if isinstance(text_or_obj, str):
+        return _clean(text_or_obj)
+    if isinstance(text_or_obj, list):
+        return [sanitize_raw_handles_out(i, raw_handle, discovered_subject) for i in text_or_obj if i]
+    if isinstance(text_or_obj, dict):
+        return {k: sanitize_raw_handles_out(v, raw_handle, discovered_subject) for k, v in text_or_obj.items()}
+    return text_or_obj
+
+
+def _to_tag(text: str) -> str:
+    words = [w for w in _NONWORD.sub(" ", (text or "").replace("_", " ")).split()
+             if w.lower() not in {"none", "null", "unknown"}]
+    if not words:
+        return ""
+    if len(words) == 1:
+        return "#" + words[0]            # keep 'iPhone15' as typed
+    return "#" + "".join(w[:1].upper() + w[1:] for w in words)
+
+
+def _cut_words(text: str, n: int) -> str:
+    """Cut to <= n chars on a word boundary, adding an ellipsis. Never returns more than n chars."""
+    text = text.strip()
+    if len(text) <= n:
+        return text
+    if n <= 1:
+        return text[:max(n, 0)]
+    cut = text[: n - 1]
+    if " " in cut and not text[n - 1:n].isspace():
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-–—|/") + "…"
+
+
+def _clip(s: Any, n: int) -> str:
+    s = "" if s is None else str(s).strip()
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _clip_obj(obj: Any, n: int) -> Any:
+    if not obj:
+        return None
+    s = json.dumps(obj, ensure_ascii=False, default=str)
+    return obj if len(s) <= n else s[:n] + "…"
+
+
+def _as_dict(x: Any) -> Dict[str, Any]:
+    return x if isinstance(x, dict) else {}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EVIDENCE (everything the pipeline already knows, in one packet)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _resolve_cache(cache: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Resolve both cache schemas: ClipIntelligenceStore (visual_context / editing_plan / audio_data.context)
+    and pool v3 (visual_data.gemini_visual_output / video_editing_plan / audio_data.gemini_audio_output)."""
+    cache = _as_dict(cache)
+    vis = _as_dict(cache.get("visual_data"))
+    aud = _as_dict(cache.get("audio_data"))
+    visual_ctx = _as_dict(cache.get("visual_context") or vis.get("gemini_visual_output") or vis.get("clip_intelligence"))
+    editing = _as_dict(cache.get("editing_plan") or cache.get("video_editing_plan"))
+    audio_ctx = _as_dict(aud.get("context") or aud.get("gemini_audio_output"))
+
+    w = aud.get("whisper_transcript") or cache.get("polished_transcript") or cache.get("transcript")
+    if isinstance(w, dict):
+        transcript = w.get("text") or w.get("transcript") or json.dumps(w, ensure_ascii=False)
+    elif isinstance(w, str):
+        transcript = w
+    else:
+        transcript = ""
+
+    return {
+        "visual_ctx": visual_ctx,
+        "editing": editing,
+        "audio_ctx": audio_ctx,
+        "audio_math": aud.get("audio_math"),
+        "transcript": transcript,
+        "cbm": _as_dict(cache.get("creator_behavior_model")),
+    }
+
 
 def extract_main_subject_and_context(
     video_context: str = "",
     metadata: Optional[Dict[str, Any]] = None,
     cache: Optional[Dict[str, Any]] = None,
     user_hint: Optional[str] = None,
-    affiliate_link: Optional[str] = None
+    affiliate_link: Optional[str] = None,   # kept for signature compatibility; unused
 ) -> Dict[str, Any]:
-    """
-    Analyzes video context, raw metadata (titles, captions, tags), prior Gemini call caches,
-    and user-provided clues/hints/affiliate links to discover:
-    1. main_subject: Primary hero entity, human name, pet name, brand name, or user hint
-       (e.g., 'Core Topic', 'Pet Name', 'Brand Name', '2026').
-    2. applicable_context: Supporting descriptors, secondary context, action details.
-    """
-    metadata = metadata or {}
-    cache = cache or {}
+    """Heuristic subject discovery. Same return keys as v1, plus `subject_source` and
+    `subject_confidence`. The LLM receives the confidence and is told to override a weak subject
+    (v1 fell back to 'first word longer than 3 chars', which is how you get 'Whisper' as a subject)."""
+    metadata = _as_dict(metadata)
+    rc = _resolve_cache(cache)
+    cache = _as_dict(cache)
+    vc, ep, audio_ctx = rc["visual_ctx"], rc["editing"], rc["audio_ctx"]
 
-    # 0. Check User Hint first for main subject clue
     hint_clean = ""
     if user_hint:
-        hint_clean = re.sub(r'https?://[^\s<>"]+', "", user_hint).strip()
-        hint_clean = re.sub(r"\s+", " ", hint_clean)
-        hint_clean = clean_entity_name(hint_clean)
-
-    # Extract fields from cache — support both ClipIntelligenceStore schema (visual_context,
-    # editing_plan, audio_data.context) AND pool v3 social entry schema (visual_data.gemini_visual_output,
-    # video_editing_plan, audio_data.gemini_audio_output). Additive alias resolution, nothing removed.
-    _vc_raw = (cache.get("visual_context")
-               or cache.get("visual_data", {}).get("gemini_visual_output")
-               or cache.get("visual_data", {}).get("clip_intelligence"))
-    vc = _vc_raw if isinstance(_vc_raw, dict) else {}
-
-    _ep_raw = cache.get("editing_plan") or cache.get("video_editing_plan")
-    ep = _ep_raw if isinstance(_ep_raw, dict) else {}
-
-    _aud = cache.get("audio_data", {}) if isinstance(cache.get("audio_data"), dict) else {}
-    audio_ctx = _aud.get("context") or _aud.get("gemini_audio_output") or {}
-    if not isinstance(audio_ctx, dict):
-        audio_ctx = {}
+        hint_clean = clean_entity_name(re.sub(r"\s+", " ", _URL_RE.sub("", user_hint)).strip())
 
     raw_caption = metadata.get("raw_caption") or metadata.get("caption") or ""
     source_title = metadata.get("title") or metadata.get("source_title") or ""
     tags = metadata.get("hashtags") or []
-    if isinstance(tags, list):
-        tags_str = " ".join(tags)
-    else:
-        tags_str = str(tags)
+    tags_str = " ".join(tags) if isinstance(tags, list) else str(tags)
 
     raw_detected = vc.get("detected_entities") or cache.get("detected_entities") or []
     if isinstance(raw_detected, str):
         raw_detected = [raw_detected]
-
-    detected_entities = [clean_entity_name(e) for e in raw_detected if clean_entity_name(e)]
+    detected = [c for c in (clean_entity_name(e) for e in raw_detected) if c]
     person_name = clean_entity_name(vc.get("person_name") or cache.get("person_name") or "")
     cached_subject = clean_entity_name(vc.get("main_subject") or cache.get("main_subject") or "")
 
-    full_text = f"{hint_clean} {video_context} {source_title} {raw_caption} {tags_str} {' '.join(detected_entities)}".strip()
+    full_text = f"{hint_clean} {video_context} {source_title} {raw_caption} {tags_str} {' '.join(detected)}".strip()
 
-    # 1. Main Subject Discovery
-    main_subject = ""
+    subject, source, confidence = "", "", "none"
     if hint_clean:
-        # User provided explicit hint/title clue
-        main_subject = hint_clean
+        subject, source, confidence = hint_clean, "user_hint", "high"
     elif person_name:
-        main_subject = person_name
+        subject, source, confidence = person_name, "cache.person_name", "medium"
     elif cached_subject:
-        main_subject = cached_subject
-    elif detected_entities and len(detected_entities) > 0:
-        main_subject = detected_entities[0]
+        subject, source, confidence = cached_subject, "cache.main_subject", "medium"
+    elif detected:
+        subject, source, confidence = detected[0], "cache.detected_entities", "medium"
+    elif full_text:
+        caps = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", full_text)
+        if caps:
+            subject, source, confidence = clean_entity_name(caps[0]), "capitalized_phrase", "low"
+    if not subject:
+        code = metadata.get("shortcode") or metadata.get("clip_id") or metadata.get("session_id") or ""
+        subject = str(code).replace("manual_", "").replace("sess_", "") if code else "Featured Reel"
+        source, confidence = "fallback", "none"
 
-    if not main_subject and full_text:
-        # Search for capitalized names/entities (e.g. "Main Subject", "Brand Name")
-        cap_matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", full_text)
-        if cap_matches:
-            main_subject = clean_entity_name(cap_matches[0])
-
-    if not main_subject and full_text:
-        # Match single notable keywords
-        words = [w for w in re.findall(r"\b[A-Za-z0-9_]+\b", full_text) if len(w) > 3 and w.lower() not in {"video", "short", "reels", "trending", "viral", "post", "none", "null"}]
-        if words:
-            main_subject = clean_entity_name(words[0])
-
-    if not main_subject:
-        # Check shortcode/session_id/clip_id in metadata
-        shortcode = metadata.get("shortcode") or metadata.get("clip_id") or metadata.get("session_id") or ""
-        if shortcode:
-            main_subject = str(shortcode).replace("manual_", "").replace("sess_", "")
-        else:
-            main_subject = "Featured Reel"
-
-    # 2. Applicable Context & Supporting Descriptors
-    descriptors = []
+    descriptors: List[str] = []
     if vc.get("intent"):
-        descriptors.append(str(vc.get("intent")).replace("_", " "))
+        descriptors.append(str(vc["intent"]).replace("_", " "))
     if vc.get("tone"):
-        descriptors.append(str(vc.get("tone")))
+        descriptors.append(str(vc["tone"]))
     if ep.get("vibe_summary"):
-        descriptors.append(str(ep.get("vibe_summary")))
-
-    # Parse real snippets from source title, caption, and video_context
-    caption_snippets = [s.strip() for s in re.split(r"[\n\r\t,#|.]+", f"{source_title} {raw_caption} {video_context}") if s.strip() and len(s.strip()) > 3]
-    for snip in caption_snippets[:4]:
-        if main_subject.lower() not in snip.lower() and snip.lower() not in main_subject.lower():
-            if snip.lower() not in {"video", "reels", "shorts", "trending", "viral", "daily inspiration", "viral moment", "daily special", "none", "null"}:
-                descriptors.append(snip)
-
-    # Filter out generic fluff
-    fluff_set = {"daily inspiration", "viral moment", "daily special", "trending feature", "viral reel", "daily", "none", "null"}
-    clean_descriptors = [d for d in descriptors if d.lower().strip() not in fluff_set]
-
-    applicable_context = ", ".join(dict.fromkeys(clean_descriptors)) if clean_descriptors else (video_context[:100].strip() if video_context else "video highlights")
-    main_subject_clean = strip_system_and_tracking_tokens(clean_entity_name(main_subject)) or "Featured Reel"
-    applicable_context_clean = strip_system_and_tracking_tokens(applicable_context) or "video highlights"
+        descriptors.append(str(ep["vibe_summary"]))
+    snippets = [s.strip() for s in re.split(r"[\n\r\t,#|.]+", f"{source_title} {raw_caption} {video_context}")
+                if len(s.strip()) > 3]
+    stop = {"video", "reels", "shorts", "trending", "viral", "daily inspiration", "viral moment",
+            "daily special", "none", "null"}
+    for snip in snippets[:4]:
+        sl = snip.lower()
+        if subject.lower() not in sl and sl not in subject.lower() and sl not in stop:
+            descriptors.append(snip)
+    fluff = {"daily inspiration", "viral moment", "daily special", "trending feature", "viral reel", "daily", "none", "null"}
+    descriptors = [d for d in descriptors if d.lower().strip() not in fluff]
+    context = ", ".join(dict.fromkeys(descriptors)) if descriptors else (video_context[:100].strip() if len((video_context or "").strip()) > 3 else "video highlights")
 
     return {
-        "main_subject": main_subject_clean,
-        "applicable_context": applicable_context_clean,
+        "main_subject": strip_system_and_tracking_tokens(clean_entity_name(subject)) or "Featured Reel",
+        "applicable_context": strip_system_and_tracking_tokens(context) or "video highlights",
+        "subject_source": source,
+        "subject_confidence": confidence,
         "raw_caption": raw_caption,
         "source_title": source_title,
-        "detected_entities": detected_entities,
+        "detected_entities": detected,
         "intent": vc.get("intent", "general"),
         "tone": vc.get("tone", "engaging"),
-        "audio_vibe": audio_ctx.get("dominant_emotion", "")
+        "audio_vibe": audio_ctx.get("dominant_emotion", ""),
     }
 
-def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_subject: str = "") -> Any:
-    """
-    Sanitizes titles, descriptions, and hashtags to ensure raw account handles/IDs
-    (e.g., 'creator_handle', '@username') are stripped out and replaced with
-    the real discovered subject/star name or clean hashtags.
-    """
-    if not raw_handle or len(raw_handle) < 3:
-        return text_or_obj
 
-    handle_clean = raw_handle.strip().lstrip("@")
-    replacement_text = discovered_subject if (discovered_subject and "celeb" not in discovered_subject.lower()) else ""
-
-    if isinstance(text_or_obj, str):
-        text = text_or_obj
-        # Remove handle hashtags like #creator_handle
-        text = re.sub(rf"#{re.escape(handle_clean)}\b", f"#{replacement_text.replace(' ', '')}" if replacement_text else "#viral", text, flags=re.IGNORECASE)
-        # Remove handle mentions like @creator_handle
-        text = re.sub(rf"@{re.escape(handle_clean)}\b", replacement_text or "", text, flags=re.IGNORECASE)
-        # Remove standalone handle ID string
-        text = re.sub(rf"\b{re.escape(handle_clean)}\b", replacement_text or "", text, flags=re.IGNORECASE)
-        # Clean up double spaces or dangling punctuation
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
-    elif isinstance(text_or_obj, list):
-        return [sanitize_raw_handles_out(item, raw_handle, discovered_subject) for item in text_or_obj if item]
-    elif isinstance(text_or_obj, dict):
-        return {k: sanitize_raw_handles_out(v, raw_handle, discovered_subject) for k, v in text_or_obj.items()}
-    return text_or_obj
+_MERCHANTS = (("amazon", "Amazon"), ("amzn", "Amazon"), ("meesho", "Meesho"), ("myntra", "Myntra"),
+              ("ajio", "Ajio"), ("flipkart", "Flipkart"), ("fkrt", "Flipkart"), ("nykaa", "Nykaa"))
 
 
-# ── SEO Generation Prompt ──────────────────────────────────────────────────────
-_SEO_GENERATION_PROMPT = """\
-You are an elite short-form algorithmic growth strategist & search indexing architect.
-Your mission is to generate platform-sculpted, high-CTR titles, hashtags, and descriptions
-for short-form video across ANY product, niche, or topic (Tech & Gadgets, Home & Kitchen,
-Fitness & Health, Beauty & Skincare, Fashion & Apparel, Books & Productivity, Gaming, etc.).
+def _merchant(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    for key, name in _MERCHANTS:
+        if key in host:
+            return name
+    return "Product"
 
-Dynamically adapt all vocabulary, search intent, and conversion psychology to match
-the specific product/niche provided. NEVER assume or default to fashion unless the product is apparel.
 
-STRICT NEGATIVE CONSTRAINTS (ZERO TOLERANCE FOR FLUFF):
-- ABSOLUTELY NO MOTIVATIONAL SPEAKER OR CORPORATE PR ESSAYS: Never write generic fluff like 'Most people focus on complex routines, but true confidence comes from mastering the essentials...' or 'Elevate your perspective and radiate absolute confidence'.
-- NO CROWDED WALLS OF TEXT: Content must be high-contrast, visually uncluttered, generous with whitespace, and mobile-scannable.
-- NO HASHTAG STUFFING: Maximum 3 to 6 targeted niche hashtags strictly matching the product category. Never output 15-30 generic tags like '#viral #trending #reels' which hurt algorithmic classification.
-- NO 'LINK IN BIO' PHRASING: Never write 'link in bio', 'in my bio', or 'tap bio'. Links are directly embedded or listed inline.
-- IMMUTABLE AFFILIATE SLOTS: If product slots like `[[AFF_LINK_1]]` are provided, you MUST preserve them verbatim. DO NOT modify, remove, or invent URLs.
+def _extract_links(affiliate_link: Any) -> List[str]:
+    if not affiliate_link:
+        return []
+    items = affiliate_link if isinstance(affiliate_link, (list, tuple)) else [affiliate_link]
+    found: List[str] = []
+    for item in items:
+        found.extend(_URL_RE.findall(str(item)))
+    return list(dict.fromkeys(u.strip() for u in found if u.strip()))
 
-INPUT SIGNALS:
-- Primary Subject: {main_subject}
-- Secondary Context & Niche: {applicable_context}
-- User Provided Title / Clue: {user_title}
-- Video Context: {video_context}
-- Original Creator Caption: {original_caption}
-- Whisper Audio Transcript: {whisper_transcript}
-- Brand / Channel Info: {brand_info}
-- Product Promotion Slots:
-{affiliate_info}
 
-═══════════════════════════════════════════════════════════════════════════════
-PLATFORM-SPECIFIC ALGORITHMIC EXECUTION DIRECTIVES:
-═══════════════════════════════════════════════════════════════════════════════
+def _compact(d: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in d.items() if v not in (None, "", [], {})}
 
-1. YOUTUBE SHORTS (Google Search Indexing + Browse Velocity):
-   - Title: Strictly max 70 characters (prevents mobile truncation). Front-load high-intent Google Search queries tailored to the product category (e.g. '[Brand A] vs [Brand B]', 'Best [Category] Under ₹999', 'Honest Review: Is It Worth It?', 'Unboxing & Setup', or high-contrast comparison), ending with '#Shorts'.
-   - Description:
-     * Lines 1-2: Direct Google Search snippet summary matching what users search on YouTube/Google for this product or topic.
-     * Blank line (\\n\\n).
-     * '🛍️ FEATURED PRODUCTS / LINKS:' followed by bulleted [[AFF_LINK_X]] slots with concise item labels.
-     * Blank line (\\n\\n).
-     * Mandatory compliance line: '(Disclosure: #ad #affiliate — qualifying purchases earn commission)'.
-     * 1-line viewer opinion prompt (boosts YouTube comment-velocity ranking).
-   - Hashtags: 3 to 5 high-intent search tags strictly matching this product niche.
 
-2. INSTAGRAM REELS (Vector Graph & Above-the-Fold Viewport):
-   - Title / Hook: Strictly under 80 characters before the mobile '...more' truncation button. Must establish a sharp curiosity gap tailored to the product (e.g. 'Is this ₹499 find actually worth it? 👀' or 'Can you spot the difference between these two?').
-   - Description:
-     * 1-line scroll-stopping curiosity hook tailored to the product.
-     * Blank line (\\n\\n).
-     * '🔗 FEATURED ITEM / SHOP LINK:' followed by bulleted [[AFF_LINK_X]] slots.
-     * Compliance line: '(#ad #affiliate)'.
-     * Blank line (\\n\\n).
-     * Save/Share action trigger ('💾 Save this for later & share with a friend!').
-   - Hashtags: 4 to 6 hyper-relevant niche community tags matching the actual topic/product.
+def build_evidence(
+    video_context: str = "",
+    user_title: str = "",
+    brand_info: str = "",
+    cache: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    links: Optional[List[str]] = None,
+    user_hint: Optional[str] = None,
+    performance_hints: Optional[List[Dict[str, Any]]] = None,
+    previous: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One compact, size-bounded packet of everything the pipeline knows about this clip.
+    (v1 computed cache/CBM/editing-plan/analytics blocks and then never put them in the prompt.)"""
+    md = _as_dict(metadata)
+    rc = _resolve_cache(cache)
+    ex = extract_main_subject_and_context(video_context, md, cache, user_hint=user_hint)
+    vc, ep = rc["visual_ctx"], rc["editing"]
 
-3. FACEBOOK REELS (Comment Velocity & Social Graph):
-   - Title: Engaging, conversational headline.
-   - Description: Relatable comparison or binary choice prompt that triggers comment debates (e.g. 'Which one would you choose: Option 1 or Option 2? 👇' or 'Would you buy this? Drop your thoughts below!') followed by [[AFF_LINK_X]] slots and (#ad #affiliate).
-   - Hashtags: 3 to 5 broad interest tags.
+    tags = md.get("hashtags") or []
+    tags = tags if isinstance(tags, list) else str(tags).split()
+    hint_txt = re.sub(r"\s+", " ", _URL_RE.sub("", user_hint or "")).strip()
 
-4. TELEGRAM BROADCAST (Direct Messenger High-Speed UX):
-   - Strictly under 300 characters total.
-   - Format: Single bold headline (`🔥 **[Title]**`), 1-sentence punchy takeaway/verdict, bulleted [[AFF_LINK_X]] slots, `*(#ad #affiliate)*`, and 2 niche hashtags. Zero filler words!
+    return _compact({
+        "subject": {"value": ex["main_subject"], "confidence": ex["subject_confidence"], "source": ex["subject_source"]},
+        "context": ex["applicable_context"],
+        "user_title": _clip(user_title, 200),
+        "user_hint": _clip(hint_txt, 200),
+        "video_context": _clip(video_context, 1200),
+        "original_caption": _clip(ex["raw_caption"], 600),
+        "source_title": _clip(ex["source_title"], 200),
+        "source_hashtags": [str(t) for t in tags[:25]],
+        "transcript": _clip(rc["transcript"], 1500),
+        "detected_entities": ex["detected_entities"][:10],
+        "intent": ex["intent"] if ex["intent"] != "general" else "",
+        "tone": ex["tone"] if ex["tone"] != "engaging" else "",
+        "audio_vibe": ex["audio_vibe"],
+        "visual_intel": _clip_obj(vc, 1200),
+        "editing_vibe": ep.get("vibe_summary"),
+        "editing_plan": _clip_obj({k: v for k, v in ep.items() if k != "vibe_summary"}, 600),
+        "creator_behavior": _clip_obj(rc["cbm"], 800),
+        "audio_math": _clip_obj(rc["audio_math"], 400),
+        "analytics": _compact({
+            "likes": md.get("likesCount"),
+            "views": md.get("videoViewCount"),
+            "tagged_users": _clip_obj(md.get("taggedUsers"), 200),
+        }),
+        "creator_handle": md.get("creator_handle"),   # context only; never printed
+        "brand": _clip(brand_info, 300),
+        "product_links": [{"slot": f"[[AFF_LINK_{i}]]", "merchant": _merchant(u)}
+                         for i, u in enumerate(links or [], 1)],
+        "past_performance": _clip_obj(performance_hints[:6] if performance_hints else None, 900),
+        "previous_attempt": _clip_obj(previous, 900),
+    })
 
-OUTPUT SCHEMA — return ONLY this JSON:
-{{
-  "generated_at": "<ISO timestamp>",
-  "platforms": {{
-    "youtube": {{
-      "title": "<Search-frontloaded title under 70 chars with #Shorts>",
-      "description": "<Clean, search-indexed description with isolated slots>",
-      "hashtags": ["#tag1", "#tag2", "#tag3"],
-      "seo_score": 95,
-      "keyword_density": "high_intent_search"
-    }},
-    "instagram": {{
-      "title": "<Hook under 80 chars>",
-      "description": "<Clean, spaced caption with slots, above-the-fold hook, and save CTA>",
-      "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4"],
-      "seo_score": 95,
-      "keyword_density": "semantic_topic_cluster"
-    }},
-    "facebook": {{
-      "title": "<Engaging conversational title>",
-      "description": "<Comment-debate prompt with isolated slots and disclosure>",
-      "hashtags": ["#tag1", "#tag2", "#tag3"],
-      "seo_score": 90,
-      "keyword_density": "conversational_social"
-    }},
-    "telegram": {{
-      "title": "<Direct headline>",
-      "description": "<Single bold title + 1 sentence + slots under 300 chars>",
-      "hashtags": ["#tag1", "#tag2"],
-      "seo_score": 95,
-      "keyword_density": "direct_messenger_ux"
-    }}
-  }},
-  "global_keywords": ["<keyword1>", "<keyword2>"],
-  "content_category": "<category>",
-  "target_audience": "<audience>",
-  "engagement_prediction": "<high>"
-}}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROMPTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+_RULES = """\
+GROUNDING
+- Use ONLY facts present in EVIDENCE. Never invent prices, ratings, specs, discounts, test results, or personal experience
+  ("I tested this", "after 30 days"). If a claim or number is not in EVIDENCE, leave it out.
+- subject.confidence says how sure the heuristic was. If transcript/caption/entities contradict subject.value, trust them
+  and put the corrected subject in analysis.subject_override.
+- creator_handle and tagged_users are context only. Never print handles, @mentions or raw IDs.
+- If past_performance exists, copy what worked structurally (hook type, length, keyword position), never the wording.
+- If previous_attempt exists, do not reuse its titles verbatim; keep its keywords unless EVIDENCE contradicts them.
+LANGUAGE
+- Write in the language/register of the user title, caption and transcript (English, Hinglish, Malayalam, ...).
+  Keep search keywords in the form people actually type.
+STYLE
+- No motivational/corporate filler ("elevate your perspective", "radiate confidence", "true confidence comes from ...").
+- Short lines, a blank line between blocks, emoji only as bullets/markers. Mobile-scannable. No walls of text.
+- Never write "link in bio", "in my bio", "check bio". Links are inline.
+LINKS
+- Product slots like [[AFF_LINK_1]] must be copied verbatim, one per line, never altered, never placed in a title,
+  and you must never invent a URL. No product_links in EVIDENCE => no links block, no disclosure line.
+HASHTAGS
+- Only tags that describe THIS video's niche/topic. Never #viral #trending #reels #fyp #foryou #explore.
 """
 
+_GENERATE_TEMPLATE = """\
+You are an elite short-form SEO strategist. Write platform-native titles, captions and hashtags for ONE video,
+grounded strictly in EVIDENCE. Adapt vocabulary and search intent to whatever the product/niche actually is.
+
+WORK IN THIS ORDER (silently; output only the JSON):
+1. ANALYZE the evidence: the one query this video should rank for, supporting keywords found in the transcript/caption/entities,
+   search intent, audience, and the single curiosity/tension the video resolves.
+2. For EACH platform write 3 title candidates using different hook types (question / contrast / outcome / specific-detail-from-evidence),
+   choose the one that best serves THAT platform's goal, then write its description and hashtags.
+
+__RULES__
+PLATFORM BRIEFS
+__BRIEFS__
+
+EVIDENCE
+__EVIDENCE__
+
+Return ONLY this JSON (no prose, no code fences). Include only these platforms: __PLATFORMS__
+{
+  "analysis": {
+    "primary_keyword": "",
+    "secondary_keywords": [],
+    "search_intent": "review|comparison|how-to|deal|discovery|entertainment",
+    "audience": "",
+    "hook_angle": "",
+    "subject_override": ""
+  },
+  "platforms": {
+    "<platform>": {"title": "", "title_alternates": ["", ""], "description": "", "hashtags": ["#tag"]}
+  },
+  "content_category": "",
+  "target_audience": ""
+}
+"""
+
+_CRITIC_TEMPLATE = """\
+You are a ruthless SEO editor reviewing a junior's draft. Be harsh: 8+ means "I would ship this unchanged".
+
+For EACH platform in CURRENT_DRAFT:
+1. Score 0-10 on: __CRITERIA__.
+2. List up to 3 concrete weaknesses (quote the offending text).
+3. If any score is below 8 or LINT_ISSUES is non-empty for that platform, return "revised": a COMPLETE replacement
+   {title, title_alternates, description, hashtags} that fixes them. Otherwise "revised": null.
+Do not lengthen anything for its own sake. Do not add claims absent from EVIDENCE. Keep [[AFF_LINK_n]] slots verbatim.
+Lint 'hard' issues are mandatory fixes; 'soft' issues are strong suggestions.
+
+__RULES__
+PLATFORM BRIEFS
+__BRIEFS__
+
+EVIDENCE
+__EVIDENCE__
+
+ANALYSIS
+__ANALYSIS__
+
+CURRENT_DRAFT
+__DRAFT__
+
+LINT_ISSUES
+__LINT__
+
+Return ONLY this JSON (no prose, no code fences):
+{
+  "platforms": {
+    "<platform>": {
+      "scores": {"evidence_grounding": 0, "keyword_placement": 0, "hook_strength": 0, "scannability": 0, "cta_fit": 0, "hashtag_relevance": 0},
+      "weaknesses": [""],
+      "revised": null
+    }
+  }
+}
+"""
+
+
+def _render_brief(platform: str) -> str:
+    s = PLATFORM_SPECS[platform]
+    lines = [f"### {platform.upper()} — {s['label']}"]
+    t = f"- Title ≤ {s['title_max']} characters"
+    if s.get("title_suffix"):
+        t += f", must end with {s['title_suffix']}"
+    lines.append(t)
+    d = f"- Description ≤ {s['description_max']} characters"
+    if s.get("soft_text_max"):
+        d += f"; text excluding URLs ≤ {s['soft_text_max']}"
+    lines.append(d)
+    lines.append(f"- Hashtags: {s['hashtags_min']}-{s['hashtags_max']} tags; total # across caption + list ≤ {s['hashtags_total_max']}")
+    lines.append(f"- If product slots exist, include this exact disclosure line: {s['disclosure']}")
+    lines.extend(f"- {r}" for r in s["rules"])
+    return "\n".join(lines)
+
+
+def _fill(template: str, **kw: str) -> str:
+    # str.replace instead of str.format: no brace-escaping landmines in the JSON schema.
+    out = template
+    for k, v in kw.items():
+        out = out.replace(f"__{k.upper()}__", v)
+    return out
+
+
+def _build_generation_prompt(evidence: Dict[str, Any], platforms: List[str]) -> str:
+    return _fill(
+        _GENERATE_TEMPLATE,
+        rules=_RULES,
+        briefs="\n\n".join(_render_brief(p) for p in platforms),
+        evidence=json.dumps(evidence, ensure_ascii=False, indent=1),
+        platforms=", ".join(platforms),
+    )
+
+
+def _build_critic_prompt(evidence: Dict[str, Any], analysis: Dict[str, Any], draft: Dict[str, Any],
+                         lint: Dict[str, List[Dict[str, Any]]], platforms: List[str]) -> str:
+    return _fill(
+        _CRITIC_TEMPLATE,
+        criteria=", ".join(_COMMON_CRITERIA),
+        rules=_RULES,
+        briefs="\n\n".join(_render_brief(p) for p in platforms),
+        evidence=json.dumps(evidence, ensure_ascii=False, indent=1),
+        analysis=json.dumps(analysis, ensure_ascii=False, indent=1),
+        draft=json.dumps(draft, ensure_ascii=False, indent=1),
+        lint=json.dumps(lint, ensure_ascii=False, indent=1),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LLM I/O
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _clean_json(text: str) -> str:
-    """Extract JSON from Gemini response."""
+    """Extract the JSON object from a Gemini response."""
     if not text:
         return "{}"
     if "```" in text:
         m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-        if m:
-            text = m.group(1)
-        else:
-            text = text.replace("```json", "").replace("```", "")
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return text[start:end+1].strip()
+        text = m.group(1) if m else text.replace("```json", "").replace("```", "")
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        return text[start:end + 1].strip()
     return text.strip()
 
-def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Validates and adjusts content based on platform limits.
-    Truncates if exceeds limits, adds defaults if missing.
-    """
-    limits = PLATFORM_LIMITS.get(platform, {})
-    validated = {}
 
-    # Title validation
-    title = content.get("title", "")
-    max_title = limits.get("title_max", 255)
-    if len(title) > max_title:
-        title = title[:max_title-3] + "..."
-    validated["title"] = strip_system_and_tracking_tokens(title or "Untitled Video")
+def _parse_json(text: str) -> Optional[Dict[str, Any]]:
+    s = _clean_json(text)
+    for cand in (s, re.sub(r",\s*([}\]])", r"\1", s)):   # second try forgives trailing commas
+        try:
+            data = json.loads(cand)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            continue
+    return None
 
-    # Description validation
-    description = content.get("description", "")
-    max_desc = limits.get("description_max", 2200)
 
-    # Universal sanitization: Strictly scrub any accidental "link in bio" phrases across ALL platforms
-    description = re.sub(r'(?i)\b(?:tap\s+the\s+link\s+in\s+bio\s+or\s+visit\s+directly|tap\s+(?:the\s+)?link\s+in\s+bio|link\s+in\s+bio(?:\s+to\s+shop)?|check\s+(?:the\s+)?bio(?:\s+link)?|tap\s+bio|in\s+my\s+bio|in\s+the\s+bio|bio\s+link)\b', 'direct link', description)
-    description = re.sub(r'(?i)\b(?:link\s+in\s+bio\s*&?\s*below)\b', 'link below', description)
+def _llm_json(prompt: str, temperature: float, label: str) -> Optional[Dict[str, Any]]:
+    router = _get_router()
+    if router is None:
+        return None
+    suffix = ""
+    for attempt in (1, 2):
+        try:
+            raw = router.generate(
+                task_type=GEN_TASK_TYPE,
+                prompt=prompt + suffix,
+                module_name="platform_seo_generator",
+                gen_config={"temperature": temperature},
+            )
+        except Exception as exc:
+            logger.warning("[PlatformSEO] %s call failed: %s", label, exc)
+            return None
+        if not raw:
+            logger.warning("[PlatformSEO] %s returned empty.", label)
+            return None
+        text = raw if isinstance(raw, str) else (getattr(raw, "text", None) or str(raw))
+        data = _parse_json(text)
+        if data is not None:
+            return data
+        logger.warning("[PlatformSEO] %s: unparseable JSON (attempt %d)", label, attempt)
+        suffix = ("\n\nYour previous reply was not valid JSON. Reply with ONE valid JSON object only: "
+                  "no prose, no code fences, no trailing commas.")
+    return None
 
-    if platform == "telegram":
-        max_desc = 1000  # Ensure Telegram video captions fit within Telegram's 1024 char limit
-        # Deduplicate title if repeated at top of description
-        clean_t = validated["title"].strip()
-        desc_s = description.strip()
-        if clean_t and desc_s.lower().startswith(clean_t.lower()):
-            desc_s = desc_s[len(clean_t):].lstrip(" :\n*-—")
-            description = desc_s
 
-    # Ensure generous spacing around URLs (keep them visually isolated)
-    description = re.sub(r'(?<!\n)(https?://[^\s<>"]+)', r'\n\1', description)
-    description = re.sub(r'(https?://[^\s<>"]+)(?!\n)', r'\1\n', description)
-    description = re.sub(r'\n{3,}', '\n\n', description).strip()
+# ══════════════════════════════════════════════════════════════════════════════
+# DETERMINISTIC ENFORCEMENT + LINT
+# ══════════════════════════════════════════════════════════════════════════════
 
-    if len(description) > max_desc:
-        description = description[:max_desc-3] + "..."
-    validated["description"] = strip_system_and_tracking_tokens(description or "Check out this amazing video!")
+_BIO_RE = re.compile(
+    r"(?i)\b(?:tap\s+the\s+link\s+in\s+(?:my\s+)?bio(?:\s+or\s+visit\s+directly)?"
+    r"|tap\s+(?:the\s+)?link\s+in\s+bio|link\s+in\s+(?:my\s+)?bio(?:\s+to\s+shop)?"
+    r"|(?:check|see)\s+(?:the\s+|my\s+)?bio(?:\s+link)?|tap\s+bio|in\s+(?:my|the)\s+bio|bio\s+link)\b")
+_BIO_AND_BELOW_RE = re.compile(r"(?i)\blink\s+in\s+bio\s*&?\s*below\b")
+_FLUFF_RE = re.compile(r"(?i)(elevate your perspective|radiate (?:absolute )?confidence|"
+                       r"true confidence comes from|mastering the essentials|unlock your (?:true )?potential)")
+_DISCLOSURE_GROUP = re.compile(r"\(\s*(?:Disclosure:\s*)?#ad\b[^)]*\)", re.I)
+_URL_THEN_TEXT = re.compile(r'(https?://[^\s<>"]+)[ \t]+(?=\S)')
+_DANGLING_BULLET = re.compile(r"(?m)^[ \t]*(?:👉|•|-|\*)[ \t]*$\n?")
 
-    # Hashtag validation
-    hashtags = content.get("hashtags", [])
-    max_tags = limits.get("hashtags_max", 15)
-    if len(hashtags) > max_tags:
-        hashtags = hashtags[:max_tags]
-    # Ensure hashtags start with #
-    hashtags = [tag if tag.startswith("#") else f"#{tag}" for tag in hashtags]
-    validated["hashtags"] = strip_system_and_tracking_tokens(hashtags)
 
-    # SEO score
-    validated["seo_score"] = content.get("seo_score", 75)
-    validated["keyword_density"] = content.get("keyword_density", "N/A")
+def _fit_title(platform: str, title: str, fallback: str = "Untitled Video") -> str:
+    spec = PLATFORM_SPECS[platform]
+    t = " ".join(_SLOT_RE.sub("", _URL_RE.sub("", title or "")).split()) or fallback
+    suffix = spec.get("title_suffix")
+    if suffix:
+        t = re.sub(rf"\s*{re.escape(suffix)}\s*$", "", t, flags=re.I).strip() or fallback
+        return f"{_cut_words(t, spec['title_max'] - len(suffix) - 1)} {suffix}"
+    return _cut_words(t, spec["title_max"])
 
-    return strip_system_and_tracking_tokens(validated)
 
-def _heuristic_fallback(
-    video_context: str,
-    user_title: str = "",
-    brand_info: str = "",
-    metadata: Optional[Dict[str, Any]] = None,
-    cache: Optional[Dict[str, Any]] = None,
-    affiliate_link: Optional[str] = None,
-    user_hint: Optional[str] = None
+def _fit_text(text: str, max_len: int) -> str:
+    """Shrink to max_len WITHOUT cutting a URL or dropping the disclosure: drop whole low-priority
+    paragraphs from the end first, then trim the opening paragraph on a word boundary.
+    (v1 did text[:max-3] + '...' which could slice an affiliate link in half.)"""
+    if len(text) <= max_len:
+        return text
+    paras = text.split("\n\n")
+
+    def protected(p: str) -> bool:
+        return bool(_URL_RE.search(p)) or bool(re.search(r"#ad\b", p, re.I))
+
+    while len("\n\n".join(paras)) > max_len:
+        idx = next((i for i in range(len(paras) - 1, 0, -1) if not protected(paras[i])), None)
+        if idx is None:
+            break
+        paras.pop(idx)
+    out = "\n\n".join(paras)
+    if len(out) > max_len and not protected(paras[0]):
+        keep = len(paras[0]) - (len(out) - max_len)
+        if keep >= 12:
+            paras[0] = _cut_words(paras[0], keep)
+            out = "\n\n".join(paras)
+    if len(out) > max_len:
+        logger.warning("[PlatformSEO] text still %d chars > %d after fitting (protected links/disclosure).",
+                       len(out), max_len)
+    return out
+
+
+def _clean_tag(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return ""
+    t = _to_tag(raw.strip().lstrip("#"))
+    key = t[1:].lower()
+    if not t or len(key) < 2 or len(key) > 30 or key in _GENERIC_TAGS:
+        return ""
+    return t
+
+
+def _fit_hashtags(platform: str, tags: Any, backfill: List[str], budget: int) -> List[str]:
+    spec = PLATFORM_SPECS[platform]
+    cap = max(0, min(spec["hashtags_max"], budget))
+    out: List[str] = []
+    seen: set = set()
+    for raw in (tags if isinstance(tags, list) else []):
+        t = _clean_tag(raw)
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    out = out[:cap]
+    floor = min(spec["hashtags_min"], cap)
+    for raw in backfill:
+        if len(out) >= floor:
+            break
+        t = _clean_tag(raw)
+        if t and t.lower() not in {x.lower() for x in out}:
+            out.append(t)
+    return out
+
+
+def _ensure_links(platform: str, desc: str, links: List[str]) -> str:
+    missing = [u for u in links if u not in desc]
+    if not missing:
+        return desc
+    label = PLATFORM_SPECS[platform].get("links_label") or ""
+    new_lines = [f"👉 {u}" for u in missing]
+    if label and label in desc:
+        # Label already there (the model wrote the block but dropped a link): extend that block, don't repeat the label.
+        lines = desc.split("\n")
+        last = max((i for i, ln in enumerate(lines) if _URL_RE.search(ln) or label in ln), default=len(lines) - 1)
+        lines[last + 1:last + 1] = new_lines
+        return "\n".join(lines)
+    block = (label + "\n" if label else "") + "\n".join(new_lines)
+    return desc.rstrip() + "\n\n" + block
+
+
+def _normalize_disclosure(platform: str, desc: str, has_links: bool) -> str:
+    if not has_links:
+        return desc
+    disclosure = PLATFORM_SPECS[platform]["disclosure"]
+    state = {"first": True}
+
+    def _rep(_m: "re.Match[str]") -> str:
+        if state["first"]:
+            state["first"] = False
+            return disclosure
+        return ""
+
+    desc = _DISCLOSURE_GROUP.sub(_rep, desc)
+    if platform == "instagram":      # #affiliate would burn a slot of the 5-hashtag cap
+        desc = re.sub(r"(?i)[ \t]*#affiliate\b", "", desc)
+    if state["first"] and not re.search(r"#ad\b", desc, re.I):
+        desc = desc.rstrip() + "\n\n" + disclosure
+    return desc
+
+
+def _count_desc_tags(desc: str) -> int:
+    return len(re.findall(r"#\w+", _URL_RE.sub("", desc)))
+
+
+def _kw_hit(text: str, kw: str) -> bool:
+    if not kw:
+        return True
+    t = (text or "").lower()
+    words = [w for w in (x.strip(string.punctuation + "…—–") for x in kw.lower().split()) if len(w) > 2]
+    if not words:
+        return kw.lower() in t
+    return sum(1 for w in words if w in t) >= max(1, math.ceil(len(words) / 2))
+
+
+def _keyword_density(desc: str, kw: str) -> str:
+    n_words = max(1, len(_URL_RE.sub("", desc).split()))
+    if not kw:
+        return "n/a"
+    occ = _URL_RE.sub("", desc).lower().count(kw.lower())
+    return f"{100.0 * occ * max(1, len(kw.split())) / n_words:.1f}%"
+
+
+def lint_platform(platform: str, content: Dict[str, Any], links: Optional[List[str]] = None,
+                  primary_keyword: str = "") -> Tuple[int, List[Dict[str, str]]]:
+    """Verifiable checks only. Returns (score 0-100, issues). hard = -25, soft = -8."""
+    spec = PLATFORM_SPECS[platform]
+    links = links or []
+    issues: List[Dict[str, str]] = []
+
+    def add(code: str, sev: str, msg: str) -> None:
+        issues.append({"platform": platform, "code": code, "severity": sev, "message": msg})
+
+    title = content.get("title") or ""
+    desc = content.get("description") or ""
+    tags = content.get("hashtags") or []
+
+    if not title.strip():
+        add("title_empty", "hard", "Title is empty.")
+    if len(title) > spec["title_max"]:
+        add("title_too_long", "hard", f"Title is {len(title)} chars; max {spec['title_max']}.")
+    suffix = spec.get("title_suffix")
+    if suffix and not title.rstrip().lower().endswith(suffix.lower()):
+        add("title_suffix_missing", "hard", f"Title must end with {suffix}.")
+    if not desc.strip():
+        add("description_empty", "hard", "Description is empty.")
+    if len(desc) > spec["description_max"]:
+        add("description_too_long", "hard", f"Description is {len(desc)} chars; max {spec['description_max']}.")
+    soft_max = spec.get("soft_text_max")
+    if soft_max and len(_URL_RE.sub("", desc)) > soft_max:
+        add("text_too_long", "soft", f"Text (excluding URLs) is {len(_URL_RE.sub('', desc))} chars; target ≤ {soft_max}.")
+    if _BIO_RE.search(desc) or _BIO_RE.search(title):
+        add("link_in_bio", "hard", "Contains a 'link in bio' style phrase. Links are inline.")
+    if _FLUFF_RE.search(desc) or _FLUFF_RE.search(title):
+        add("fluff", "hard", "Contains motivational/corporate filler. Replace with concrete, evidence-backed copy.")
+    for u in links:
+        if u not in desc:
+            add("link_missing", "hard", f"Affiliate link missing from description: {u}")
+    if links and not re.search(r"#ad\b", desc, re.I):
+        add("disclosure_missing", "hard", f"Disclosure line missing; use exactly: {spec['disclosure']}")
+
+    n_tags = len(tags)
+    if n_tags > spec["hashtags_max"]:
+        add("too_many_hashtags", "hard", f"{n_tags} hashtags; max {spec['hashtags_max']}.")
+    if n_tags < spec["hashtags_min"]:
+        add("too_few_hashtags", "soft", f"{n_tags} hashtags; min {spec['hashtags_min']}.")
+    if n_tags + _count_desc_tags(desc) > spec["hashtags_total_max"]:
+        add("hashtag_budget", "hard",
+            f"{n_tags + _count_desc_tags(desc)} total # across caption + list; platform cap {spec['hashtags_total_max']}.")
+    generic = [t for t in tags if str(t).lstrip("#").lower() in _GENERIC_TAGS]
+    if generic:
+        add("generic_hashtags", "soft", f"Generic tags hurt classification: {', '.join(generic)}")
+
+    if primary_keyword:
+        if not _kw_hit(title, primary_keyword):
+            add("keyword_not_in_title", "soft", f"Primary keyword '{primary_keyword}' not in title.")
+        elif platform == "youtube" and not _kw_hit(title[:45], primary_keyword):
+            add("keyword_not_frontloaded", "soft", f"Move '{primary_keyword}' into the first ~45 chars of the title.")
+        if not _kw_hit(desc, primary_keyword):
+            add("keyword_not_in_description", "soft", f"Primary keyword '{primary_keyword}' not in description.")
+
+    first_line = desc.split("\n", 1)[0]
+    hook_max = spec.get("hook_visible_chars")
+    if hook_max and len(first_line) > hook_max:
+        add("hook_truncated", "soft", f"First line is {len(first_line)} chars; only ~{hook_max} show before '… more'.")
+    if len(desc) > 300 and "\n\n" not in desc:
+        add("wall_of_text", "soft", "No paragraph breaks in a long description.")
+    cta = spec.get("cta_re")
+    if cta and not re.search(cta, desc, re.I):
+        add("cta_missing", "soft", "No platform-native CTA found.")
+
+    hard = sum(1 for i in issues if i["severity"] == "hard")
+    soft = len(issues) - hard
+    return max(0, 100 - 25 * hard - 8 * soft), issues
+
+
+def _finalize_platform(
+    platform: str,
+    raw: Dict[str, Any],
+    *,
+    links: List[str],
+    slot_to_url: Dict[str, str],
+    backfill_tags: List[str],
+    fallback_title: str = "Untitled Video",
+    raw_handle: str = "",
+    handle_name: str = "",
+    primary_keyword: str = "",
 ) -> Dict[str, Any]:
-    """
-    Heuristic fallback generating natural, storytelling creator captions & hashtags (0 API call cost).
-    Features dynamic parallel vocabulary, storytelling hooks, analogies, and isolated affiliate links.
-    """
-    import random
-    extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=affiliate_link)
-    main_subject = extracted["main_subject"] or "Product Spotlight"
-    applicable = extracted["applicable_context"] or ""
+    """Raw model/heuristic output -> publishable content. Everything here is deterministic."""
+    spec = PLATFORM_SPECS[platform]
+    title = str(raw.get("title") or "")
+    desc = str(raw.get("description") or "")
 
-    # Humanized title formatting
-    clean_subj = main_subject.strip()
-    if user_title:
-        # Strip raw platform-suffix tags (#Shorts, #Reels, etc.) — keep user intent as anchor
-        clean_title = re.sub(r'\s*#(?:Shorts?|Reels?)\b', '', user_title, flags=re.IGNORECASE).strip()
-        # Enrich with applicable context if it adds information not already in the title
-        if applicable and applicable.lower() not in {"video highlights", "general", "n/a"}:
-            desc_part = applicable.split(",")[0].strip().title()
-            if desc_part.lower() not in clean_title.lower():
-                clean_title = f"{clean_title} — {desc_part} ✨"
-    elif applicable and applicable.lower() not in {"video highlights", "general", "n/a"}:
-        desc_clean = applicable.split(",")[0].strip().title()
-        if desc_clean.lower() in clean_subj.lower():
-            clean_title = f"{clean_subj} ✨"
-        else:
-            clean_title = f"{clean_subj} — {desc_clean} ✨"
-    else:
-        clean_title = f"{clean_subj} Review & Spotlight ✨"
+    for token, url in slot_to_url.items():            # restore affiliate URLs byte-for-byte
+        desc = desc.replace(token, url)
+    desc = _SLOT_RE.sub("", desc)                     # hallucinated slots like [[AFF_LINK_9]]
+    desc = _DANGLING_BULLET.sub("", desc)
 
-    # Humanized hashtag builder (clean camel case, no underscores/None/numbers)
-    def _to_camel_tag(text: str) -> str:
-        words = [w.capitalize() for w in re.sub(r"\W+", " ", text).split() if w.lower() not in {"none", "null", "unknown"}]
-        return "#" + "".join(words) if words else ""
+    desc = _BIO_RE.sub("link below", _BIO_AND_BELOW_RE.sub("link below", desc))
+    title = _BIO_RE.sub("link below", _BIO_AND_BELOW_RE.sub("link below", title))
+    if raw_handle:
+        desc = sanitize_raw_handles_out(desc, raw_handle, handle_name)
+        title = sanitize_raw_handles_out(title, raw_handle, handle_name)
+    desc = strip_system_and_tracking_tokens(desc)
+    title = strip_system_and_tracking_tokens(title)
 
-    subj_tag = _to_camel_tag(clean_subj)
-    desc_tags = []
-    if applicable:
-        for chunk in applicable.split(","):
-            ctag = _to_camel_tag(chunk.strip())
-            if ctag and len(ctag) > 3 and ctag not in desc_tags:
-                desc_tags.append(ctag)
+    desc = _ensure_links(platform, desc, links)
+    desc = _normalize_disclosure(platform, desc, bool(links))
+    desc = _URL_THEN_TEXT.sub(r"\1\n", desc)          # keep URLs visually isolated (safe version)
+    desc = re.sub(r"\n{3,}", "\n\n", desc).strip()
 
-    # Dynamic universal tags derived from subject & context (no hardcoded category bias)
-    base_tags = [subj_tag] if subj_tag else []
-    context_words = [f"#{w.capitalize()}" for w in re.findall(r'\b[A-Za-z0-9]{3,}\b', applicable)
-                     if w.lower() not in {"video", "short", "reels", "general", "n/a", "none", "featured", "highlights"}]
-    universal_defaults = ["#MustHaves", "#ProductReview", "#BestFinds", "#HonestReview"]
-    all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + context_words + universal_defaults if t]))[:5]
+    if platform == "telegram":                        # v1 behaviour: drop a literally repeated headline
+        t0, d0 = title.strip(), desc.strip()
+        if t0 and d0.lower().startswith(t0.lower()):
+            desc = d0[len(t0):].lstrip(" :\n*-—") or desc
+    desc = _fit_text(desc or "Check out this video!", spec["description_max"])
+    title = _fit_title(platform, title, fallback_title)
 
-    # Clean YouTube Title (strictly <= 70 chars, front-load search query, end with #Shorts)
-    yt_base = clean_title.replace("—", "-").strip()
-    if not yt_base.lower().endswith("#shorts"):
-        if len(yt_base) > 60:
-            yt_title = f"{yt_base[:57]}... #Shorts"
-        else:
-            yt_title = f"{yt_base} #Shorts"
-    else:
-        yt_title = yt_base[:70]
+    budget = spec["hashtags_total_max"] - _count_desc_tags(desc)
+    tags = strip_system_and_tracking_tokens(_fit_hashtags(platform, raw.get("hashtags"), backfill_tags, budget))
 
-    ig_title = clean_title[:80]
+    alts: List[str] = []
+    for a in (raw.get("title_alternates") or []):
+        if isinstance(a, str) and a.strip():
+            fa = _fit_title(platform, strip_system_and_tracking_tokens(a), fallback_title)
+            if fa.lower() != title.lower() and fa not in alts:
+                alts.append(fa)
+    alts = alts[:2]
 
-    # ── Formatted affiliate / non-affiliate blocks with generous spacing ──
-    all_aff_links = []
-    if affiliate_link:
-        if isinstance(affiliate_link, (list, tuple)):
-            for item in affiliate_link:
-                all_aff_links.extend(re.findall(r'https?://[^\s<>"]+', str(item)))
-        else:
-            all_aff_links = re.findall(r'https?://[^\s<>"]+', str(affiliate_link))
-        all_aff_links = list(dict.fromkeys([l.strip() for l in all_aff_links if l.strip()]))
-
-    if all_aff_links:
-        if len(all_aff_links) == 1:
-            prod_links_yt = f"👉 {all_aff_links[0]}"
-            prod_links_ig = f"👉 {all_aff_links[0]}"
-            prod_links_tg = f"👉 {all_aff_links[0]}"
-            items_label = "Item"
-        else:
-            prod_links_yt = "\n".join([f"👉 Option {i+1}: {lnk}" for i, lnk in enumerate(all_aff_links)])
-            prod_links_ig = "\n".join([f"👉 Option {i+1}: {lnk}" for i, lnk in enumerate(all_aff_links)])
-            prod_links_tg = "\n".join([f"👉 Item {i+1}: {lnk}" for i, lnk in enumerate(all_aff_links)])
-            items_label = "Items"
-
-        yt_desc = (
-            f"Tested and reviewed: {clean_title}.\n\n"
-            f"🛍️ FEATURED PRODUCTS / LINKS:\n"
-            f"{prod_links_yt}\n\n"
-            f"(Disclosure: #ad #affiliate — qualifying purchases earn commission)\n\n"
-            f"💬 Which one is your top pick? Drop your thoughts below! 👇"
-        )
-        ig_caption = (
-            f"{clean_title} ✨\n\n"
-            f"🔗 FEATURED PRODUCTS & LINKS:\n"
-            f"{prod_links_ig}\n\n"
-            f"(#ad #affiliate)\n\n"
-            f"💾 Save this for later & share with a friend!\n"
-            f"💬 Drop your thoughts below! 👇"
-        )
-        fb_desc = (
-            f"{clean_title} — Here is the honest breakdown!\n\n"
-            f"🛍️ Featured Items:\n"
-            f"{prod_links_yt}\n\n"
-            f"(#ad #affiliate)\n\n"
-            f"Which one would you choose? Drop a comment below! 👇"
-        )
-        tg_desc = (
-            f"🔥 **{clean_title}**\n\n"
-            f"Featured links & product details below:\n\n"
-            f"{prod_links_tg}\n"
-            f"*(#ad #affiliate)*\n\n"
-            f"👉 Join our channel for daily updates!"
-        )
-    else:
-        yt_desc = (
-            f"Spotlight breakdown on {clean_title}.\n\n"
-            f"💬 What's your take on this? Drop your thoughts below! 👇\n\n"
-            f"⚡ Subscribe for daily curated reviews & breakdowns!"
-        )
-        ig_caption = (
-            f"{clean_title} ✨\n\n"
-            f"💬 On a scale of 1-10, how would you rate this? Drop it below! 👇\n\n"
-            f"💾 Save this post for your daily inspiration & share with a friend!"
-        )
-        fb_desc = (
-            f"{clean_title} ✨\n\n"
-            f"What do you think about this? Share your opinion below! 👇"
-        )
-        tg_desc = (
-            f"🔥 **{clean_title}**\n\n"
-            f"Daily feature & spotlight breakdown.\n\n"
-            f"👉 Join our channel for daily product spotlights & updates!"
-        )
-
-    platforms = {
-        "youtube": {
-            "title": yt_title,
-            "description": yt_desc,
-            "hashtags": all_tags[:5],
-            "seo_score": 90,
-            "keyword_density": "high_intent_search"
-        },
-        "instagram": {
-            "title": ig_title,
-            "description": ig_caption,
-            "hashtags": all_tags[:5],
-            "seo_score": 92,
-            "keyword_density": "semantic_topic_cluster"
-        },
-        "facebook": {
-            "title": clean_title[:255],
-            "description": fb_desc,
-            "hashtags": all_tags[:4],
-            "seo_score": 88,
-            "keyword_density": "conversational_social"
-        },
-        "telegram": {
-            "title": clean_title[:255],
-            "description": tg_desc,
-            "hashtags": all_tags[:2],
-            "seo_score": 95,
-            "keyword_density": "direct_messenger_ux"
-        }
+    content = {"title": title, "description": desc, "hashtags": tags}
+    score, issues = lint_platform(platform, content, links, primary_keyword)
+    return {
+        **content,
+        "title_alternates": alts,
+        "seo_score": score,
+        "keyword_density": _keyword_density(desc, primary_keyword),
+        "lint_issues": issues,
     }
 
-    return strip_system_and_tracking_tokens({
-        "generated_at": datetime.utcnow().isoformat(),
-        "platforms": platforms,
-        "global_keywords": [main_subject] + desc_tags[:4],
-        "content_category": extracted.get("intent", "general"),
-        "target_audience": "general",
-        "engagement_prediction": "medium (subject_heuristic)",
-        "main_subject": main_subject,
-        "_source": "heuristic_fallback"
-    })
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HEURISTIC FALLBACK (0 API calls; same enforcement path as the LLM output)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _backfill_tags(analysis: Dict[str, Any], evidence: Dict[str, Any]) -> List[str]:
+    subj = _as_dict(evidence.get("subject"))
+    subject = subj.get("value", "") if subj.get("confidence") != "none" else ""   # 'Featured Reel' is not a tag
+    candidates: List[str] = []
+    for kw in [analysis.get("primary_keyword"), *(analysis.get("secondary_keywords") or []), subject]:
+        if isinstance(kw, str) and kw.strip():
+            candidates.append(_to_tag(kw))
+    candidates.extend(evidence.get("source_hashtags") or [])
+    return [c for c in dict.fromkeys(candidates) if c]
+
+
+def _heuristic_draft(evidence: Dict[str, Any], platforms: List[str]) -> Dict[str, Dict[str, Any]]:
+    """No fabricated claims ('tested', 'honest breakdown') and no fixed category bias."""
+    subj = _as_dict(evidence.get("subject")).get("value") or "Featured Reel"
+    ctx = [c.strip() for c in (evidence.get("context") or "").split(",") if c.strip()]
+    ctx = [c for c in ctx if len(c) > 3 and c.lower() not in {"video highlights", "general", "n/a"}]
+    user_title = re.sub(r"\s*#(?:Shorts?|Reels?)\b", "", evidence.get("user_title") or "", flags=re.I).strip()
+
+    if user_title:
+        base = user_title
+    elif ctx and ctx[0].lower() not in subj.lower():
+        base = f"{subj} — {ctx[0]}"
+    else:
+        base = subj
+
+    tags = _backfill_tags({}, evidence) + [_to_tag(c) for c in ctx]
+    tags = [t for t in dict.fromkeys(tags) if t]
+    return {
+        "youtube": {"title": base, "hashtags": tags,
+                    "description": f"{base}\n\n💬 What's your take? Tell us in the comments 👇"},
+        "instagram": {"title": base, "hashtags": tags,
+                      "description": f"{base}\n\n💾 Save this for later & share it with a friend!"},
+        "facebook": {"title": base, "hashtags": tags,
+                     "description": f"{base}\n\nWould you pick this? Tell us below 👇"},
+        "telegram": {"title": base, "hashtags": tags, "description": f"🔥 **{base}**"},
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN ENTRY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _tokenize(text: str, slot_to_url: Dict[str, str]) -> str:
+    for token, url in slot_to_url.items():
+        text = text.replace(url, token)
+    return text
+
+
+def _mean_critic_score(scores: Any) -> Optional[float]:
+    vals = [float(v) for v in _as_dict(scores).values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return round(10.0 * sum(vals) / len(vals), 1) if vals else None
+
+
+def _hard_count(issues: List[Dict[str, str]]) -> int:
+    return sum(1 for i in issues if i["severity"] == "hard")
+
 
 def generate_platform_seo(
     video_context: str,
@@ -722,327 +1140,243 @@ def generate_platform_seo(
     platforms: Optional[List[str]] = None,
     cache: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
-    affiliate_link: Optional[str] = None,
-    user_hint: Optional[str] = None
+    affiliate_link: Optional[Any] = None,
+    user_hint: Optional[str] = None,
+    optimize_rounds: Optional[int] = None,
+    performance_hints: Optional[List[Dict[str, Any]]] = None,
+    previous: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Generate platform-specific SEO content using Gemini AI with Subject Extraction & Cache Injection.
+    Generate platform-specific SEO content, then self-optimize it.
 
-    Args:
-        video_context: Description of video content, scene analysis, or transcript
-        user_title: User-provided title (optional, will be optimized)
-        brand_info: Brand/channel information for personalization
-        platforms: List of platforms to generate for (default: all)
-        cache: Cached data from previous Gemini calls (Forensic, Audio, Editing Plan)
-        metadata: Raw video metadata (titles, captions, hashtags, source info)
-        affiliate_link: Commercial affiliate URL to promote (Amazon, Myntra, Ajio, etc.)
-        user_hint: User-provided hint or subject clue
-
-    Returns:
-        Dict with platform-specific titles, descriptions, hashtags, and SEO scores
+    optimize_rounds    critique/rewrite passes after the first draft. Default: env SEO_OPTIMIZE_ROUNDS or 1.
+                       0 = single-shot generation.
+    performance_hints  optional [{"platform","title","views","ctr",...}] of past winners on this channel.
+                       This is the only way the loop learns from real results; without it "optimizing" means
+                       "better against the rubric", not "ranks better".
+    previous           output of extract_cache_for_regeneration(); wires the regenerate-with-context flow.
     """
-    if platforms is None:
-        platforms = ["youtube", "instagram", "facebook", "telegram"]
+    platforms = [p for p in (platforms or list(PLATFORM_SPECS)) if p in PLATFORM_SPECS]
+    if not platforms:
+        return {"generated_at": _now(), "platforms": {}, "_source": "no_platforms"}
 
-    # Sanitize affiliate link(s) as passive text
-    clean_aff_links = []
-    if affiliate_link:
-        if isinstance(affiliate_link, (list, tuple)):
-            for item in affiliate_link:
-                clean_aff_links.extend(re.findall(r'https?://[^\s<>"]+', str(item)))
-        else:
-            clean_aff_links = re.findall(r'https?://[^\s<>"]+', str(affiliate_link))
-        clean_aff_links = list(dict.fromkeys([l.strip() for l in clean_aff_links if l.strip()]))
+    links = _extract_links(affiliate_link)
+    slot_to_url = {f"[[AFF_LINK_{i}]]": u for i, u in enumerate(links, 1)}
+    evidence = build_evidence(video_context, user_title, brand_info, cache, metadata, links, user_hint,
+                              performance_hints, previous)
+    subject = evidence["subject"]["value"]
 
-    clean_aff_link = "\n".join(clean_aff_links) if clean_aff_links else ""
+    raw_handle = _as_dict(metadata).get("creator_handle") or ""
+    if not raw_handle:
+        m = re.search(r"(?:creator_handle|raw_handle|Handle):\s*([A-Za-z0-9._]+)", video_context or "")
+        raw_handle = m.group(1) if m else ""
+    handle_name = extract_celebrity_human_name(raw_handle) or subject
 
-    extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=clean_aff_link)
-    main_subject = extracted["main_subject"]
-    applicable_context = extracted["applicable_context"]
-
-    # Fast Offline Heuristic SEO (0 API call cost) for shortform reels
-    if os.getenv("FAST_OFFLINE_SEO", "auto").lower() in ("yes", "true", "on", "1") or not _HAS_ROUTER or _router is None:
-        logger.info("⚡ [PlatformSEO] Using local fast SEO generator for title & hashtags (0 Gemini API calls).")
-        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
-        if platforms:
-            result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
-        return result
-
-    # ── Pool v3 enrichment fields ──────────────────────────────────────────────
-    _aud_block = (cache or {}).get("audio_data", {}) if isinstance((cache or {}).get("audio_data"), dict) else {}
-    _vis_block = (cache or {}).get("visual_data", {}) if isinstance((cache or {}).get("visual_data"), dict) else {}
-
-    # Format cache & metadata context for prompt.
-    # Prune cache_context to exclude sections that have dedicated prompt slots (CBM, editing plan,
-    # whisper, captions, tags, analytics) and technical plumbing (hashes, telegram IDs, logs)
-    # while preserving supplementary audio DSP math, vibe, and forensic perception tags.
-    pruned_cache = {}
-    if cache and isinstance(cache, dict):
-        _aud_math = _aud_block.get("audio_math")
-        _aud_gemini = _aud_block.get("gemini_audio_output") or _aud_block.get("context")
-        _supp_audio = {}
-        if _aud_math:
-            _supp_audio["audio_math"] = _aud_math
-        if _aud_gemini:
-            _supp_audio["audio_context"] = _aud_gemini
-        if _supp_audio:
-            pruned_cache["supplementary_audio"] = _supp_audio
-
-        _vis_intel = _vis_block.get("clip_intelligence") or cache.get("visual_context")
-        if _vis_intel:
-            pruned_cache["supplementary_visual_intel"] = _vis_intel
-
-        for k in ("detected_entities", "intent", "tone", "vibe", "dominant_emotion"):
-            if k in cache and cache[k]:
-                pruned_cache[k] = cache[k]
-
-    cache_context = json.dumps(pruned_cache, indent=2) if pruned_cache else "Supplementary intelligence integrated in dedicated sections above."
-    # Build token slotting for 100% zero-touch affiliate link preservation
-    slot_to_url = {}
-    if clean_aff_links:
-        slot_lines = []
-        for i, url in enumerate(clean_aff_links, 1):
-            token = f"[[AFF_LINK_{i}]]"
-            slot_to_url[token] = url
-            dest = "Product"
-            if "amazon" in url.lower() or "amzn" in url.lower():
-                dest = "Amazon Find"
-            elif "meesho" in url.lower():
-                dest = "Meesho Find"
-            elif "myntra" in url.lower():
-                dest = "Myntra Find"
-            elif "ajio" in url.lower():
-                dest = "Ajio Find"
-            elif "flipkart" in url.lower():
-                dest = "Flipkart Find"
-            slot_lines.append(f"- Slot {i} ({dest}): {token}")
-        aff_info_str = "Available Product Promotion Slots (Insert these EXACT tokens into your links block):\n" + "\n".join(slot_lines)
-    else:
-        aff_info_str = "None provided (Do NOT output product links or placeholder boxes)"
-
-    # Whisper transcript
-    _whisper = _aud_block.get("whisper_transcript", {})
-    if isinstance(_whisper, dict):
-        whisper_text = _whisper.get("text") or _whisper.get("transcript") or json.dumps(_whisper, ensure_ascii=False)[:600]
-    elif isinstance(_whisper, str):
-        whisper_text = _whisper[:600]
-    else:
-        whisper_text = "Not available"
-
-    # Creator Behavior Model (CBM)
-    _cbm = (cache or {}).get("creator_behavior_model", {})
-    cbm_text = json.dumps(_cbm, indent=2, ensure_ascii=False)[:800] if _cbm else "Not available"
-
-    # Video Editing Plan (pool v3 key alias)
-    _vep = (cache or {}).get("video_editing_plan") or (cache or {}).get("editing_plan") or {}
-    vep_text = json.dumps(_vep, indent=2, ensure_ascii=False)[:600] if _vep else "Not available"
-
-    # Original caption from source post (independent of user_title / user_hint)
-    original_caption_text = (metadata or {}).get("caption") or (metadata or {}).get("raw_caption") or "Not available"
-
-    # Source hashtags (niche signal)
-    _src_tags = (metadata or {}).get("hashtags", [])
-    if isinstance(_src_tags, list):
-        source_hashtags_text = " ".join(_src_tags[:25]) if _src_tags else "Not available"
-    else:
-        source_hashtags_text = str(_src_tags)[:200] if _src_tags else "Not available"
-
-    # Analytics signals (strategy-only)
-    _analytics = {
-        "taggedUsers":    (metadata or {}).get("taggedUsers", []),
-        "likesCount":     (metadata or {}).get("likesCount"),
-        "videoViewCount": (metadata or {}).get("videoViewCount"),
-        "scene_vectors":  _vis_block.get("vectors", [])[:10],
-    }
-    analytics_text = json.dumps(_analytics, indent=2, ensure_ascii=False)
-    raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
-
-    prompt = _SEO_GENERATION_PROMPT.format(
-        main_subject=main_subject,
-        applicable_context=applicable_context,
-        raw_metadata=raw_metadata,
-        video_context=video_context or "Video content not provided",
-        user_title=user_title or user_hint or "No user title provided",
-        brand_info=brand_info or "No brand info provided",
-        affiliate_info=aff_info_str,
-        cache_context=cache_context,
-        platforms=", ".join(platforms),
-        # ── new additive fields ──────────────────────────────────────────────
-        whisper_transcript=whisper_text,
-        creator_behavior_model=cbm_text,
-        video_editing_plan=vep_text,
-        original_caption=original_caption_text,
-        source_hashtags=source_hashtags_text,
-        analytics_signals=analytics_text,
-    )
-
-    try:
-        logger.info(f"🎯 [PlatformSEO] Generating SEO content for subject='{main_subject}' platforms: {', '.join(platforms)}")
-        raw_resp = _router.generate(
-            task_type="seo_generation",
-            prompt=prompt,
-            module_name="platform_seo_generator",
-            gen_config={"temperature": 0.3},
+    def fin(platform: str, raw: Dict[str, Any], analysis: Dict[str, Any], backfill: List[str]) -> Dict[str, Any]:
+        return _finalize_platform(
+            platform, raw, links=links, slot_to_url=slot_to_url, backfill_tags=backfill,
+            fallback_title=subject, raw_handle=raw_handle, handle_name=handle_name,
+            primary_keyword=str(analysis.get("primary_keyword") or subject),
         )
 
-        if not raw_resp:
-            logger.warning("[PlatformSEO] Empty Gemini response — using heuristic fallback.")
-            result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
-            if platforms:
-                result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
-            return result
+    offline = os.getenv("FAST_OFFLINE_SEO", "auto").lower() in ("yes", "true", "on", "1")
+    heur = _heuristic_draft(evidence, platforms)
+    draft = None
+    if not offline:
+        logger.info("🎯 [PlatformSEO] Generating for subject='%s' platforms=%s", subject, ",".join(platforms))
+        draft = _llm_json(_build_generation_prompt(evidence, platforms), GEN_TEMPERATURE, "generate")
 
-        clean = _clean_json(raw_resp)
-        seo_data = json.loads(clean)
+    # ── No LLM available / failed: heuristic through the SAME enforcement path ─────────────────
+    if draft is None:
+        logger.info("⚡ [PlatformSEO] heuristic path (0 Gemini calls).")
+        analysis: Dict[str, Any] = {"primary_keyword": subject}
+        backfill = _backfill_tags(analysis, evidence)
+        finals = {p: fin(p, heur[p], analysis, backfill) for p in platforms}
+        return _assemble(finals, analysis, evidence, links, subject, "heuristic_fallback",
+                         {"llm_calls": 0, "rounds_run": 0, "accepted_rewrites": 0}, {})
 
-        # ── Zero-Touch Link Guardian: Restore exact byte-for-byte affiliate URLs from tokens ──
-        if slot_to_url:
-            for p_name, p_data in seo_data.get("platforms", {}).items():
-                if not isinstance(p_data, dict):
-                    continue
-                desc = p_data.get("description", "")
-                title_str = p_data.get("title", "")
+    analysis = _as_dict(draft.get("analysis"))
+    if isinstance(analysis.get("subject_override"), str) and analysis["subject_override"].strip():
+        subject = clean_entity_name(analysis["subject_override"]) or subject
+    backfill = _backfill_tags(analysis, evidence)
 
-                for token, real_url in slot_to_url.items():
-                    if token in desc:
-                        desc = desc.replace(token, real_url)
-                    if token in title_str:
-                        title_str = title_str.replace(token, "")
+    drafts_raw = _as_dict(draft.get("platforms"))
+    finals: Dict[str, Dict[str, Any]] = {}
+    for p in platforms:
+        raw = _as_dict(drafts_raw.get(p)) or heur[p]     # model skipped a platform -> heuristic for that one
+        finals[p] = fin(p, raw, analysis, backfill)
 
-                # Safety check: If Gemini omitted any link, append it cleanly to the description
-                missing_urls = [u for u in clean_aff_links if u not in desc]
-                if missing_urls:
-                    missing_block = "\n".join([f"👉 {u}" for u in missing_urls])
-                    desc += f"\n\n🛍️ FEATURED PRODUCTS:\n{missing_block}"
+    # ── Self-optimization loop ─────────────────────────────────────────────────────────────────
+    if optimize_rounds is None:
+        try:
+            optimize_rounds = int(os.getenv("SEO_OPTIMIZE_ROUNDS", "1"))
+        except ValueError:
+            optimize_rounds = 1
+    calls, accepted, rounds_run = 1, 0, 0
+    critic_scores: Dict[str, Optional[float]] = {}
+    weaknesses: Dict[str, List[str]] = {}
 
-                p_data["description"] = desc.strip()
-                p_data["title"] = title_str.strip()
+    for rnd in range(max(0, optimize_rounds)):
+        if rnd > 0 and all(f["seo_score"] >= TARGET_SCORE and _hard_count(f["lint_issues"]) == 0
+                           for f in finals.values()):
+            break   # round 1 always runs (that's the feature); later rounds stop once everything is clean
+        current = {
+            p: {
+                "title": _tokenize(f["title"], slot_to_url),
+                "title_alternates": f.get("title_alternates", []),
+                "description": _tokenize(f["description"], slot_to_url),
+                "hashtags": f["hashtags"],
+            } for p, f in finals.items()
+        }
+        lint = {p: [{"severity": i["severity"], "code": i["code"], "message": _tokenize(i["message"], slot_to_url)}
+                    for i in f["lint_issues"]] for p, f in finals.items()}
+        crit = _llm_json(_build_critic_prompt(evidence, analysis, current, lint, platforms),
+                         CRITIC_TEMPERATURE, f"critique#{rnd + 1}")
+        calls += 1
+        rounds_run += 1
+        if crit is None:
+            break
+        for p in platforms:
+            c = _as_dict(_as_dict(crit.get("platforms")).get(p))
+            if not c:
+                continue
+            critic_scores[p] = _mean_critic_score(c.get("scores"))
+            if isinstance(c.get("weaknesses"), list):
+                weaknesses[p] = [str(w) for w in c["weaknesses"] if w][:3]
+            rev = c.get("revised")
+            if not isinstance(rev, dict) or not rev.get("description"):
+                continue
+            rev.setdefault("title_alternates", finals[p].get("title_alternates", []))
+            cand = fin(p, rev, analysis, backfill)
+            better = cand["seo_score"] >= finals[p]["seo_score"]
+            if _hard_count(cand["lint_issues"]) == 0 and better:
+                finals[p] = cand
+                accepted += 1
+            else:
+                logger.info("[PlatformSEO] %s rewrite rejected (score %s -> %s, hard=%d); keeping previous.",
+                            p, finals[p]["seo_score"], cand["seo_score"], _hard_count(cand["lint_issues"]))
 
-        # Validate and adjust each platform's content
-        for platform in platforms:
-            if platform in seo_data.get("platforms", {}):
-                seo_data["platforms"][platform] = _validate_platform_content(
-                    platform,
-                    seo_data["platforms"][platform]
-                )
+    for p, f in finals.items():                       # model self-assessment, kept SEPARATE from seo_score
+        if critic_scores.get(p) is not None:
+            f["critic_score"] = critic_scores[p]
+        if weaknesses.get(p):
+            f["critic_weaknesses"] = weaknesses[p]
 
-        # Filter to requested platforms
-        if platforms:
-            seo_data["platforms"] = {
-                k: v for k, v in seo_data.get("platforms", {}).items() if k in platforms
-            }
+    result = _assemble(finals, analysis, evidence, links, subject, "gemini_semantic",
+                       {"llm_calls": calls, "rounds_run": rounds_run, "accepted_rewrites": accepted},
+                       {"content_category": draft.get("content_category"),
+                        "target_audience": draft.get("target_audience")})
+    logger.info("✅ [PlatformSEO] %s | calls=%d accepted_rewrites=%d scores=%s", subject, calls, accepted,
+                {p: f["seo_score"] for p, f in finals.items()})
+    return result
 
-        # Add metadata
-        seo_data.setdefault("generated_at", datetime.utcnow().isoformat())
-        seo_data.setdefault("global_keywords", [main_subject])
-        seo_data.setdefault("content_category", extracted.get("intent", "general"))
-        seo_data.setdefault("target_audience", "general")
-        seo_data.setdefault("engagement_prediction", "high")
-        seo_data["main_subject"] = strip_system_and_tracking_tokens(clean_entity_name(main_subject))
-        seo_data["applicable_context"] = strip_system_and_tracking_tokens(applicable_context)
-        seo_data["_source"] = "gemini_semantic"
 
-        # Sanitize output to strip raw handle / ID text if present
-        raw_h = (metadata or {}).get("creator_handle") or ""
-        if not raw_h:
-            m_h = re.search(r"(?:creator_handle|raw_handle|Handle):\s*([A-Za-z0-9._]+)", video_context)
-            if m_h:
-                raw_h = m_h.group(1)
-        if raw_h:
-            clean_name = extract_celebrity_human_name(raw_h)
-            seo_data = sanitize_raw_handles_out(seo_data, raw_h, clean_name or main_subject)
+def _assemble(finals: Dict[str, Dict[str, Any]], analysis: Dict[str, Any], evidence: Dict[str, Any],
+              links: List[str], subject: str, source: str, opt: Dict[str, Any],
+              llm_meta: Dict[str, Any]) -> Dict[str, Any]:
+    scores = [f["seo_score"] for f in finals.values()]
+    avg = round(sum(scores) / len(scores)) if scores else 0
+    level = "high" if avg >= 90 else "medium" if avg >= 75 else "low"
+    kws = [k for k in [analysis.get("primary_keyword"), *(analysis.get("secondary_keywords") or [])]
+           if isinstance(k, str) and k.strip()]
+    result = {
+        "generated_at": _now(),
+        "platforms": finals,
+        "global_keywords": strip_system_and_tracking_tokens(kws or [subject]),
+        "content_category": llm_meta.get("content_category") or evidence.get("intent") or "general",
+        "target_audience": llm_meta.get("target_audience") or "general",
+        # Rule compliance, NOT a traffic forecast. Key kept for v1 consumers.
+        "engagement_prediction": f"{level} (rule_score={avg})",
+        "main_subject": strip_system_and_tracking_tokens(clean_entity_name(subject)),
+        "applicable_context": evidence.get("context", ""),
+        "analysis": analysis,
+        "_affiliate_links": links,
+        "_optimization": opt,
+        "_source": source,
+    }
+    return _sanitize_free_text_fields(result)
 
-        logger.info(f"✅ [PlatformSEO] Generated SEO content for subject='{main_subject}' across {len(seo_data['platforms'])} platforms")
-        return strip_system_and_tracking_tokens(seo_data)
 
-    except Exception as e:
-        logger.warning(f"[PlatformSEO] Gemini call failed ({e}) — using heuristic fallback.")
-        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
-        if platforms:
-            result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
-        return strip_system_and_tracking_tokens(result)
+def _sanitize_free_text_fields(result: Dict[str, Any]) -> Dict[str, Any]:
+    # Platform content is already sanitized in _finalize_platform. Sanitize ONLY top-level free text:
+    # running the sanitizer over the whole dict rewrites machine values ('heuristic_fallback' -> 'heuristic fallback').
+    for k in ("main_subject", "applicable_context", "content_category", "target_audience"):
+        if isinstance(result.get(k), str):
+            result[k] = strip_system_and_tracking_tokens(result[k])
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# APPROVAL / PREVIEW / REGENERATION
+# ══════════════════════════════════════════════════════════════════════════════
 
 def approve_and_finalize(
     seo_data: Dict[str, Any],
     approved_title: str,
     platform: str,
-    custom_edits: Optional[Dict[str, Any]] = None
+    custom_edits: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Finalize SEO content after user approval.
-    
-    Args:
-        seo_data: Original generated SEO data
-        approved_title: User-approved title (will be used as base)
-        platform: Platform to finalize for
-        custom_edits: Optional custom edits to description/hashtags
-    
-    Returns:
-        Finalized platform-specific content ready for publishing
-    """
-    if platform not in seo_data.get("platforms", {}):
-        logger.error(f"❌ [PlatformSEO] Platform {platform} not found in generated data")
+    """Finalize after user approval. The user's edits win (a link they deliberately removed stays removed),
+    but limits, URL integrity, disclosure (if any affiliate link remains) and hashtag caps are re-enforced."""
+    if platform not in seo_data.get("platforms", {}) or platform not in PLATFORM_SPECS:
+        logger.error("❌ [PlatformSEO] Platform %s not found in generated data", platform)
         return {}
-    
-    platform_data = seo_data["platforms"][platform].copy()
-    
-    # Update with approved title
-    platform_data["title"] = approved_title
-    
-    # Apply custom edits if provided
+
+    pdata = dict(seo_data["platforms"][platform])
+    pdata["title"] = approved_title
     if custom_edits:
         if "description" in custom_edits:
-            platform_data["description"] = custom_edits["description"]
+            pdata["description"] = custom_edits["description"]
         if "hashtags" in custom_edits:
-            platform_data["hashtags"] = custom_edits["hashtags"]
-    
-    # Re-validate after edits
-    platform_data = _validate_platform_content(platform, platform_data)
-    
-    # Add approval metadata
-    platform_data["approved_at"] = datetime.utcnow().isoformat()
-    platform_data["status"] = "approved"
-    
-    logger.info(f"✅ [PlatformSEO] Finalized {platform} content with title: '{approved_title[:50]}...'")
-    return strip_system_and_tracking_tokens(platform_data)
+            pdata["hashtags"] = custom_edits["hashtags"]
+
+    kept_links = [u for u in (seo_data.get("_affiliate_links") or []) if u in str(pdata.get("description", ""))]
+    keyword = str(_as_dict(seo_data.get("analysis")).get("primary_keyword") or seo_data.get("main_subject") or "")
+    final = _finalize_platform(
+        platform, pdata, links=kept_links, slot_to_url={}, backfill_tags=[],
+        fallback_title=approved_title or "Untitled Video", primary_keyword=keyword,
+    )
+    final["approved_at"] = _now()
+    final["status"] = "approved"
+    logger.info("✅ [PlatformSEO] Finalized %s with title: '%s'", platform, final["title"][:50])
+    return final
+
+
+def _md_escape(text: Any) -> str:
+    """Escape Telegram legacy-Markdown specials; unescaped _ * ` [ in a title makes the API reject the whole message."""
+    return re.sub(r"([_*`\[])", r"\\\1", str(text))
+
 
 def format_for_telegram_preview(seo_data: Dict[str, Any]) -> str:
-    """
-    Format SEO data for Telegram preview message.
-    """
     lines = ["🎯 *SEO Content Preview*\n"]
-    
     for platform, data in seo_data.get("platforms", {}).items():
         lines.append(f"\n📱 *{platform.upper()}*")
-        lines.append(f"📝 Title: {data.get('title', 'N/A')}")
-        lines.append(f"📊 SEO Score: {data.get('seo_score', 'N/A')}/100")
-        lines.append(f"🏷️ Hashtags: {' '.join(data.get('hashtags', [])[:5])}")
-        if data.get('description'):
-            desc_preview = data['description'][:100] + "..." if len(data['description']) > 100 else data['description']
-            lines.append(f"📄 Description: {desc_preview}")
-    
+        lines.append(f"📝 Title: {_md_escape(data.get('title', 'N/A'))}")
+        for alt in (data.get("title_alternates") or [])[:2]:
+            lines.append(f"   ↳ alt: {_md_escape(alt)}")
+        lines.append(f"📊 Rule score: {data.get('seo_score', 'N/A')}/100")
+        hard = [i for i in data.get("lint_issues", []) if i.get("severity") == "hard"]
+        if hard:
+            lines.append(f"⚠️ {len(hard)} unresolved hard issue(s): {_md_escape(hard[0].get('message', ''))}")
+        lines.append(f"🏷️ Hashtags: {_md_escape(' '.join(data.get('hashtags', [])[:5]))}")
+        desc = data.get("description")
+        if desc:
+            preview = desc[:100] + "..." if len(desc) > 100 else desc
+            lines.append(f"📄 Description: {_md_escape(preview)}")
     if seo_data.get("global_keywords"):
-        lines.append(f"\n🔑 Keywords: {', '.join(seo_data['global_keywords'])}")
-    
-    lines.append(f"\n📈 Engagement Prediction: {seo_data.get('engagement_prediction', 'N/A')}")
-    
+        lines.append(f"\n🔑 Keywords: {_md_escape(', '.join(seo_data['global_keywords']))}")
+    lines.append(f"\n📈 Status: {_md_escape(seo_data.get('engagement_prediction', 'N/A'))}")
     return "\n".join(lines)
 
+
 def extract_cache_for_regeneration(seo_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract relevant data to cache for future regeneration.
-    This allows maintaining context across edits.
-    """
+    """Feed this back as `previous=` on the next generate_platform_seo() call."""
+    plats = seo_data.get("platforms", {})
     return {
+        "analysis": seo_data.get("analysis", {}),
         "global_keywords": seo_data.get("global_keywords", []),
         "content_category": seo_data.get("content_category", ""),
         "target_audience": seo_data.get("target_audience", ""),
-        "previous_titles": {
-            platform: data.get("title", "") 
-            for platform, data in seo_data.get("platforms", {}).items()
-        },
-        "previous_hashtags": {
-            platform: data.get("hashtags", []) 
-            for platform, data in seo_data.get("platforms", {}).items()
-        }
+        "previous_titles": {p: d.get("title", "") for p, d in plats.items()},
+        "previous_hashtags": {p: d.get("hashtags", []) for p, d in plats.items()},
     }
