@@ -359,150 +359,100 @@ def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_
 
 # ── SEO Generation Prompt ──────────────────────────────────────────────────────
 _SEO_GENERATION_PROMPT = """\
-You are an elite storytelling content creator and viral social media conversion copywriter.
-Your task is to generate platform-optimized, high-retention titles, hashtags, and descriptions
-for a video based on the extracted MAIN SUBJECT, APPLICABLE CONTEXT, and PRIOR GEMINI CALL CACHES.
+You are an elite short-form algorithmic growth strategist & search indexing architect.
+Your mission is to generate platform-sculpted, high-CTR titles, hashtags, and descriptions
+for short-form video (YouTube Shorts, Instagram Reels, Facebook Reels, Telegram).
 
-You write like a modern, charismatic human creator who promotes a lifestyle or product through
-relatable storytelling and analogies, WITHOUT letting the audience get bored or feel like they
-are reading a dry corporate advertisement.
+STRICT NEGATIVE CONSTRAINTS (ZERO TOLERANCE FOR FLUFF):
+- ABSOLUTELY NO MOTIVATIONAL SPEAKER OR CORPORATE PR ESSAYS: Never write generic fluff like 'Most people focus on complex routines, but true confidence comes from mastering the essentials...' or 'Elevate your perspective and radiate absolute confidence'.
+- NO CROWDED WALLS OF TEXT: Content must be high-contrast, visually uncluttered, generous with whitespace, and mobile-scannable.
+- NO HASHTAG STUFFING: Maximum 3 to 6 targeted niche hashtags. Never output 15-30 generic tags like '#viral #trending #reels' which hurt algorithmic classification.
+- NO 'LINK IN BIO' PHRASING: Never write 'link in bio', 'in my bio', or 'tap bio'. Links are directly embedded or listed inline.
+- IMMUTABLE AFFILIATE SLOTS: If product slots like `[[AFF_LINK_1]]` are provided, you MUST preserve them verbatim. DO NOT modify, remove, or invent URLs.
 
-DISCOVERED MAIN SUBJECT (PRIMARY HERO ANCHOR):
-{main_subject}
-
-APPLICABLE SECONDARY CONTEXT & DESCRIPTORS:
-{applicable_context}
-
-RAW VIDEO METADATA & SOURCE CAPTION:
-{raw_metadata}
-
-VIDEO CONTEXT & SCENE SUMMARY:
-{video_context}
-
-USER PROVIDED TITLE / CLUE (if any):
-{user_title}
-
-BRAND/CHANNEL INFO:
-{brand_info}
-
-AFFILIATE & PRODUCT PROMOTION LINK:
+INPUT SIGNALS:
+- Primary Subject: {main_subject}
+- Secondary Context & Niche: {applicable_context}
+- User Provided Title / Clue: {user_title}
+- Video Context: {video_context}
+- Original Creator Caption: {original_caption}
+- Whisper Audio Transcript: {whisper_transcript}
+- Brand / Channel Info: {brand_info}
+- Product Promotion Slots:
 {affiliate_info}
 
-PRIOR GEMINI CALL CACHE & SUPPLEMENTARY INTELLIGENCE (Audio DSP Math, Vibe, Extra Perception):
-{cache_context}
+═══════════════════════════════════════════════════════════════════════════════
+PLATFORM-SPECIFIC ALGORITHMIC EXECUTION DIRECTIVES:
+═══════════════════════════════════════════════════════════════════════════════
 
-WHISPER / SPEECH TRANSCRIPT (exact spoken words from video audio — use for lyric hooks, spoken CTAs, dialogue-driven titles):
-{whisper_transcript}
+1. YOUTUBE SHORTS (Google Search Indexing + Browse Velocity):
+   - Title: Strictly max 70 characters (prevents mobile truncation). Front-load high-intent Google Search queries (e.g., '[Brand A] vs [Brand B]', '[Product] Under ₹500', 'Honest Review', 'Viral Haul', or high-contrast comparison), ending with '#Shorts'.
+   - Description:
+     * Lines 1-2: Direct Google Search snippet summary (what searchers type into YouTube/Google).
+     * Blank line (\\n\\n).
+     * '🛍️ FEATURED PRODUCTS:' followed by bulleted [[AFF_LINK_X]] slots with concise item labels.
+     * Blank line (\\n\\n).
+     * Mandatory compliance line: '(Disclosure: #ad #affiliate — qualifying purchases earn commission)'.
+     * 1-line viewer opinion prompt (boosts YouTube comment-velocity ranking).
+   - Hashtags: 3 to 5 high-intent search tags (e.g. #AmazonFinds #MeeshoHaul).
 
-CREATOR BEHAVIOR MODEL — CBM (brand tone, audience retention patterns, editorial grammar specific to this creator):
-{creator_behavior_model}
+2. INSTAGRAM REELS (Vector Graph & Above-the-Fold Viewport):
+   - Title / Hook: Strictly under 80 characters before the mobile '...more' truncation button. Must establish a sharp curiosity gap (e.g. 'Can you guess which one was ₹300 vs ₹1,500? 👀').
+   - Description:
+     * 1-line scroll-stopping curiosity hook.
+     * Blank line (\\n\\n).
+     * '🔗 SHOP THE FEATURED LOOK:' followed by bulleted [[AFF_LINK_X]] slots.
+     * Compliance line: '(#ad #affiliate)'.
+     * Blank line (\\n\\n).
+     * Save/Share action trigger ('💾 Save this for your next haul!').
+   - Hashtags: 4 to 6 hyper-relevant niche community tags (e.g. #CollegeOutfits #AffordableFashion).
 
-VIDEO EDITING PLAN (cut transitions, speed ramps, hook zone — infer pacing-related keywords and energy adjectives):
-{video_editing_plan}
+3. FACEBOOK REELS (Comment Velocity & Social Graph):
+   - Title: Engaging, conversational headline.
+   - Description: Relatable comparison or binary choice prompt that triggers comment debates ('Which look would you wear: Option 1 or Option 2? 👇') followed by [[AFF_LINK_X]] slots and (#ad #affiliate).
+   - Hashtags: 3 to 5 broad interest tags.
 
-ORIGINAL POST CAPTION (verbatim source caption from original creator — extract semantic context, do NOT copy wholesale):
-{original_caption}
+4. TELEGRAM BROADCAST (Direct Messenger High-Speed UX):
+   - Strictly under 300 characters total.
+   - Format: Single bold headline (`🔥 **[Title]**`), 1-sentence punchy takeaway, bulleted [[AFF_LINK_X]] slots, `*(#ad #affiliate)*`, and 2 niche hashtags. Zero filler words!
 
-ORIGINAL POST HASHTAGS (niche signal from source post — use to infer content category and community, do NOT copy-paste):
-{source_hashtags}
-
-ANALYTICS SIGNALS — FOR SEO STRATEGY ONLY (never mention raw counts in output captions):
-{analytics_signals}
-
-CRITICAL ARCHITECTURE RULES (STRICTLY ENFORCED):
-
-1. STORYTELLING HOOK & ANALOGY (FIRST 1-3 LINES):
-   Every description MUST begin with a scroll-stopping, curiosity-inducing hook utilizing a relatable everyday analogy or contrast.
-   Examples of creator hook tone:
-   - "Most people think staying radiant on grueling 14-hour studio shoot days comes down to complex routines. The truth? It’s mastering the foundational essentials everyone else overlooks. 💧"
-   - "Think of your daily routine like running on 1% battery vs plugged into a supercharger. When you upgrade the basics, everything hits different."
-   NEVER write generic corporate PR statements (e.g. NEVER write 'Elegance meets hydration in this stunning minimalist studio commercial featuring...'). Hook the viewer's emotion and curiosity first!
-
-2. 100% ORGANIC CREATIVE INVENTIVENESS (NO HARDCODED MENUS OR STOCK HEADERS):
-   - ABSOLUTELY NEVER use static, repetitive, or stock boilerplate section headers or labels.
-   - DO NOT follow any predefined menu or copy rigid templates. You have full creative autonomy.
-   - For EVERY video, INVENT completely original, bespoke headers, transitions, storytelling hooks, and engagement framing by synthesizing:
-     * PAST VIRAL ANALYSIS: High-retention psychological hooks and narrative tension points that historically performed best in this niche.
-     * PRESENT SOCIAL MEDIA TRENDS: Real-time internet culture, authentic creator cadence, and current trending vernacular on Reels, Shorts, and TikTok.
-     * UPCOMING FUTURE AESTHETICS: Forward-looking stylistic movements, cutting-edge subculture terminology, and fresh cultural aesthetics that keep content ahead of the curve.
-   - The wording must feel organic, unpredictable, and natively authored by a trendsetting creator who never repeats themselves.
-
-3. HIGH-VISIBILITY AFFILIATE LINK ISOLATION & SPACING (CRITICAL):
-   If an AFFILIATE & PRODUCT PROMOTION LINK is provided:
-   - DO NOT bury the link inside a paragraph of text!
-   - Provide GENEROUS VERTICAL WHITESPACE with blank lines (\\n\\n) above and below the link block so it stands out immediately to anyone viewing the description.
-   - Format on its own clear lines with pointer emoji:
-     🛍️ [Dynamic Parallel Product Header]:
-     👉 [Exact Affiliate Link]
-
-     ✨ [1-line crisp benefit or why the viewer needs this upgrade]
-     (Disclosure: As an affiliate, I may earn from qualifying purchases at no extra cost to you. #ad #affiliate)
-   - The disclaimer MUST be placed on its own spaced line in parentheses—clear, compliant, and professional without suffocating the link.
-
-4. NON-AFFILIATE MODE (WHEN NO LINK IS PROVIDED):
-   If NO AFFILIATE LINK is provided:
-   - DO NOT output an empty, blank, or placeholder product box.
-   - Seamlessly replace the product block with an engaging CREATOR TAKE / ANALOGY DISCUSSION QUESTION (e.g. '💬 [Dynamic Creator Take]: [Engaging debate/question]') that provokes viewer comments and community debate, keeping the exact same high-retention structured layout!
-
-5. ZERO REPETITION RULE (STRICT):
-   ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration').
-   FOR TELEGRAM: The title MUST appear ONLY ONCE as the bold headline. NEVER repeat the title or description text.
-
-6. PLATFORM BOUNDARIES & STRICT 'NO LINK IN BIO' RULE (ALL PLATFORMS):
-   - ABSOLUTE PROHIBITION ON 'LINK IN BIO': NEVER write 'link in bio', 'tap bio', 'in my bio', 'check bio', or any bio reference anywhere in titles, descriptions, or captions for ANY platform (YouTube, Instagram, Telegram, Facebook). Always format as a clean direct link callout (e.g. '🔗 Direct Item / Shop Link: 👉 [Link]').
-   - YouTube: Links are directly clickable in description. First 2 lines hook-heavy. Clean hashtags at the bottom.
-   - Instagram: Hook must be above the fold. Clean direct link callout without any 'link in bio' mention. Separate hashtags cleanly at the bottom.
-   - Telegram: Direct, bold title once (`🔥 **[Title]**`), concise storytelling hook + analogy, isolated buy link, channel join CTA, 3-5 hashtags. Total length strictly under 1000 characters.
-   - Facebook: Conversational storytelling, direct link callout, comment question.
-
-7. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
-8. NO ENTITY CATEGORY PREFIXES OR 'NONE' STRINGS: NEVER output prefixes like 'celebrity:', 'outfit:', etc. Format subjects cleanly.
-
-Generate SEO-optimized content for the following platforms: {platforms}
-
-For EACH platform, output:
-1. **Title**: Optimized for character limits, keyword placement, click-through rate, and ZERO word repetition.
-2. **Description**: Highly structured with clean line breaks (\\n\\n), storytelling hook, dynamic parallel section headers, isolated links (if provided) with compliant disclaimers, and platform-appropriate CTAs.
-3. **Hashtags**: Mix of high-volume and niche hashtags relevant to {main_subject} and {applicable_context}.
-4. **SEO Score**: 0-100 rating based on optimization quality.
-
-OUTPUT SCHEMA — return ONLY this JSON, no other text:
+OUTPUT SCHEMA — return ONLY this JSON:
 {{
   "generated_at": "<ISO timestamp>",
   "platforms": {{
     "youtube": {{
-      "title": "<optimized title with zero word repetition>",
-      "description": "<structured storytelling description with dynamic parallel headers, isolated link, and disclaimers>",
-      "hashtags": ["#tag1", "#tag2", ...],
-      "seo_score": <0-100>,
-      "keyword_density": "<analysis>"
+      "title": "<Search-frontloaded title under 70 chars with #Shorts>",
+      "description": "<Clean, search-indexed description with isolated slots>",
+      "hashtags": ["#tag1", "#tag2", "#tag3"],
+      "seo_score": 95,
+      "keyword_density": "high_intent_search"
     }},
     "instagram": {{
-      "title": "<optimized title/hook>",
-      "description": "<storytelling caption with dynamic headers, clean direct link callout (NO link in bio), and spaced hashtags>",
-      "hashtags": ["#tag1", "#tag2", ...],
-      "seo_score": <0-100>,
-      "keyword_density": "<analysis>"
+      "title": "<Hook under 80 chars>",
+      "description": "<Clean, spaced caption with slots, above-the-fold hook, and save CTA>",
+      "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4"],
+      "seo_score": 95,
+      "keyword_density": "semantic_topic_cluster"
     }},
     "facebook": {{
-      "title": "<optimized title>",
-      "description": "<conversational storytelling description with isolated link and discussion prompt>",
-      "hashtags": ["#tag1", "#tag2", ...],
-      "seo_score": <0-100>,
-      "keyword_density": "<analysis>"
+      "title": "<Engaging conversational title>",
+      "description": "<Comment-debate prompt with isolated slots and disclosure>",
+      "hashtags": ["#tag1", "#tag2", "#tag3"],
+      "seo_score": 90,
+      "keyword_density": "conversational_social"
     }},
     "telegram": {{
-      "title": "<optimized title>",
-      "description": "<single bold headline, concise micro-story hook, isolated buy link, zero duplicate titles, under 1000 chars>",
-      "hashtags": ["#tag1", "#tag2", ...],
-      "seo_score": <0-100>,
-      "keyword_density": "<analysis>"
+      "title": "<Direct headline>",
+      "description": "<Single bold title + 1 sentence + slots under 300 chars>",
+      "hashtags": ["#tag1", "#tag2"],
+      "seo_score": 95,
+      "keyword_density": "direct_messenger_ux"
     }}
   }},
-  "global_keywords": ["<main keyword>", "<secondary keyword>", ...],
+  "global_keywords": ["<keyword1>", "<keyword2>"],
   "content_category": "<category>",
-  "target_audience": "<audience description>",
-  "engagement_prediction": "<high/medium/low with reasoning>"
+  "target_audience": "<audience>",
+  "engagement_prediction": "<high>"
 }}
 """
 
@@ -628,109 +578,123 @@ def _heuristic_fallback(
             if ctag and len(ctag) > 3 and ctag not in desc_tags:
                 desc_tags.append(ctag)
 
+    # High-intent algorithmic tags (3 to 5 targeted tags, no spam)
     base_tags = [subj_tag] if subj_tag else []
-    popular_tags = ["#FashionLifestyle", "#StreetStyle", "#Lookbook", "#Aspirational", "#OOTD", "#StyleInspo", "#FashionMoment", "#ViralReels"]
-    all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + popular_tags if t]))
+    popular_tags = ["#FashionFinds", "#StyleBreakdown", "#OutfitInspo", "#Haul"]
+    all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + popular_tags if t]))[:5]
 
-    # Procedural dynamic synthesis based on video context (no static hardcoded lists)
-    intent_word = extracted.get("intent", "aesthetic").replace("_", " ").title()
-    desc_clean = applicable.split(",")[0].strip().title() if applicable else "Curated"
+    # Clean YouTube Title (strictly <= 70 chars, front-load search query, end with #Shorts)
+    yt_base = clean_title.replace("—", "-").strip()
+    if not yt_base.lower().endswith("#shorts"):
+        if len(yt_base) > 60:
+            yt_title = f"{yt_base[:57]}... #Shorts"
+        else:
+            yt_title = f"{yt_base} #Shorts"
+    else:
+        yt_title = yt_base[:70]
 
-    prod_hdr = f"🛍️ Official {clean_subj} {desc_clean} Link:"
-    abt_hdr = f"🎬 {clean_subj} | {intent_word} Scene Focus:"
-    q_hdr = f"💬 Community Take: What's your rating for this {intent_word.lower()} look?"
-    sub_hdr = f"⚡ Daily {intent_word} Drops & Curated Edits:"
-    hook = f"Most people focus on complex routines, but true confidence comes from mastering the essentials. {clean_subj} showing how subtle details elevate the entire aesthetic. ✨"
+    ig_title = clean_title[:80]
 
     # ── Formatted affiliate / non-affiliate blocks with generous spacing ──
+    all_aff_links = []
     if affiliate_link:
-        aff_spotlight = (
-            f"{prod_hdr}\n"
-            f"👉 {affiliate_link}\n\n"
-            f"✨ Upgrade your routine with the exact setup featured in this video!\n"
-            f"(Disclosure: As an affiliate, I may earn from qualifying purchases at no extra cost to you. #ad #affiliate)"
+        if isinstance(affiliate_link, (list, tuple)):
+            for item in affiliate_link:
+                all_aff_links.extend(re.findall(r'https?://[^\s<>"]+', str(item)))
+        else:
+            all_aff_links = re.findall(r'https?://[^\s<>"]+', str(affiliate_link))
+        all_aff_links = list(dict.fromkeys([l.strip() for l in all_aff_links if l.strip()]))
+
+    if all_aff_links:
+        if len(all_aff_links) == 1:
+            prod_links_yt = f"👉 {all_aff_links[0]}"
+            prod_links_ig = f"👉 {all_aff_links[0]}"
+            prod_links_tg = f"👉 {all_aff_links[0]}"
+            items_label = "Item"
+        else:
+            prod_links_yt = "\n".join([f"👉 Option {i+1}: {lnk}" for i, lnk in enumerate(all_aff_links)])
+            prod_links_ig = "\n".join([f"👉 Option {i+1}: {lnk}" for i, lnk in enumerate(all_aff_links)])
+            prod_links_tg = "\n".join([f"👉 Item {i+1}: {lnk}" for i, lnk in enumerate(all_aff_links)])
+            items_label = "Items"
+
+        yt_desc = (
+            f"Tested and reviewed: {clean_title}.\n\n"
+            f"🛍️ FEATURED PRODUCTS:\n"
+            f"{prod_links_yt}\n\n"
+            f"(Disclosure: #ad #affiliate — qualifying purchases earn commission)\n\n"
+            f"💬 Which one is your top pick? Drop your thoughts below! 👇"
         )
-        ig_aff = (
+        ig_caption = (
+            f"{clean_title} ✨\n\n"
             f"🔗 SHOP THE FEATURED LOOK:\n"
-            f"Direct link 👉 {affiliate_link}\n"
-            f"(#ad #affiliate — qualifying purchases earn commission)"
+            f"{prod_links_ig}\n\n"
+            f"(#ad #affiliate)\n\n"
+            f"💾 Save this for your next shopping haul!\n"
+            f"💬 Drop your thoughts below! 👇"
         )
-        tg_link = (
-            f"🛍️ **Featured Item / Shop:**\n"
-            f"👉 {affiliate_link}\n"
-            f"*(#ad #affiliate)*"
+        fb_desc = (
+            f"{clean_title} — Here is the honest breakdown!\n\n"
+            f"🛍️ Featured Finds:\n"
+            f"{prod_links_yt}\n\n"
+            f"(#ad #affiliate)\n\n"
+            f"Which one would you choose? Drop a comment below! 👇"
+        )
+        tg_desc = (
+            f"🔥 **{clean_title}**\n\n"
+            f"Curated pieces from this session. Direct links below:\n\n"
+            f"{prod_links_tg}\n"
+            f"*(#ad #affiliate)*\n\n"
+            f"👉 Join our channel for daily aesthetic drops!"
         )
     else:
-        aff_spotlight = (
-            f"{q_hdr}\n"
-            f"What's your #1 non-negotiable daily essential when you need to feel 100% on point? Drop your thoughts below! 👇"
+        yt_desc = (
+            f"Spotlight breakdown on {clean_title}.\n\n"
+            f"💬 What's your rating on this aesthetic? Drop your thoughts below! 👇\n\n"
+            f"⚡ Subscribe for daily curated style highlights!"
         )
-        ig_aff = (
-            f"{q_hdr}\n"
-            f"On a scale of 1-10, what's your energy level today? Drop it below! 👇"
+        ig_caption = (
+            f"{clean_title} ✨\n\n"
+            f"💬 On a scale of 1-10, what's your take on this look? Drop it below! 👇\n\n"
+            f"💾 Save this post for your daily inspiration & share with a friend!"
         )
-        tg_link = (
-            f"💬 **Creator Question:** What do you think of this visual aesthetic? Drop your thoughts below!"
+        fb_desc = (
+            f"{clean_title} ✨\n\n"
+            f"What do you think of this style breakdown? Share your opinion below! 👇"
         )
-
-    # ── Human-styled, storytelling platform captions with generous whitespace ──
-    yt_desc = (
-        f"{hook}\n\n"
-        f"{aff_spotlight}\n\n"
-        f"{abt_hdr}\n"
-        f"Minimalist aesthetics meet iconic presence featuring {clean_subj}. Elevate your perspective and radiate absolute confidence.\n\n"
-        f"{sub_hdr}\n"
-        f"Subscribe for more daily celebrity style breakdowns & aesthetic highlights! 🚀"
-    )
-
-    ig_caption = (
-        f"Stop sleeping on the basics. ✨\n\n"
-        f"{hook}\n\n"
-        f"{ig_aff}\n\n"
-        f"💾 Save this post for your daily inspiration & share with a friend!\n"
-        f"💬 Drop your thoughts below! 👇"
-    )
-
-    fb_desc = (
-        f"{hook}\n\n"
-        f"{aff_spotlight}\n\n"
-        f"Share this with someone who loves this vibe! Drop a comment below! 👇"
-    )
-
-    tg_desc = (
-        f"{hook}\n\n"
-        f"{tg_link}\n\n"
-        f"👉 Join our official channel for daily exclusive aesthetic drops! 🚀"
-    )
+        tg_desc = (
+            f"🔥 **{clean_title}**\n\n"
+            f"Daily aesthetic highlight.\n\n"
+            f"👉 Join our channel for exclusive daily drops!"
+        )
 
     platforms = {
         "youtube": {
-            "title": f"{clean_title[:90]} #Shorts",
+            "title": yt_title,
             "description": yt_desc,
-            "hashtags": all_tags[:6],
-            "seo_score": 85,
-            "keyword_density": "human_creator_heuristic"
+            "hashtags": all_tags[:5],
+            "seo_score": 90,
+            "keyword_density": "high_intent_search"
         },
         "instagram": {
-            "title": clean_title,
+            "title": ig_title,
             "description": ig_caption,
-            "hashtags": all_tags[:12],
-            "seo_score": 90,
-            "keyword_density": "human_creator_heuristic"
+            "hashtags": all_tags[:5],
+            "seo_score": 92,
+            "keyword_density": "semantic_topic_cluster"
         },
         "facebook": {
             "title": clean_title[:255],
             "description": fb_desc,
-            "hashtags": all_tags[:5],
-            "seo_score": 85,
-            "keyword_density": "human_creator_heuristic"
+            "hashtags": all_tags[:4],
+            "seo_score": 88,
+            "keyword_density": "conversational_social"
         },
         "telegram": {
             "title": clean_title[:255],
             "description": tg_desc,
-            "hashtags": all_tags[:5],
-            "seo_score": 85,
-            "keyword_density": "human_creator_heuristic"
+            "hashtags": all_tags[:2],
+            "seo_score": 95,
+            "keyword_density": "direct_messenger_ux"
         }
     }
 
@@ -774,12 +738,17 @@ def generate_platform_seo(
     if platforms is None:
         platforms = ["youtube", "instagram", "facebook", "telegram"]
 
-    # Sanitize affiliate link as passive text
-    clean_aff_link = ""
+    # Sanitize affiliate link(s) as passive text
+    clean_aff_links = []
     if affiliate_link:
-        m = re.search(r'https?://[^\s<>"]+', str(affiliate_link))
-        if m:
-            clean_aff_link = m.group(0).strip()
+        if isinstance(affiliate_link, (list, tuple)):
+            for item in affiliate_link:
+                clean_aff_links.extend(re.findall(r'https?://[^\s<>"]+', str(item)))
+        else:
+            clean_aff_links = re.findall(r'https?://[^\s<>"]+', str(affiliate_link))
+        clean_aff_links = list(dict.fromkeys([l.strip() for l in clean_aff_links if l.strip()]))
+
+    clean_aff_link = "\n".join(clean_aff_links) if clean_aff_links else ""
 
     extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=clean_aff_link)
     main_subject = extracted["main_subject"]
@@ -822,8 +791,28 @@ def generate_platform_seo(
                 pruned_cache[k] = cache[k]
 
     cache_context = json.dumps(pruned_cache, indent=2) if pruned_cache else "Supplementary intelligence integrated in dedicated sections above."
-    raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
-    aff_info_str = f"Target Link: {clean_aff_link}\nInclude commercial CTA and mandatory affiliate disclosure (#ad #affiliate)" if clean_aff_link else "None provided"
+    # Build token slotting for 100% zero-touch affiliate link preservation
+    slot_to_url = {}
+    if clean_aff_links:
+        slot_lines = []
+        for i, url in enumerate(clean_aff_links, 1):
+            token = f"[[AFF_LINK_{i}]]"
+            slot_to_url[token] = url
+            dest = "Product"
+            if "amazon" in url.lower() or "amzn" in url.lower():
+                dest = "Amazon Find"
+            elif "meesho" in url.lower():
+                dest = "Meesho Find"
+            elif "myntra" in url.lower():
+                dest = "Myntra Find"
+            elif "ajio" in url.lower():
+                dest = "Ajio Find"
+            elif "flipkart" in url.lower():
+                dest = "Flipkart Find"
+            slot_lines.append(f"- Slot {i} ({dest}): {token}")
+        aff_info_str = "Available Product Promotion Slots (Insert these EXACT tokens into your links block):\n" + "\n".join(slot_lines)
+    else:
+        aff_info_str = "None provided (Do NOT output product links or placeholder boxes)"
 
     # Whisper transcript
     _whisper = _aud_block.get("whisper_transcript", {})
@@ -860,6 +849,7 @@ def generate_platform_seo(
         "scene_vectors":  _vis_block.get("vectors", [])[:10],
     }
     analytics_text = json.dumps(_analytics, indent=2, ensure_ascii=False)
+    raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
 
     prompt = _SEO_GENERATION_PROMPT.format(
         main_subject=main_subject,
@@ -898,6 +888,29 @@ def generate_platform_seo(
 
         clean = _clean_json(raw_resp)
         seo_data = json.loads(clean)
+
+        # ── Zero-Touch Link Guardian: Restore exact byte-for-byte affiliate URLs from tokens ──
+        if slot_to_url:
+            for p_name, p_data in seo_data.get("platforms", {}).items():
+                if not isinstance(p_data, dict):
+                    continue
+                desc = p_data.get("description", "")
+                title_str = p_data.get("title", "")
+
+                for token, real_url in slot_to_url.items():
+                    if token in desc:
+                        desc = desc.replace(token, real_url)
+                    if token in title_str:
+                        title_str = title_str.replace(token, "")
+
+                # Safety check: If Gemini omitted any link, append it cleanly to the description
+                missing_urls = [u for u in clean_aff_links if u not in desc]
+                if missing_urls:
+                    missing_block = "\n".join([f"👉 {u}" for u in missing_urls])
+                    desc += f"\n\n🛍️ FEATURED PRODUCTS:\n{missing_block}"
+
+                p_data["description"] = desc.strip()
+                p_data["title"] = title_str.strip()
 
         # Validate and adjust each platform's content
         for platform in platforms:

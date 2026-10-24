@@ -2147,25 +2147,24 @@ async def handle_telegram_incoming_msg(update, context):
             sess_id = pending_sess["session_id"]
             sess = session_manager.get_session(sess_id)
 
-            # 1. Detect and extract optional affiliate URL from user input format <User Title> <url>
-            affiliate_url = None
-            url_match = re.search(r'https?://[^\s<>"]+', user_input_raw)
-            if url_match:
-                affiliate_url = url_match.group(0).strip()
-                # Clean title hint by stripping out the URL
-                user_hint_text = user_input_raw.replace(affiliate_url, "").strip()
-            else:
-                user_hint_text = user_input_raw
+            # 1. Detect and extract all optional affiliate URLs from user input format <User Title> <url1> <url2>...
+            extracted_urls = re.findall(r'https?://[^\s<>"]+', user_input_raw)
+            user_hint_text = user_input_raw
+            for u in extracted_urls:
+                user_hint_text = user_hint_text.replace(u, "")
+            user_hint_text = re.sub(r'\s+', ' ', user_hint_text).strip()
+
+            affiliate_url = "\n".join(extracted_urls) if extracted_urls else None
 
             # 🛑 COMPULSORY RULE: Direct links alone are strictly forbidden! User title is compulsory.
             if not user_hint_text or len(user_hint_text) < 2:
                 cancel_kbd = build_awaiting_title_keyboard(sess_id)
                 await msg.reply_text(
-                    "❌ **Bare link alone is NOT allowed!**\n\n"
-                    "You MUST provide a **User Title** before the link.\n\n"
-                    "📌 **Compulsory Format**: `<User Title> <Link>` (or just `<User Title>`)\n"
-                    "💡 *Example*: `My Product Review https://amzn.to/example`\n\n"
-                    "Please send your title and link again in the correct format 👇",
+                    "❌ **Bare link(s) alone are NOT allowed!**\n\n"
+                    "You MUST provide a **User Title** before the link(s).\n\n"
+                    "📌 **Compulsory Format**: `<User Title> <Link 1> <Link 2> ...` (or just `<User Title>`)\n"
+                    "💡 *Example*: `Amazon vs Meesho Review https://amzn.to/item1 https://meesho.com/item2`\n\n"
+                    "Please send your title and link(s) again in the correct format 👇",
                     reply_markup=cancel_kbd
                 )
                 return
@@ -2278,7 +2277,14 @@ async def handle_telegram_incoming_msg(update, context):
             PublishQueue.add(v_path, channel_title=approved_title, channel_folder=creator_niche)
             logger.info(f"🚀 Custom Title & Affiliate SEO saved for session {sess_id}: '{approved_title}'. Triggering Phase 4...")
 
-            aff_status = f"\n🛒 **Affiliate Promotion Link**: `{affiliate_url}`\n⚖️ **Policy Disclosure**: Included (#ad #affiliate)" if affiliate_url else ""
+            if extracted_urls:
+                if len(extracted_urls) == 1:
+                    aff_status = f"\n🛒 **Affiliate Promotion Link**: `{extracted_urls[0]}`\n⚖️ **Policy Disclosure**: Included (#ad #affiliate)"
+                else:
+                    links_fmt = "\n".join([f"  • `{u}`" for u in extracted_urls])
+                    aff_status = f"\n🛒 **Affiliate Promotion Links ({len(extracted_urls)})**:\n{links_fmt}\n⚖️ **Policy Disclosure**: Included (#ad #affiliate)"
+            else:
+                aff_status = ""
 
             await msg.reply_text(
                 f"🚀 **Commercial AI Title Saved!** Starting 4-Platform Broadcasting...\n\n"
