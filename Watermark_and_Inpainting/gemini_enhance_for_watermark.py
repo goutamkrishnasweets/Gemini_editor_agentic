@@ -159,7 +159,7 @@ Conduct an aggressive inspection for any text, handle, bug, or logo resembling o
         # Part B: Best thumbnail frame selection + clothing coverage (fashion vs NSFW)
         frame_labels = ", ".join([f"Frame {i}" for i in range(n_full)])
         prompt = f"""You are an elite forensic video analyst and visual quality inspector.
-You have been given {n_full} frame(s) from a fashion/lifestyle video: {frame_labels}.
+You have been given {n_full} frame(s) from a video: {frame_labels}.
 Frames are numbered starting at 0 (Frame 0 = first image, Frame {n_full - 1} = last image).
 
 ══════════════════════════════════════════════════════════════
@@ -306,9 +306,9 @@ make the BEST thumbnail screenshot. This is the frame ffmpeg will extract as the
 
 Score each frame on these criteria (in priority order):
 
-1. OUTFIT / CLOTHING VISIBILITY  ← Most important
-   → Full or majority of the outfit is visible in frame
-   → Fashion details (fabric, color, accessories, shoes) are clear
+1. MAIN HERO SUBJECT / PRODUCT VISIBILITY  ← Most important
+   → Full or majority of the primary subject, product, or hero is clearly visible in frame
+   → Key details (features, product identity, focus, expression) are sharp and prominent
    → Not obscured by camera motion blur, other people, or objects
 
 2. POSE QUALITY
@@ -343,8 +343,8 @@ Estimate % of main subject's body covered by clothing (0–100).
   100 = fully clothed | 60–99 = crop tops/gym wear | 30–59 = significant skin/revealing
   15–29 = heavy skin exposure (swimwear, lingerie) | 0–14 = near-nude / explicit
 
-👗 FASHION / GENERAL  — clothing coverage >= 30%
-   Examples: crop tops, short skirts, gym wear, mini dresses, deep necklines
+✅ SAFE / GENERAL  — clothing coverage >= 30% (or non-human video)
+   Examples: crop tops, short skirts, gym wear, mini dresses, regular clothing, products, non-human scenes
    → Set is_nsfw = false
 
 🔞 NSFW              — clothing coverage < 30%

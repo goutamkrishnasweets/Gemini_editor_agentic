@@ -232,7 +232,7 @@ def audit_watermark_brand_alignment(
 def audit_human_engagement(
     proxy_video_path: str,
     creator_name: str = "General",
-    niche: str = "fashion_lifestyle",
+    niche: str = "universal",
     audio_intel: Optional[Dict[str, Any]] = None,
     visual_intel: Optional[Dict[str, Any]] = None,
     editing_plan: Optional[Dict[str, Any]] = None
@@ -300,8 +300,8 @@ Perform a BRUTAL AUDIT for human brain retention and viral algorithm feed inject
 4. BRUTAL CRITIQUE:
    Provide 2 unvarnished sentences calling out any weak frames, visual flaws, lighting issues, or pacing dull spots.
 
-5. MAIN SUBJECT & CELEBRITY IDENTITY:
-   Explicitly identify the primary hero person, celebrity, public figure, or influencer if recognizable (e.g. "Kareena Kapoor", "Kiara Advani", "Disha Patani", etc.). If unknown, describe their look and outfit specifically (e.g. "Model in olive military-style pantsuit").
+5. MAIN HERO SUBJECT / PRODUCT IDENTITY:
+   Explicitly identify the primary hero subject, product, gadget, device, object, person, or celebrity featured in the video (e.g. specific product model, device name, brand, celebrity name, or subject description).
 
 Return ONLY this JSON schema, no other text:
 {{
@@ -350,7 +350,7 @@ Return ONLY this JSON schema, no other text:
 def generate_viral_feed_seo(
     video_context: str,
     creator_name: str = "General",
-    niche: str = "fashion_lifestyle",
+    niche: str = "universal",
     title_hint: str = "",
     cache: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -363,7 +363,7 @@ def generate_viral_feed_seo(
     try:
         from Gemini_Modules.platform_seo_generator import generate_platform_seo
         effective_brand = f"Brand: {creator_name}" if (creator_name and creator_name != "Source Content") else "Niche: " + niche
-        clean_user_title = title_hint if (title_hint and "lookbook" not in title_hint.lower()) else ""
+        clean_user_title = title_hint.strip() if title_hint else ""
 
         seo_res = generate_platform_seo(
             video_context=f"Subject: {discovered_subject}. Creator: {creator_name}, Niche: {niche}. Context: {video_context}",
@@ -418,7 +418,7 @@ def run_clip_audit_and_seo(
     inpainted_boxes: Optional[List[Any]] = None,
     brand_boxes: Optional[List[Any]] = None,
     creator_name: str = "General",
-    niche: str = "fashion_lifestyle",
+    niche: str = "universal",
     title_hint: str = "",
     cache: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,

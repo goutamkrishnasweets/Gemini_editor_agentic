@@ -361,12 +361,16 @@ def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_
 _SEO_GENERATION_PROMPT = """\
 You are an elite short-form algorithmic growth strategist & search indexing architect.
 Your mission is to generate platform-sculpted, high-CTR titles, hashtags, and descriptions
-for short-form video (YouTube Shorts, Instagram Reels, Facebook Reels, Telegram).
+for short-form video across ANY product, niche, or topic (Tech & Gadgets, Home & Kitchen,
+Fitness & Health, Beauty & Skincare, Fashion & Apparel, Books & Productivity, Gaming, etc.).
+
+Dynamically adapt all vocabulary, search intent, and conversion psychology to match
+the specific product/niche provided. NEVER assume or default to fashion unless the product is apparel.
 
 STRICT NEGATIVE CONSTRAINTS (ZERO TOLERANCE FOR FLUFF):
 - ABSOLUTELY NO MOTIVATIONAL SPEAKER OR CORPORATE PR ESSAYS: Never write generic fluff like 'Most people focus on complex routines, but true confidence comes from mastering the essentials...' or 'Elevate your perspective and radiate absolute confidence'.
 - NO CROWDED WALLS OF TEXT: Content must be high-contrast, visually uncluttered, generous with whitespace, and mobile-scannable.
-- NO HASHTAG STUFFING: Maximum 3 to 6 targeted niche hashtags. Never output 15-30 generic tags like '#viral #trending #reels' which hurt algorithmic classification.
+- NO HASHTAG STUFFING: Maximum 3 to 6 targeted niche hashtags strictly matching the product category. Never output 15-30 generic tags like '#viral #trending #reels' which hurt algorithmic classification.
 - NO 'LINK IN BIO' PHRASING: Never write 'link in bio', 'in my bio', or 'tap bio'. Links are directly embedded or listed inline.
 - IMMUTABLE AFFILIATE SLOTS: If product slots like `[[AFF_LINK_1]]` are provided, you MUST preserve them verbatim. DO NOT modify, remove, or invent URLs.
 
@@ -386,35 +390,35 @@ PLATFORM-SPECIFIC ALGORITHMIC EXECUTION DIRECTIVES:
 ═══════════════════════════════════════════════════════════════════════════════
 
 1. YOUTUBE SHORTS (Google Search Indexing + Browse Velocity):
-   - Title: Strictly max 70 characters (prevents mobile truncation). Front-load high-intent Google Search queries (e.g., '[Brand A] vs [Brand B]', '[Product] Under ₹500', 'Honest Review', 'Viral Haul', or high-contrast comparison), ending with '#Shorts'.
+   - Title: Strictly max 70 characters (prevents mobile truncation). Front-load high-intent Google Search queries tailored to the product category (e.g. '[Brand A] vs [Brand B]', 'Best [Category] Under ₹999', 'Honest Review: Is It Worth It?', 'Unboxing & Setup', or high-contrast comparison), ending with '#Shorts'.
    - Description:
-     * Lines 1-2: Direct Google Search snippet summary (what searchers type into YouTube/Google).
+     * Lines 1-2: Direct Google Search snippet summary matching what users search on YouTube/Google for this product or topic.
      * Blank line (\\n\\n).
-     * '🛍️ FEATURED PRODUCTS:' followed by bulleted [[AFF_LINK_X]] slots with concise item labels.
+     * '🛍️ FEATURED PRODUCTS / LINKS:' followed by bulleted [[AFF_LINK_X]] slots with concise item labels.
      * Blank line (\\n\\n).
      * Mandatory compliance line: '(Disclosure: #ad #affiliate — qualifying purchases earn commission)'.
      * 1-line viewer opinion prompt (boosts YouTube comment-velocity ranking).
-   - Hashtags: 3 to 5 high-intent search tags (e.g. #AmazonFinds #MeeshoHaul).
+   - Hashtags: 3 to 5 high-intent search tags strictly matching this product niche.
 
 2. INSTAGRAM REELS (Vector Graph & Above-the-Fold Viewport):
-   - Title / Hook: Strictly under 80 characters before the mobile '...more' truncation button. Must establish a sharp curiosity gap (e.g. 'Can you guess which one was ₹300 vs ₹1,500? 👀').
+   - Title / Hook: Strictly under 80 characters before the mobile '...more' truncation button. Must establish a sharp curiosity gap tailored to the product (e.g. 'Is this ₹499 find actually worth it? 👀' or 'Can you spot the difference between these two?').
    - Description:
-     * 1-line scroll-stopping curiosity hook.
+     * 1-line scroll-stopping curiosity hook tailored to the product.
      * Blank line (\\n\\n).
-     * '🔗 SHOP THE FEATURED LOOK:' followed by bulleted [[AFF_LINK_X]] slots.
+     * '🔗 FEATURED ITEM / SHOP LINK:' followed by bulleted [[AFF_LINK_X]] slots.
      * Compliance line: '(#ad #affiliate)'.
      * Blank line (\\n\\n).
-     * Save/Share action trigger ('💾 Save this for your next haul!').
-   - Hashtags: 4 to 6 hyper-relevant niche community tags (e.g. #CollegeOutfits #AffordableFashion).
+     * Save/Share action trigger ('💾 Save this for later & share with a friend!').
+   - Hashtags: 4 to 6 hyper-relevant niche community tags matching the actual topic/product.
 
 3. FACEBOOK REELS (Comment Velocity & Social Graph):
    - Title: Engaging, conversational headline.
-   - Description: Relatable comparison or binary choice prompt that triggers comment debates ('Which look would you wear: Option 1 or Option 2? 👇') followed by [[AFF_LINK_X]] slots and (#ad #affiliate).
+   - Description: Relatable comparison or binary choice prompt that triggers comment debates (e.g. 'Which one would you choose: Option 1 or Option 2? 👇' or 'Would you buy this? Drop your thoughts below!') followed by [[AFF_LINK_X]] slots and (#ad #affiliate).
    - Hashtags: 3 to 5 broad interest tags.
 
 4. TELEGRAM BROADCAST (Direct Messenger High-Speed UX):
    - Strictly under 300 characters total.
-   - Format: Single bold headline (`🔥 **[Title]**`), 1-sentence punchy takeaway, bulleted [[AFF_LINK_X]] slots, `*(#ad #affiliate)*`, and 2 niche hashtags. Zero filler words!
+   - Format: Single bold headline (`🔥 **[Title]**`), 1-sentence punchy takeaway/verdict, bulleted [[AFF_LINK_X]] slots, `*(#ad #affiliate)*`, and 2 niche hashtags. Zero filler words!
 
 OUTPUT SCHEMA — return ONLY this JSON:
 {{
@@ -543,7 +547,7 @@ def _heuristic_fallback(
     """
     import random
     extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=affiliate_link)
-    main_subject = extracted["main_subject"] or "Style Highlight"
+    main_subject = extracted["main_subject"] or "Product Spotlight"
     applicable = extracted["applicable_context"] or ""
 
     # Humanized title formatting
@@ -563,7 +567,7 @@ def _heuristic_fallback(
         else:
             clean_title = f"{clean_subj} — {desc_clean} ✨"
     else:
-        clean_title = f"{clean_subj} Style & Aesthetic Look ✨"
+        clean_title = f"{clean_subj} Review & Spotlight ✨"
 
     # Humanized hashtag builder (clean camel case, no underscores/None/numbers)
     def _to_camel_tag(text: str) -> str:
@@ -578,10 +582,12 @@ def _heuristic_fallback(
             if ctag and len(ctag) > 3 and ctag not in desc_tags:
                 desc_tags.append(ctag)
 
-    # High-intent algorithmic tags (3 to 5 targeted tags, no spam)
+    # Dynamic universal tags derived from subject & context (no hardcoded category bias)
     base_tags = [subj_tag] if subj_tag else []
-    popular_tags = ["#FashionFinds", "#StyleBreakdown", "#OutfitInspo", "#Haul"]
-    all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + popular_tags if t]))[:5]
+    context_words = [f"#{w.capitalize()}" for w in re.findall(r'\b[A-Za-z0-9]{3,}\b', applicable)
+                     if w.lower() not in {"video", "short", "reels", "general", "n/a", "none", "featured", "highlights"}]
+    universal_defaults = ["#MustHaves", "#ProductReview", "#BestFinds", "#HonestReview"]
+    all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + context_words + universal_defaults if t]))[:5]
 
     # Clean YouTube Title (strictly <= 70 chars, front-load search query, end with #Shorts)
     yt_base = clean_title.replace("—", "-").strip()
@@ -619,52 +625,52 @@ def _heuristic_fallback(
 
         yt_desc = (
             f"Tested and reviewed: {clean_title}.\n\n"
-            f"🛍️ FEATURED PRODUCTS:\n"
+            f"🛍️ FEATURED PRODUCTS / LINKS:\n"
             f"{prod_links_yt}\n\n"
             f"(Disclosure: #ad #affiliate — qualifying purchases earn commission)\n\n"
             f"💬 Which one is your top pick? Drop your thoughts below! 👇"
         )
         ig_caption = (
             f"{clean_title} ✨\n\n"
-            f"🔗 SHOP THE FEATURED LOOK:\n"
+            f"🔗 FEATURED PRODUCTS & LINKS:\n"
             f"{prod_links_ig}\n\n"
             f"(#ad #affiliate)\n\n"
-            f"💾 Save this for your next shopping haul!\n"
+            f"💾 Save this for later & share with a friend!\n"
             f"💬 Drop your thoughts below! 👇"
         )
         fb_desc = (
             f"{clean_title} — Here is the honest breakdown!\n\n"
-            f"🛍️ Featured Finds:\n"
+            f"🛍️ Featured Items:\n"
             f"{prod_links_yt}\n\n"
             f"(#ad #affiliate)\n\n"
             f"Which one would you choose? Drop a comment below! 👇"
         )
         tg_desc = (
             f"🔥 **{clean_title}**\n\n"
-            f"Curated pieces from this session. Direct links below:\n\n"
+            f"Featured links & product details below:\n\n"
             f"{prod_links_tg}\n"
             f"*(#ad #affiliate)*\n\n"
-            f"👉 Join our channel for daily aesthetic drops!"
+            f"👉 Join our channel for daily updates!"
         )
     else:
         yt_desc = (
             f"Spotlight breakdown on {clean_title}.\n\n"
-            f"💬 What's your rating on this aesthetic? Drop your thoughts below! 👇\n\n"
-            f"⚡ Subscribe for daily curated style highlights!"
+            f"💬 What's your take on this? Drop your thoughts below! 👇\n\n"
+            f"⚡ Subscribe for daily curated reviews & breakdowns!"
         )
         ig_caption = (
             f"{clean_title} ✨\n\n"
-            f"💬 On a scale of 1-10, what's your take on this look? Drop it below! 👇\n\n"
+            f"💬 On a scale of 1-10, how would you rate this? Drop it below! 👇\n\n"
             f"💾 Save this post for your daily inspiration & share with a friend!"
         )
         fb_desc = (
             f"{clean_title} ✨\n\n"
-            f"What do you think of this style breakdown? Share your opinion below! 👇"
+            f"What do you think about this? Share your opinion below! 👇"
         )
         tg_desc = (
             f"🔥 **{clean_title}**\n\n"
-            f"Daily aesthetic highlight.\n\n"
-            f"👉 Join our channel for exclusive daily drops!"
+            f"Daily feature & spotlight breakdown.\n\n"
+            f"👉 Join our channel for daily product spotlights & updates!"
         )
 
     platforms = {

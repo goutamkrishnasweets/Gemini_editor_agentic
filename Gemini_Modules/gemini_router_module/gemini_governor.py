@@ -2031,7 +2031,7 @@ class GeminiGovernor:
         # Note: 'creative', 'watermark', 'vision' expect JSON and must return None so callers trigger structured defaults cleanly
         if task_type in ("caption", "narrative"):
              logger.info(f"🛡️ [VANGUARD] ABSOLUTE FALLBACK triggered for '{task_type}'. Returning clean default.")
-             return "Trending Fashion Style"
+             return "Trending Spotlight"
 
        
 
