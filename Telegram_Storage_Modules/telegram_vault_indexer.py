@@ -1047,13 +1047,20 @@ class TelegramVaultIndexer:
         if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
             return out_path
 
-        # 3. Resolve processed_output_file_id
+        # 3. Resolve processed_output_file_id (pool_metadata first, then session fallback)
         processed_file_id = None
         if entry:
             processed_file_id = (
                 entry.get("media_file_ids", {}).get("processed_output_file_id") or
                 entry.get("processed_output_file_id") or
                 entry.get("master_file_id")
+            )
+
+        if not processed_file_id and sess:
+            processed_file_id = (
+                sess.get("processed_file_id") or
+                sess.get("master_file_id") or
+                sess.get("media_file_ids", {}).get("processed_output_file_id")
             )
 
         if not processed_file_id:
@@ -2235,6 +2242,14 @@ class TelegramVaultIndexer:
 
             clips[target_key] = entry
             pm._save_metadata()
+
+            # Synchronize master_file_id into active Telegram session as a resilient secondary store
+            if master_file_id and session_id:
+                try:
+                    from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
+                    TelegramSessionManager().update_processed_file_id(session_id, master_file_id)
+                except Exception as _sm_rec_err:
+                    logger.debug("Notice linking session processed_file_id in record_processed_reel: %s", _sm_rec_err)
         except Exception as _pe:
             logger.debug("Notice on record_processed_reel pool_metadata save: %s", _pe)
 

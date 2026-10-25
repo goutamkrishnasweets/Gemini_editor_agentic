@@ -1381,6 +1381,15 @@ def _dispatch_phase4_publishing_in_background(
                     bot_obj.send_message(chat_id=chat_id, text=msg_text, parse_mode="Markdown"),
                     loop
                 )
+
+            # Clean up local master reel now that Phase 4 broadcast has completed
+            try:
+                if video_path and os.path.isfile(video_path):
+                    from Core_Modules.disk_cleaner import clean_clip_artifacts
+                    c_name = os.path.basename(video_path).replace("_master.mp4", "")
+                    clean_clip_artifacts(clip_id=c_name, master_video_path=video_path)
+            except Exception:
+                pass
         except Exception as pub_err:
             logger.error(f"❌ Phase 4 background publishing error: {pub_err}")
             if bot_obj and chat_id and loop:
@@ -2686,6 +2695,11 @@ def run_master_pipeline(
                                     session_manager.update_raw_video_file_id(real_cid, rec["raw_video_file_id"])
                                     session_manager.update_raw_video_file_id(clean_cid, rec["raw_video_file_id"])
 
+                                if master_file_id:
+                                    session_manager.update_processed_file_id(sess_id, master_file_id)
+                                    session_manager.update_processed_file_id(real_cid, master_file_id)
+                                    session_manager.update_processed_file_id(clean_cid, master_file_id)
+
                                 # 2. Record Column 1 Master Reel entry with full intel and pin index
                                 await vault_indexer.record_processed_reel(
                                     bot=bot,
@@ -2704,12 +2718,12 @@ def run_master_pipeline(
                                 else:
                                     logger.warning(f"⚠️ Vault storage group backup warning: {_sg_e}")
                             finally:
-                                # 3. Ephemeral Scratchpad Eraser: Wipes temporary downloads, beat cache & local master reel
-                                # in a guaranteed finally block now that delivery & vault backups have finished.
+                                # 3. Ephemeral Scratchpad Eraser: Wipes temporary downloads & beat cache.
+                                # Preserves local master reel on disk until user review & publishing completes.
                                 try:
                                     from Core_Modules.disk_cleaner import clean_clip_artifacts
-                                    clean_clip_artifacts(real_cid, master_video_path=active_reel_path)
-                                    clean_clip_artifacts(clean_cid, master_video_path=active_reel_path)
+                                    clean_clip_artifacts(real_cid)
+                                    clean_clip_artifacts(clean_cid)
                                     logger.info(f"🧹 [ZERO-LEAK DISK CLEANER] Wiped ephemeral scratchpad artifacts for '{real_cid}'")
                                 except Exception as _cln_e:
                                     logger.warning(f"⚠️ [ZERO-LEAK DISK CLEANER] Ephemeral wipe notice: {_cln_e}")

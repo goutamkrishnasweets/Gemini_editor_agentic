@@ -74,7 +74,8 @@ class TelegramSessionManager:
         requestor_chat_id: Optional[int] = None,
         selected_audio: Optional[str] = None,
         raw_video_file_id: Optional[str] = None,
-        social_url: Optional[str] = None
+        social_url: Optional[str] = None,
+        processed_file_id: Optional[str] = None
     ) -> str:
         """
         Creates a new review session for a rendered video reel.
@@ -137,6 +138,8 @@ class TelegramSessionManager:
             "video_path": os.path.abspath(video_path),
             "raw_video_path": os.path.abspath(raw_video_path) if raw_video_path and os.path.exists(raw_video_path) else None,
             "raw_video_file_id": raw_video_file_id,
+            "processed_file_id": processed_file_id,
+            "master_file_id": processed_file_id,
             "social_url": social_url,
             "clip_id": clip_id,
             "creator": creator,
@@ -147,7 +150,7 @@ class TelegramSessionManager:
             "updated_at": time.time()
         }
         self.sessions[sess_id] = session_data
-        logger.info(f"📝 [SESSION CREATED] {sess_id} for clip '{clip_id}' (raw_file_id={bool(raw_video_file_id)}, social_url={social_url})")
+        logger.info(f"📝 [SESSION CREATED] {sess_id} for clip '{clip_id}' (raw_file_id={bool(raw_video_file_id)}, processed_file_id={bool(processed_file_id)}, social_url={social_url})")
         self._save_sessions()
         logger.info(f"📝 Created Telegram review session: {sess_id} for '{os.path.basename(video_path)}' (clip_id='{clip_id}', selected_audio='{selected_audio}')")
         return sess_id
@@ -165,6 +168,21 @@ class TelegramSessionManager:
             sess["updated_at"] = time.time()
             self._save_sessions()
             logger.info(f"💾 [SESSION] Linked raw_video_file_id to session {sess.get('session_id')}")
+
+    def update_processed_file_id(self, session_id_or_clip_id: str, processed_file_id: str):
+        """Links rendered master reel processed_file_id to active session. Skips save if file_id is unchanged."""
+        if not processed_file_id:
+            return
+        sess = self.get_session(session_id_or_clip_id)
+        if sess:
+            if sess.get("processed_file_id") == processed_file_id and sess.get("master_file_id") == processed_file_id:
+                logger.debug(f"[SESSION] processed_file_id unchanged for {sess.get('session_id')} — skipping redundant save.")
+                return
+            sess["processed_file_id"] = processed_file_id
+            sess["master_file_id"] = processed_file_id
+            sess["updated_at"] = time.time()
+            self._save_sessions()
+            logger.info(f"💾 [SESSION] Linked processed_file_id to session {sess.get('session_id')}")
 
 
     def update_message_id(self, session_id: str, message_id: int):

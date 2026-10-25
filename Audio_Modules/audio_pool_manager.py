@@ -1631,24 +1631,22 @@ class AudioPoolManager:
                         removed += 1
                         logger.info(f"🚫 [POOL SANITIZE] Scrubbed blacklisted track from pool files: {k}")
 
+                    # IMPORTANT: Do NOT delete video reel entries from social_media_id!
+                    # An audio blacklist only disqualifies an extracted audio track from being selected as BGM.
+                    # It must NEVER delete harvested or processed video reels from the pool metadata ledger.
                     sm_dict = files_dict.get("social_media_id", {})
                     if isinstance(sm_dict, dict):
-                        sm_bl_del = [
-                            url for url, entry in list(sm_dict.items())
-                            if isinstance(entry, dict) and _is_bl(
+                        for url, entry in list(sm_dict.items()):
+                            if not isinstance(entry, dict):
+                                continue
+                            m_ids = entry.get("media_file_ids", {})
+                            ext_aud_fid = m_ids.get("extracted_audio_file_id") or entry.get("extracted_audio_file_id")
+                            if _is_bl(
                                 audio_filename=f"{entry.get('shortcode', '')}.wav",
                                 audio_shortcode=entry.get("shortcode"),
-                                telegram_file_id=(
-                                    entry.get("media_file_ids", {}).get("extracted_audio_file_id")
-                                    or entry.get("extracted_audio_file_id")
-                                    or entry.get("file_id")
-                                )
-                            )
-                        ]
-                        for url in sm_bl_del:
-                            del sm_dict[url]
-                            removed += 1
-                            logger.info(f"🚫 [POOL SANITIZE] Scrubbed blacklisted harvested reel from social_media_id: {url}")
+                                telegram_file_id=ext_aud_fid
+                            ):
+                                entry["is_audio_blacklisted"] = True
                 except Exception as _bl_scrub_err:
                     logger.debug("Notice during pool sanitize blacklist check: %s", _bl_scrub_err)
 
