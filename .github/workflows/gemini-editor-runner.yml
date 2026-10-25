@@ -45,12 +45,11 @@ on:
     - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
-# All runs share a single concurrency group.
-# cancel-in-progress: true — Cancels stale/overlapping runs immediately
-# so runs never queue up and exhaust Action minutes.
+# Ongoing runs stay active until their full runtime completes.
+# Upcoming runs queue up and wait until the active runner finishes.
 concurrency:
   group: rawgrab-bot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-rawgrab:
@@ -239,35 +238,6 @@ jobs:
         DISPATCH_TARGET_URL: ${{ github.event.inputs.target_url || '' }}
         PYTHONUNBUFFERED: "1"
       run: |
-        # FIX: Store the spaced path in a variable so it is correctly quoted everywhere
-        LOCK_FILE="Phase_1/The jsons/Github_Actions_json/bot_lock.json"
-        # ── Scheduled-run fast-exit guard ────────────────────────────────────
-        if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ -f "$LOCK_FILE" ]; then
-          LOCK_EXPIRES=$(python3 -c "
-        import json, sys
-        try:
-            data = json.load(open('Phase_1/The jsons/Github_Actions_json/bot_lock.json'))
-            print(data.get('expires_at', 0))
-        except Exception:
-            print(0)
-        " 2>/dev/null || echo 0)
-          NOW=$(date +%s)
-          if [ "$LOCK_EXPIRES" -gt "$NOW" ]; then
-            MINS_LEFT=$(( (LOCK_EXPIRES - NOW) / 60 ))
-            echo "🔒 [CI GUARD] Active bot lock found (~${MINS_LEFT}m remaining). Skipping duplicate cron run."
-            exit 0
-          fi
-        fi
-        # ── Write bot_lock.json so overlapping crons self-skip ────────────────
-        mkdir -p "Phase_1/The jsons/Github_Actions_json"
-        python3 -c "
-        import json, time, os
-        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 14400}
-        with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
-            json.dump(lock, f)
-        print('🔐 Bot lock written (expires in ~240 min)')
-        "
-        # ─────────────────────────────────────────────────────────────────────
         echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
         if [ "$DISPATCH_MODE" = "batch" ]; then
           python -u main.py --batch
