@@ -191,6 +191,9 @@ def run_adaptive_watermark_orchestration(
         logger.info(f"🔍 Residue Check for {strat['name']}: {score:.3f} ({residue.get('reason')})")
         
         if score < 0.25 or attempt == len(strategies) - 1:
+            out_parent = os.path.dirname(os.path.abspath(output_video))
+            if out_parent:
+                os.makedirs(out_parent, exist_ok=True)
             shutil.move(out_candidate, output_video)
             status = "Completed_Clean" if score < 0.25 else "Completed_With_Residue"
             logger.info(f"✅ Strategy accepted ({status})")
@@ -230,6 +233,9 @@ def process_video_with_watermark(input_path: str, output_path: str, retry_mode: 
                 is_error = True
             
         if not watermarks:
+            out_parent = os.path.dirname(os.path.abspath(output_path))
+            if out_parent:
+                os.makedirs(out_parent, exist_ok=True)
             shutil.copy(input_path, output_path)
             if is_error:
                 return {"success": False, "watermark_detected": None, "context": {"reason": "API Quota/Error"}}

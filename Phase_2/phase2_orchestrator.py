@@ -280,6 +280,30 @@ def run_phase2_pipeline(
                     logger.warning(f"⚠️ [UPFRONT INPAINTING] Inpainting notice: {_inp_err}")
                     working_video_path = video_path
 
+            # Self-healing verification: Ensure working_video_path exists on disk
+            if not working_video_path or not os.path.exists(working_video_path):
+                logger.warning(f"⚠️ [PHASE 2 SELF-HEAL] Video path missing on disk: {working_video_path}. Attempting recovery...")
+                if clean_raw_path and os.path.exists(clean_raw_path):
+                    working_video_path = clean_raw_path
+                elif video_path and os.path.exists(video_path):
+                    working_video_path = video_path
+                elif os.path.exists(os.path.join(clip_dir, "video.mp4")):
+                    working_video_path = os.path.join(clip_dir, "video.mp4")
+                else:
+                    try:
+                        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                        v_idx = TelegramVaultIndexer()
+                        hydrated = v_idx.hydrate_raw_video_from_vault(folder_name, dest_dir=clip_dir, check_clean_first=True)
+                        if hydrated and os.path.exists(hydrated):
+                            working_video_path = hydrated
+                            logger.info(f"✅ [PHASE 2 SELF-HEAL] Rehydrated raw video from vault -> {working_video_path}")
+                    except Exception as _rehyd_err:
+                        logger.warning(f"⚠️ [PHASE 2 SELF-HEAL] Vault rehydration failed: {_rehyd_err}")
+
+            if not working_video_path or not os.path.exists(working_video_path):
+                logger.error(f"❌ [PHASE 2 FATAL] Cannot proceed with clip '{folder_name}': video file missing after recovery attempts.")
+                raise FileNotFoundError(f"Video not found on disk or vault: {working_video_path or folder_name}")
+
             # ─────────────────────────────────────────────────────────────────
             # STEP 2B: SCENE INTEL & GEMINI CALL 1 FORENSIC PERCEPTION
             # Analyzes the CLEAN video (working_video_path) to determine visual

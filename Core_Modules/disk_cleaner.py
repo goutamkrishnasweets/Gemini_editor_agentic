@@ -29,7 +29,8 @@ import glob
 import time
 import tempfile
 import logging
-from typing import Dict, Any, List, Optional
+import threading
+from typing import Dict, Any, List, Optional, Set
 
 logger = logging.getLogger("DiskCleaner")
 if not logger.handlers:
@@ -39,8 +40,6 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Strict whitelist of directories that may contain ephemeral scratchpad artifacts
 _DOWNLOADS_DIR = os.path.join(_REPO_ROOT, "downloads")
 _BEATS_DIR = os.path.join(_REPO_ROOT, "Original_audio", "beats")
 _ACTIVE_AUDIO_DIR = os.path.join(_REPO_ROOT, "Original_audio", "active")
@@ -48,7 +47,6 @@ _TEMP_WATERMARK_DIR = os.path.join(_REPO_ROOT, "temp_watermark")
 _PROCESSED_SHORTS_DIR = os.path.join(_REPO_ROOT, "Processed Shorts")
 _OUTPUT_DIR = os.path.join(_REPO_ROOT, "output")
 
-# Protected database files that must NEVER be touched under any circumstance
 _PROTECTED_FILES = {
     "pool_metadata.json",
     "master_vault_index.json",
@@ -58,6 +56,46 @@ _PROTECTED_FILES = {
     "telegram_users.json",
     "scraper_rotation_pointer.json",
 }
+
+_ACTIVE_PROCESSING_CLIPS: Set[str] = set()
+_ACTIVE_CLIPS_LOCK = threading.Lock()
+
+
+def mark_clip_active(clip_id: str):
+    """Registers a clip as currently being processed to prevent premature cleanup during concurrent jobs."""
+    if not clip_id:
+        return
+    clean_id = str(clip_id).strip().replace("manual_", "").replace("auto_", "")
+    with _ACTIVE_CLIPS_LOCK:
+        _ACTIVE_PROCESSING_CLIPS.add(str(clip_id).strip())
+        _ACTIVE_PROCESSING_CLIPS.add(f"manual_{clean_id}")
+        _ACTIVE_PROCESSING_CLIPS.add(clean_id)
+        logger.debug(f"🔒 [ACTIVE CLIP REGISTERED] '{clip_id}' marked active (total active keys: {len(_ACTIVE_PROCESSING_CLIPS)})")
+
+
+def mark_clip_inactive(clip_id: str):
+    """Unregisters a clip when pipeline processing finishes."""
+    if not clip_id:
+        return
+    clean_id = str(clip_id).strip().replace("manual_", "").replace("auto_", "")
+    with _ACTIVE_CLIPS_LOCK:
+        _ACTIVE_PROCESSING_CLIPS.discard(str(clip_id).strip())
+        _ACTIVE_PROCESSING_CLIPS.discard(f"manual_{clean_id}")
+        _ACTIVE_PROCESSING_CLIPS.discard(clean_id)
+        logger.debug(f"🔓 [ACTIVE CLIP RELEASED] '{clip_id}' released")
+
+
+def is_clip_active(clip_id: str) -> bool:
+    """Checks whether a clip is currently in active pipeline execution."""
+    if not clip_id:
+        return False
+    clean_id = str(clip_id).strip().replace("manual_", "").replace("auto_", "")
+    with _ACTIVE_CLIPS_LOCK:
+        return (
+            str(clip_id).strip() in _ACTIVE_PROCESSING_CLIPS
+            or f"manual_{clean_id}" in _ACTIVE_PROCESSING_CLIPS
+            or clean_id in _ACTIVE_PROCESSING_CLIPS
+        )
 
 
 def clean_clip_artifacts(clip_id: str, master_video_path: Optional[str] = None) -> Dict[str, Any]:
@@ -78,9 +116,17 @@ def clean_clip_artifacts(clip_id: str, master_video_path: Optional[str] = None) 
     deleted_items: List[str] = []
     errors: List[str] = []
 
+    # Guard: If any active pipeline worker is currently processing this clip, skip directory purge
+    if is_clip_active(clip_id) or is_clip_active(clean_id):
+        logger.info(f"🛡️ [CLEANER BLOCKED] Clip '{clip_id}' is currently being processed by an active pipeline worker. Skipping purge.")
+        return {"status": "skipped", "reason": "active_processing", "deleted_items": []}
+
     # 1. Purge downloads/<clip_id> directories
     if os.path.isdir(_DOWNLOADS_DIR):
         for pattern in set(patterns_to_match):
+            if is_clip_active(pattern):
+                logger.info(f"🛡️ [CLEANER BLOCKED] downloads/{pattern} is active. Skipping.")
+                continue
             target_dir = os.path.join(_DOWNLOADS_DIR, pattern)
             if os.path.isdir(target_dir):
                 try:

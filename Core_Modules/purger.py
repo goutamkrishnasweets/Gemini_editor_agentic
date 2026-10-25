@@ -167,7 +167,14 @@ def purge_full_clip_and_assets(
         for p in attempt_history:
             if p:
                 abs_p = p if os.path.isabs(p) else os.path.join(_REPO_ROOT, p)
-                paths_to_delete.add(abs_p)
+                # Defensive check: only delete attempt history files that belong to this clip
+                base_name = os.path.basename(abs_p)
+                if clip_id in base_name or clean_cid in base_name:
+                    paths_to_delete.add(abs_p)
+                else:
+                    logger.warning(
+                        f"🛡️ [PURGER GUARD] Skipping attempt history file '{base_name}' — does not match clip '{clip_id}'"
+                    )
 
     for p in paths_to_delete:
         if _force_delete_file(p):

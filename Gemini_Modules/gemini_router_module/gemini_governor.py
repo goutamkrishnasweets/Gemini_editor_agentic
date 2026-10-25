@@ -1453,8 +1453,10 @@ class GeminiGovernor:
 
                 metadata["escalated_fallback"] = True
 
+            except ImportError:
+                # Optional module not present; proceed directly to Gemini
+                pass
             except Exception as _orch_err:
-
                 logger.warning(f"⚠️ [ORCHESTRA] Error: {_orch_err}. Falling back to Gemini.")
 
 

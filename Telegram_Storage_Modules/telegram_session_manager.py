@@ -232,17 +232,25 @@ class TelegramSessionManager:
             return self.sessions[session_id]
         return None
 
-    def record_rendered_attempt(self, chat_id_or_sess_id: Any, video_path: str):
-        """Records rendered attempt path into active session attempt history."""
+    def record_rendered_attempt(self, chat_id_or_sess_id: Any, video_path: str, clip_id: Optional[str] = None):
+        """Records rendered attempt path into active session attempt history matching the specific clip."""
         str_key = str(chat_id_or_sess_id)
         target_sess = None
         if str_key in self.sessions:
             target_sess = self.sessions[str_key]
         else:
+            cid = clip_id or os.path.basename(video_path).replace("_master.mp4", "")
+            clean_cid = cid.replace("manual_", "").replace("auto_", "").strip()
             matching = [s for s in self.sessions.values() if str(s.get("requestor_chat_id")) == str_key]
-            if matching:
-                matching.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
-                target_sess = matching[0]
+            # Only match sessions belonging to this clip to prevent cross-session contamination
+            clip_matching = [
+                s for s in matching
+                if s.get("clip_id") in (cid, f"manual_{clean_cid}", clean_cid)
+                or (s.get("video_path") and (clean_cid in s.get("video_path") or cid in s.get("video_path")))
+            ]
+            if clip_matching:
+                clip_matching.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+                target_sess = clip_matching[0]
 
         if target_sess:
             history = target_sess.setdefault("attempt_history", [])

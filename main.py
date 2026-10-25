@@ -374,11 +374,23 @@ async def _send_video_safe_main(
     last_exc = None
     for attempt in range(1, max_retries + 1):
         try:
-            if isinstance(video_path_or_file, str) and os.path.isfile(video_path_or_file):
-                with open(video_path_or_file, "rb") as vf:
+            if isinstance(video_path_or_file, str):
+                if os.path.isfile(video_path_or_file):
+                    with open(video_path_or_file, "rb") as vf:
+                        return await bot_obj.send_video(
+                            chat_id=int(chat_id),
+                            video=vf,
+                            caption=caption,
+                            reply_markup=reply_markup,
+                            supports_streaming=supports_streaming,
+                            read_timeout=600,
+                            write_timeout=600,
+                            connect_timeout=120
+                        )
+                elif video_path_or_file.startswith(("http://", "https://")):
                     return await bot_obj.send_video(
                         chat_id=int(chat_id),
-                        video=vf,
+                        video=video_path_or_file,
                         caption=caption,
                         reply_markup=reply_markup,
                         supports_streaming=supports_streaming,
@@ -386,6 +398,20 @@ async def _send_video_safe_main(
                         write_timeout=600,
                         connect_timeout=120
                     )
+                elif "/" not in video_path_or_file and "\\" not in video_path_or_file and len(video_path_or_file) > 20:
+                    # Valid Telegram file_id string
+                    return await bot_obj.send_video(
+                        chat_id=int(chat_id),
+                        video=video_path_or_file,
+                        caption=caption,
+                        reply_markup=reply_markup,
+                        supports_streaming=supports_streaming,
+                        read_timeout=600,
+                        write_timeout=600,
+                        connect_timeout=120
+                    )
+                else:
+                    raise FileNotFoundError(f"Video file missing on disk: {video_path_or_file}")
             elif hasattr(video_path_or_file, "read"):
                 video_path_or_file.seek(0)
                 return await bot_obj.send_video(
@@ -411,6 +437,9 @@ async def _send_video_safe_main(
                 )
         except (TimedOut, NetworkError, Exception) as err:
             last_exc = err
+            if isinstance(err, FileNotFoundError):
+                logger.error(f"❌ [TELEGRAM UPLOAD FAILED] {err}")
+                raise err
             if attempt < max_retries:
                 logger.warning(
                     f"⚠️ [TELEGRAM UPLOAD TIMEOUT] Attempt {attempt}/{max_retries} failed for chat {chat_id}: {err}. "
@@ -2503,8 +2532,21 @@ def run_master_pipeline(
         return {"success": False, "rendered_files": [], "error": "No valid clip directories or input file found"}
 
     # Phase 2 & 3: Master AI Perception & Render Orchestrator
+    active_clips_registered = []
     try:
         from Main_Modules.phase2_main import run_phase2_orchestration
+        from Core_Modules.disk_cleaner import mark_clip_active, mark_clip_inactive
+
+        # Register active clips so background cleaners never purge their working directories
+        if target_clip_dirs:
+            for d in target_clip_dirs:
+                cname = os.path.basename(d)
+                mark_clip_active(cname)
+                active_clips_registered.append(cname)
+        elif input_path:
+            cname = os.path.splitext(os.path.basename(input_path))[0]
+            mark_clip_active(cname)
+            active_clips_registered.append(cname)
 
         # ── Scalable Dynamic Multi-User Isolation ─────────────────────────────
         # Every Telegram user (User A, User B, User N) gets their rendered reel
@@ -2517,8 +2559,9 @@ def run_master_pipeline(
             """Immediately delivers each rendered clip to the requesting Telegram user."""
             PublishQueue.add(reel_path, channel_title="General", channel_folder="General")
             logger.info(f"🚀 [PHASE 4] Dispatched reel '{os.path.basename(reel_path)}' to publish queue.")
+            reel_cid = os.path.basename(reel_path).replace("_master.mp4", "")
             if target_chat:
-                session_manager.record_rendered_attempt(target_chat, reel_path)
+                session_manager.record_rendered_attempt(target_chat, reel_path, clip_id=reel_cid)
 
             if bot_token and target_chat:
                 try:
@@ -2538,6 +2581,7 @@ def run_master_pipeline(
                         bot = Bot(token=bot_token, request=req)
                         active_reel_path = reel_path
                         real_cid = os.path.basename(active_reel_path).replace("_master.mp4", "")
+                        clean_cid = real_cid.replace("manual_", "").replace("auto_", "").strip()
                         possible_raw = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", real_cid, "video.mp4")
 
                         # ── PHASE 2.1 WATERMARK GATE (bypass if inpainting occurred upfront) ──
@@ -2761,6 +2805,14 @@ def run_master_pipeline(
                 )
             except Exception as _e_msg:
                 logger.debug(f"Notice sending phase 2 failure message: {_e_msg}")
+    finally:
+        # Release active clip protection now that Phase 2 rendering has concluded
+        try:
+            from Core_Modules.disk_cleaner import mark_clip_inactive
+            for cname in active_clips_registered:
+                mark_clip_inactive(cname)
+        except Exception:
+            pass
 
     if not rendered_master_reels and requestor_chat_id and (url or input_path):
         try:
