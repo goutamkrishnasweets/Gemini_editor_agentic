@@ -164,7 +164,8 @@ def publish_to_youtube(video_path: str, title: str, description: str = "", tags:
             hashtags=tags or "#shorts #viral #trending",
             privacy="public",
             niche=niche,
-            user_yt_token_json=user_creds.get("yt_token_json")
+            user_yt_token_json=user_creds.get("yt_token_json"),
+            user_id=user_id,
         )
         if video_id:
             logger.info("[YOUTUBE SUCCESS] Video ID: %s", video_id)

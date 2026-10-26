@@ -337,6 +337,10 @@ def _is_admin_user(user_id_str: str) -> bool:
     return False
 
 
+# Public alias
+is_admin_user = _is_admin_user
+
+
 def sync_user_secret_to_github(user_id_str: str, secret_suffix: str, secret_value: str) -> bool:
     """
     Syncs credentials to GitHub Secrets:

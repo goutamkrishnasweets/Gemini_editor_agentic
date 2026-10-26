@@ -257,10 +257,11 @@ def _get_service_sync(niche: str = None):
     return service
 
 
-def _get_service_from_token_json(token_json_str: str):
+def _get_service_from_token_json(token_json_str: str, user_id_str: Optional[str] = None):
     """
     Builds a YouTube service directly from a token JSON string (in-memory).
     Used for per-user YouTube uploads without touching disk credential files.
+    Persists refreshed token back to user record if refreshed.
     """
     import socket
     import json as _json
@@ -271,7 +272,14 @@ def _get_service_from_token_json(token_json_str: str):
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            logger.info("[USER YT] Token refreshed in-memory for non-admin user.")
+            logger.info("[USER YT] Token refreshed in-memory for user %s.", user_id_str or "unspecified")
+            if user_id_str:
+                try:
+                    from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_token
+                    set_user_youtube_token(str(user_id_str), creds.to_json())
+                    logger.info("[USER YT] Refreshed token saved to user %s record.", user_id_str)
+                except Exception as _pe:
+                    logger.warning("[USER YT] Could not persist refreshed token for user %s: %s", user_id_str, _pe)
         except Exception as re:
             logger.warning("[USER YT] Token refresh failed: %s", re)
     if not creds or not creds.valid:
@@ -375,6 +383,7 @@ def _upload_sync(
     publish_at: Optional[str] = None,
     niche: Optional[str] = None,
     user_yt_token_json: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[str]:
     # 0. Check Platform Lock First
     if check_platform_lock():
@@ -388,8 +397,8 @@ def _upload_sync(
 
     # Build service: prefer in-memory user token if provided, else use niche disk credentials
     if user_yt_token_json:
-        logger.info("[YOUTUBE] Using in-memory user YouTube token (non-admin user upload).")
-        service = _get_service_from_token_json(user_yt_token_json)
+        logger.info("[YOUTUBE] Using in-memory user YouTube token (user_id=%s).", user_id or "unspecified")
+        service = _get_service_from_token_json(user_yt_token_json, user_id_str=user_id)
     else:
         service = _get_service_sync(niche=niche)
     logger.info(f"DEBUG: _upload_sync called with title input: '{title}'")

@@ -21,6 +21,16 @@ try:
 except ImportError:
     sync_token_to_github_secret = lambda path, content=None: False
 
+try:
+    from Telegram_Storage_Modules.telegram_user_manager import is_admin_user
+except ImportError:
+    try:
+        from Telegram_Storage_Modules.telegram_user_manager import _is_admin_user as is_admin_user
+    except ImportError:
+        def is_admin_user(uid):
+            adm = os.getenv("TELEGRAM_ADMIN_ID", "")
+            return str(uid).strip() in [x.strip() for x in adm.split(",") if x.strip()]
+
 # ==============================================================================
 # AMTCE YouTube Authentication Script
 # 
@@ -206,10 +216,18 @@ def _try_device_flow(client_id, client_secret, tg_token, tg_admin, token_path):
                     "client_secret": client_secret,
                     "scopes":        SCOPES,
                 }
-                os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
-                print(f"✅ Authorized! Token saved to {token_path}")
                 token_json_str = json.dumps(token_json, indent=2)
-                sync_token_to_github_secret(token_path, token_json_str)
+                user_is_admin = is_admin_user(str(tg_admin)) if tg_admin else True
+
+                os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+                with open(token_path, "w", encoding="utf-8") as f:
+                    f.write(token_json_str)
+
+                if user_is_admin:
+                    print(f"✅ Authorized! Admin token saved to {token_path}")
+                    sync_token_to_github_secret(token_path, token_json_str)
+                else:
+                    print(f"✅ Authorized! User {tg_admin} isolated token saved to {token_path}")
 
                 if tg_admin:
                     try:
@@ -220,10 +238,12 @@ def _try_device_flow(client_id, client_secret, tg_token, tg_admin, token_path):
                         print(f"⚠️ Could not update telegram_users.json: {_ute}")
 
                 if tg_token and tg_admin:
-                    _send_telegram(
-                        "✅ <b>YouTube Authorized!</b>\n\nToken saved. Uploads will resume automatically.",
-                        tg_token, tg_admin
+                    msg_text = (
+                        "✅ <b>YouTube Authorized!</b>\n\nAdmin token saved. Uploads will resume automatically."
+                        if user_is_admin else
+                        "✅ <b>YouTube Authorized!</b>\n\nPersonal YouTube token saved securely. Uploads will use your personal channel."
                     )
+                    _send_telegram(msg_text, tg_token, tg_admin)
                 return True
 
         except urllib.error.HTTPError as e:
@@ -302,21 +322,32 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
             pass
 
     # 3. Clean up any stale auth code file before starting polling
-    if os.path.exists(AUTH_CODE_FILE):
-        try:
-            os.remove(AUTH_CODE_FILE)
-        except Exception:
-            pass
+    user_code_file = f"Credentials/yt_auth_code_{tg_admin}.txt" if tg_admin else None
+    for p in ([user_code_file, AUTH_CODE_FILE] if user_code_file else [AUTH_CODE_FILE]):
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
 
     # 4. Poll for code dropped by /ytcode Telegram bot command
     print("⏳ Waiting for authorization code via Telegram /ytcode or localhost URL (5 min)...")
     deadline = time.time() + 300
     while time.time() < deadline:
-        if os.path.exists(AUTH_CODE_FILE):
+        chosen_file = None
+        if user_code_file and os.path.exists(user_code_file):
+            chosen_file = user_code_file
+        elif os.path.exists(AUTH_CODE_FILE):
+            chosen_file = AUTH_CODE_FILE
+
+        if chosen_file:
             try:
-                with open(AUTH_CODE_FILE, "r", encoding="utf-8") as f:
+                with open(chosen_file, "r", encoding="utf-8") as f:
                     raw = f.read().strip()
-                os.remove(AUTH_CODE_FILE)
+                try:
+                    os.remove(chosen_file)
+                except Exception:
+                    pass
 
                 if raw:
                     # Auto-extract code parameter if full URL was pasted
@@ -328,14 +359,19 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
                     print(f"🔑 Exchanging authorization code for OAuth token...")
                     flow.fetch_token(code=raw)
                     creds = flow.credentials
-                    os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
                     token_json_str = creds.to_json()
+
+                    user_is_admin = is_admin_user(str(tg_admin)) if tg_admin else True
+
+                    os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
                     with open(token_path, "w", encoding="utf-8") as f:
                         f.write(token_json_str)
-                    print(f"✅ Token saved to {token_path}")
 
-                    # Sync to GitHub Secrets using GitHub PAT
-                    synced = sync_token_to_github_secret(token_path, token_json_str)
+                    if user_is_admin:
+                        print(f"✅ Admin token saved to {token_path}")
+                        sync_token_to_github_secret(token_path, token_json_str)
+                    else:
+                        print(f"✅ User {tg_admin} personal token saved to {token_path}")
 
                     # Update telegram_users.json and sync to Telegram Storage Group Vault
                     if tg_admin:
@@ -347,13 +383,16 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
                             print(f"⚠️ Could not update telegram_users.json: {_ute}")
 
                     if tg_token and tg_admin:
-                        _send_telegram(
+                        msg_text = (
                             f"✅ <b>YouTube Authorized Successfully!</b>\n\n"
                             f"YouTube OAuth Token Synced as your secret 🔒\n\n"
-                            f"🚀 Uploads will resume automatically.",
-                            tg_token,
-                            tg_admin
+                            f"🚀 Uploads will resume automatically."
+                            if user_is_admin else
+                            f"✅ <b>YouTube Authorized Successfully!</b>\n\n"
+                            f"YouTube OAuth Token Synced to your personal account 🔒\n\n"
+                            f"🚀 Uploads will resume automatically using your personal channel."
                         )
+                        _send_telegram(msg_text, tg_token, tg_admin)
                     return True
             except Exception as e:
                 print(f"❌ Code exchange failed: {e}")
@@ -373,45 +412,76 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
 
 def authenticate(client_secret_file=None, token_file=None, admin_id=None):
     tg_token, tg_admin = _get_telegram_creds(override_admin_id=admin_id)
+    is_admin = is_admin_user(str(tg_admin)) if tg_admin else True
 
-    # Auto-hydrate client_secret.json from env or user state if missing on disk
-    if not client_secret_file and not os.path.exists(DEFAULT_CLIENT_SECRET_FILE) and not os.path.exists("Credentials/youtube/client_secret.json"):
-        env_secret = os.getenv("CLIENT_SECRET_JSON") or os.getenv("YOUTUBE_CLIENT_SECRET")
-        if not env_secret:
-            try:
-                if os.path.exists("telegram_users.json"):
-                    with open("telegram_users.json", "r", encoding="utf-8") as _uf:
-                        _udata = json.load(_uf)
-                        for _uk, _uv in _udata.items():
-                            if isinstance(_uv, dict) and _uv.get("youtube_client_secret"):
-                                env_secret = _uv["youtube_client_secret"]
-                                break
-            except Exception:
-                pass
-        if env_secret:
-            for _fpath in ["Credentials/youtube/client_secret.json", DEFAULT_CLIENT_SECRET_FILE]:
-                os.makedirs(os.path.dirname(_fpath), exist_ok=True)
-                with open(_fpath, "w", encoding="utf-8") as _sf:
-                    _sf.write(env_secret.strip())
-            print("🔑 Auto-hydrated client_secret.json from environment/state.")
+    # Check for personal client secret if caller is non-admin
+    user_secret_data = None
+    if tg_admin and not is_admin:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+            users = load_all_users()
+            u_rec = users.get(str(tg_admin), {})
+            user_secret_data = u_rec.get("youtube_client_secret") or os.getenv(f"USER_{tg_admin}_CLIENT_SECRET_JSON")
+        except Exception:
+            pass
 
-    # Smart discovery if explicit secret is not provided
     targets = []
-    if client_secret_file:
-        targets.append((client_secret_file, token_file or DEFAULT_TOKEN_FILE))
+    if not is_admin:
+        # Non-admin user flow: strictly isolate token and secret paths
+        isolated_token_path = token_file or f"Credentials/user_{tg_admin}_token.json"
+        if client_secret_file and os.path.exists(client_secret_file):
+            targets.append((client_secret_file, isolated_token_path))
+        elif user_secret_data:
+            user_secret_path = f"Credentials/user_{tg_admin}_client_secret.json"
+            os.makedirs(os.path.dirname(user_secret_path) or ".", exist_ok=True)
+            with open(user_secret_path, "w", encoding="utf-8") as sf:
+                sf.write(user_secret_data.strip())
+            targets.append((user_secret_path, isolated_token_path))
+        else:
+            # Fall back to server's shared client secret for OAuth authorization
+            shared_secret = None
+            for s_cand in [DEFAULT_CLIENT_SECRET_FILE, "Credentials/youtube/client_secret.json"]:
+                if os.path.exists(s_cand):
+                    shared_secret = s_cand
+                    break
+            if shared_secret:
+                targets.append((shared_secret, isolated_token_path))
     else:
-        # Scan all known credential directories
-        possible_pairs = [
-            ("Credentials/social_media/Fashion/client_secret.json", "Credentials/social_media/Fashion/token.json"),
-            ("Credentials/social_media/NSFW/client_secret.json", "Credentials/social_media/NSFW/token.json"),
-            ("Credentials/social_media/General_Fallback/client_secret.json", "Credentials/social_media/General_Fallback/token.json"),
-            (DEFAULT_CLIENT_SECRET_FILE, DEFAULT_TOKEN_FILE),
-            ("Credentials/youtube/client_secret.json", "Credentials/youtube/token.json"),
-        ]
-        for s_path, t_path in possible_pairs:
-            if os.path.exists(s_path) and (s_path, t_path) not in targets:
-                targets.append((s_path, t_path))
-                
+        # Admin flow
+        # Auto-hydrate client_secret.json from env or admin user state if missing on disk
+        if not client_secret_file and not os.path.exists(DEFAULT_CLIENT_SECRET_FILE) and not os.path.exists("Credentials/youtube/client_secret.json"):
+            env_secret = os.getenv("CLIENT_SECRET_JSON") or os.getenv("YOUTUBE_CLIENT_SECRET")
+            if not env_secret and tg_admin:
+                try:
+                    from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+                    users = load_all_users()
+                    u_rec = users.get(str(tg_admin), {})
+                    if isinstance(u_rec, dict) and u_rec.get("youtube_client_secret"):
+                        env_secret = u_rec["youtube_client_secret"]
+                except Exception:
+                    pass
+            if env_secret:
+                for _fpath in ["Credentials/youtube/client_secret.json", DEFAULT_CLIENT_SECRET_FILE]:
+                    os.makedirs(os.path.dirname(_fpath), exist_ok=True)
+                    with open(_fpath, "w", encoding="utf-8") as _sf:
+                        _sf.write(env_secret.strip())
+                print("🔑 Auto-hydrated client_secret.json from environment/state.")
+
+        if client_secret_file:
+            targets.append((client_secret_file, token_file or DEFAULT_TOKEN_FILE))
+        else:
+            # Scan all known credential directories
+            possible_pairs = [
+                ("Credentials/social_media/Fashion/client_secret.json", "Credentials/social_media/Fashion/token.json"),
+                ("Credentials/social_media/NSFW/client_secret.json", "Credentials/social_media/NSFW/token.json"),
+                ("Credentials/social_media/General_Fallback/client_secret.json", "Credentials/social_media/General_Fallback/token.json"),
+                (DEFAULT_CLIENT_SECRET_FILE, DEFAULT_TOKEN_FILE),
+                ("Credentials/youtube/client_secret.json", "Credentials/youtube/token.json"),
+            ]
+            for s_path, t_path in possible_pairs:
+                if os.path.exists(s_path) and (s_path, t_path) not in targets:
+                    targets.append((s_path, t_path))
+
     if not targets:
         msg = (
             f"❌ <b>YouTube Auth FAILED</b>\n\n"
@@ -438,17 +508,17 @@ def authenticate(client_secret_file=None, token_file=None, admin_id=None):
         client_secret = secret["client_secret"]
 
         if client_id in seen_client_ids:
-            print(f"⏩ Client ID '{client_id[:15]}...' already authenticated in this run. Copying token to {token_path} and skipping duplicate prompt.")
-            # Copy active token to this target path if available
-            for _src in [DEFAULT_TOKEN_FILE, "Credentials/youtube/token.json", token_path]:
-                if os.path.exists(_src):
-                    try:
-                        os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
-                        with open(_src, "r", encoding="utf-8") as _rf, open(token_path, "w", encoding="utf-8") as _wf:
-                            _wf.write(_rf.read())
-                        break
-                    except Exception:
-                        pass
+            print(f"⏩ Client ID '{client_id[:15]}...' already authenticated in this run. Skipping duplicate prompt.")
+            if is_admin:
+                for _src in [DEFAULT_TOKEN_FILE, "Credentials/youtube/token.json", token_path]:
+                    if os.path.exists(_src):
+                        try:
+                            os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+                            with open(_src, "r", encoding="utf-8") as _rf, open(token_path, "w", encoding="utf-8") as _wf:
+                                _wf.write(_rf.read())
+                            break
+                        except Exception:
+                            pass
             continue
 
         seen_client_ids.add(client_id)
@@ -460,8 +530,8 @@ def authenticate(client_secret_file=None, token_file=None, admin_id=None):
             # Device flow unsupported → fallback to URL + /ytcode paste
             print("⬇️ Falling back to URL auth flow...")
             success = _fallback_url_flow(secret_path, token_path, tg_token, tg_admin)
-            if success:
-                # Mirror token to both root and youtube/ paths for convenience
+            if success and is_admin:
+                # Mirror token to both root and youtube/ paths for convenience (ADMIN ONLY)
                 for _dst in [DEFAULT_TOKEN_FILE, "Credentials/youtube/token.json"]:
                     if _dst != token_path:
                         try:

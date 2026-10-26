@@ -1262,17 +1262,17 @@ async def cmd_ytcode(update, context):
     if raw.startswith("{") and raw.endswith("}"):
         try:
             from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_token
-            set_user_youtube_token(str(update.effective_chat.id), raw)
+            set_user_youtube_token(str(user_id), raw)
             await msg.reply_text("✅ YouTube OAuth Token Synced as your secret")
             return
         except Exception as _e:
             await msg.reply_text(f"⚠️ Error saving YouTube token JSON: {_e}")
             return
 
-    await process_yt_auth_code_input(msg, raw)
+    await process_yt_auth_code_input(msg, raw, user_id=str(user_id))
 
 
-async def process_yt_auth_code_input(msg, raw_text: str):
+async def process_yt_auth_code_input(msg, raw_text: str, user_id: Optional[str] = None):
     """Processes pasted localhost OAuth redirect URL or raw code."""
     code = raw_text.strip()
     if code.startswith("http"):
@@ -1292,10 +1292,19 @@ async def process_yt_auth_code_input(msg, raw_text: str):
     try:
         cred_dir = os.path.join(_REPO_ROOT, "Credentials")
         os.makedirs(cred_dir, exist_ok=True)
+        # Always write standard code file for backward compatibility
         code_file = os.path.join(cred_dir, "yt_auth_code.txt")
         with open(code_file, "w", encoding="utf-8") as f:
             f.write(code)
-        logger.info(f"🔑 Saved YouTube auth code to {code_file}")
+
+        # Also write isolated per-user auth code file if user_id is provided
+        if user_id:
+            user_code_file = os.path.join(cred_dir, f"yt_auth_code_{user_id}.txt")
+            with open(user_code_file, "w", encoding="utf-8") as f:
+                f.write(code)
+            logger.info(f"🔑 Saved YouTube auth code to {user_code_file} and {code_file}")
+        else:
+            logger.info(f"🔑 Saved YouTube auth code to {code_file}")
     except Exception as _e:
         await msg.reply_text(f"❌ Failed to save code: {_e}")
 
@@ -1727,6 +1736,17 @@ async def _wizard_socials_step(msg, chat_id: int, text: str, is_document: bool =
 
     if step == 2 and sess.get("platform") == "youtube" and is_document:
         # Client secret file uploaded — save and trigger ytcode
+        if msg.document:
+            try:
+                doc_file = await msg.document.get_file()
+                content_bytes = await doc_file.download_as_bytearray()
+                content_str = content_bytes.decode("utf-8")
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_client_secret
+                set_user_youtube_client_secret(str(chat_id), content_str)
+                logger.info(f"🔐 Client secret document saved for user {chat_id}")
+            except Exception as _de:
+                logger.warning(f"Failed to read uploaded client_secret document: {_de}")
+
         await msg.reply_text(
             "✅ **client_secret.json received!**\n\n"
             "🔄 Now use `/ytcode` to start the Google sign-in flow:\n"
@@ -2138,7 +2158,8 @@ async def handle_telegram_incoming_msg(update, context):
 
     # Check if user pasted a localhost OAuth redirect URL or auth code
     if msg.text and ("localhost" in msg.text or "code=" in msg.text) and ("http://" in msg.text or "https://" in msg.text):
-        await process_yt_auth_code_input(msg, msg.text.strip())
+        effective_uid = str(update.effective_user.id if update.effective_user else chat_id)
+        await process_yt_auth_code_input(msg, msg.text.strip(), user_id=effective_uid)
         return
 
     # Check if we are waiting for custom re-edit feedback from user
@@ -3268,7 +3289,8 @@ def start_telegram_bot_service():
                 return
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_client_secret
-                set_user_youtube_client_secret(str(update.effective_chat.id), args_text)
+                uid = str(update.effective_user.id if update.effective_user else update.effective_chat.id)
+                set_user_youtube_client_secret(uid, args_text)
                 await update.message.reply_text("🔐 **YouTube Client Secret Synced as your secret**")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving YouTube client secret: {_e}")
