@@ -102,7 +102,7 @@ def purge_expired_accounts() -> List[str]:
 
 
 def get_active_accounts_metadata(for_chat_id: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """Returns list of active target accounts with creation timestamps and days remaining until 30-day limit."""
+    """Returns list of active target accounts with creation timestamps and days remaining until 30-day limit, strictly isolated per user."""
     purge_expired_accounts()
     try:
         data = _load_accounts_json()
@@ -113,10 +113,19 @@ def get_active_accounts_metadata(for_chat_id: Optional[Any] = None) -> List[Dict
 
         res = []
         for h in accs:
-            owner_id = owners.get(h)
+            curr_owners = owners.get(h)
+            owner_list = []
+            if isinstance(curr_owners, list):
+                owner_list = [str(x) for x in curr_owners]
+            elif isinstance(curr_owners, (str, int)):
+                owner_list = [str(curr_owners)]
+
+            # Strict User Isolation:
+            # When for_chat_id is provided, only return accounts owned by for_chat_id.
+            # No admin bypass — admin only sees accounts they added, and non-admins only see theirs.
             if for_chat_id is not None:
-                from Telegram_Storage_Modules.telegram_user_manager import _is_admin_user
-                if not _is_admin_user(str(for_chat_id)) and owner_id and str(owner_id) != str(for_chat_id):
+                user_id_str = str(for_chat_id)
+                if user_id_str not in owner_list:
                     continue
 
             added_at = timestamps.get(h, now)
@@ -127,7 +136,7 @@ def get_active_accounts_metadata(for_chat_id: Optional[Any] = None) -> List[Dict
                 "added_at": added_at,
                 "days_elapsed": elapsed_days,
                 "days_left": days_left,
-                "owner_chat_id": owner_id
+                "owner_chat_id": owner_list[0] if len(owner_list) == 1 else (owner_list if owner_list else None)
             })
         return res
     except Exception as e:
@@ -138,7 +147,7 @@ def get_active_accounts_metadata(for_chat_id: Optional[Any] = None) -> List[Dict
 def get_rotated_max_two_accounts(max_accounts: int = 2, for_chat_id: Optional[Any] = None) -> List[str]:
     """
     Reads source_accounts.json and selects target accounts using anti-duplicate rotation.
-    If for_chat_id is provided, filters accounts owned by that user.
+    If for_chat_id is provided, strictly filters accounts owned by that user.
     """
     purge_expired_accounts()
 
@@ -149,14 +158,21 @@ def get_rotated_max_two_accounts(max_accounts: int = 2, for_chat_id: Optional[An
 
         if for_chat_id is not None:
             user_id_str = str(for_chat_id)
-            user_accs = [acc for acc in all_accounts if str(owners.get(acc, "")) == user_id_str]
-            if user_accs:
-                all_accounts = user_accs
-            else:
-                from Telegram_Storage_Modules.telegram_user_manager import _is_admin_user
-                if not _is_admin_user(user_id_str):
-                    logger.warning("⚠️ No target source accounts configured for user %s.", user_id_str)
-                    return []
+            user_accs = []
+            for acc in all_accounts:
+                curr_owners = owners.get(acc)
+                owner_list = []
+                if isinstance(curr_owners, list):
+                    owner_list = [str(x) for x in curr_owners]
+                elif isinstance(curr_owners, (str, int)):
+                    owner_list = [str(curr_owners)]
+                if user_id_str in owner_list:
+                    user_accs.append(acc)
+
+            all_accounts = user_accs
+            if not all_accounts:
+                logger.warning("⚠️ No target source accounts configured for user %s.", user_id_str)
+                return []
 
         if not all_accounts:
             logger.warning("⚠️ No target source accounts configured in source_accounts.json. Use /addaccount <handle> to add accounts.")
@@ -216,6 +232,9 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
         logger.warning(f"⚠️ [SCHEDULED BATCH] Vault hydration notice: {_vh_err}")
 
     target_accounts = get_rotated_max_two_accounts(max_accounts=max_accounts, for_chat_id=for_chat_id)
+    if not target_accounts:
+        logger.warning("⚠️ [SCHEDULED BATCH] No target accounts found for chat_id=%s. Skipping batch run.", for_chat_id)
+        return []
     logger.info(f"🚀 [SCHEDULED BATCH] Triggering Apify scraper for accounts: {target_accounts}")
 
     from Downloader_Modules.downloader_main import run_phase1_ingestion
@@ -411,30 +430,51 @@ def add_source_account(account_handle: str, platform: str = "instagram", owner_c
         timestamps = data.setdefault("account_added_timestamps", {})
         owners = data.setdefault("account_owners", {})
 
-        if owner_chat_id is not None:
-            owners[clean_handle] = str(owner_chat_id)
-
         if clean_handle not in accs:
             accs.append(clean_handle)
             timestamps[clean_handle] = time.time()
-            _save_accounts_json(data)
-            sync_source_accounts_to_telegram_vault()
-            logger.info("➕ [SOURCE ACCOUNTS] Added @%s (%s, owner=%s) with 30-day limit to source_accounts.json & synced to Telegram Vault", clean_handle, platform, owner_chat_id)
-            return True
         else:
-            # Refresh timestamp on re-adding
             timestamps[clean_handle] = time.time()
-            if owner_chat_id is not None:
-                owners[clean_handle] = str(owner_chat_id)
-            _save_accounts_json(data)
-            return True
+
+        if owner_chat_id is not None:
+            owner_str = str(owner_chat_id)
+            curr = owners.get(clean_handle)
+            if isinstance(curr, list):
+                if owner_str not in [str(x) for x in curr]:
+                    curr.append(owner_str)
+                owners[clean_handle] = curr
+            elif isinstance(curr, (str, int)):
+                curr_str = str(curr)
+                if curr_str == owner_str:
+                    owners[clean_handle] = [owner_str]
+                else:
+                    owners[clean_handle] = [curr_str, owner_str]
+            else:
+                owners[clean_handle] = [owner_str]
+
+            # Also persist in telegram_users.json for redundancy and user isolation
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import load_all_users, save_all_users
+                users = load_all_users()
+                u_rec = users.setdefault(owner_str, {})
+                u_accs = u_rec.setdefault("source_accounts", [])
+                if clean_handle not in u_accs:
+                    u_accs.append(clean_handle)
+                save_all_users(users)
+            except Exception as _ue:
+                logger.debug("Notice saving user source_accounts in user manager: %s", _ue)
+
+        _save_accounts_json(data)
+        sync_source_accounts_to_telegram_vault()
+        logger.info("➕ [SOURCE ACCOUNTS] Added @%s (%s, owner=%s) with 30-day limit to source_accounts.json & synced to Telegram Vault", clean_handle, platform, owner_chat_id)
+        return True
     except Exception as e:
         logger.error("❌ Failed to add source account @%s: %s", clean_handle, e)
     return False
 
 
 def remove_source_account(account_handle: str, requestor_chat_id: Optional[Any] = None) -> bool:
-    """Removes a target account handle from source_accounts.json and syncs to Telegram Vault."""
+    """Removes a target account handle for requestor from source_accounts.json and syncs to Telegram Vault."""
     clean_handle = account_handle.strip().lstrip("@")
     if not clean_handle:
         return False
@@ -444,27 +484,54 @@ def remove_source_account(account_handle: str, requestor_chat_id: Optional[Any] 
         timestamps = data.get("account_added_timestamps", {})
         owners = data.get("account_owners", {})
 
-        # If requestor_chat_id provided, ensure non-admin can only remove their own accounts
-        if requestor_chat_id is not None:
-            from Telegram_Storage_Modules.telegram_user_manager import _is_admin_user
-            req_str = str(requestor_chat_id)
-            if not _is_admin_user(req_str):
-                owner_str = owners.get(clean_handle)
-                if owner_str and owner_str != req_str:
-                    logger.warning("⛔ User %s attempted to remove account @%s owned by %s", req_str, clean_handle, owner_str)
-                    return False
+        req_str = str(requestor_chat_id) if requestor_chat_id is not None else None
 
-        if clean_handle in accs:
-            accs.remove(clean_handle)
-            timestamps.pop(clean_handle, None)
+        curr_owners = owners.get(clean_handle)
+        owner_list = []
+        if isinstance(curr_owners, list):
+            owner_list = [str(x) for x in curr_owners]
+        elif isinstance(curr_owners, (str, int)):
+            owner_list = [str(curr_owners)]
+
+        if req_str:
+            if req_str not in owner_list:
+                logger.warning("⛔ User %s attempted to remove account @%s not owned by them (owners=%s)", req_str, clean_handle, owner_list)
+                return False
+            owner_list.remove(req_str)
+            if owner_list:
+                owners[clean_handle] = owner_list
+            else:
+                owners.pop(clean_handle, None)
+                if clean_handle in accs:
+                    accs.remove(clean_handle)
+                timestamps.pop(clean_handle, None)
+                data.get("account_last_scraped", {}).pop(clean_handle, None)
+                data.get("account_last_scraped_iso", {}).pop(clean_handle, None)
+
+            # Also update telegram_users.json
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import load_all_users, save_all_users
+                users = load_all_users()
+                u_rec = users.get(req_str, {})
+                u_accs = u_rec.get("source_accounts", [])
+                if clean_handle in u_accs:
+                    u_accs.remove(clean_handle)
+                    save_all_users(users)
+            except Exception as _ue:
+                logger.debug("Notice removing user source_accounts in user manager: %s", _ue)
+        else:
+            # System global removal
             owners.pop(clean_handle, None)
+            if clean_handle in accs:
+                accs.remove(clean_handle)
+            timestamps.pop(clean_handle, None)
             data.get("account_last_scraped", {}).pop(clean_handle, None)
             data.get("account_last_scraped_iso", {}).pop(clean_handle, None)
 
-            _save_accounts_json(data)
-            sync_source_accounts_to_telegram_vault()
-            logger.info("🗑️ [SOURCE ACCOUNTS] Removed @%s from source_accounts.json & synced to Telegram Vault", clean_handle)
-            return True
+        _save_accounts_json(data)
+        sync_source_accounts_to_telegram_vault()
+        logger.info("🗑️ [SOURCE ACCOUNTS] Removed @%s (requestor=%s) from source_accounts.json & synced to Telegram Vault", clean_handle, req_str)
+        return True
     except Exception as e:
         logger.error("❌ Failed to remove source account @%s: %s", clean_handle, e)
     return False
@@ -475,7 +542,10 @@ def get_account_owner(account_handle: str) -> Optional[str]:
     clean_handle = account_handle.strip().lstrip("@")
     try:
         data = _load_accounts_json()
-        return data.get("account_owners", {}).get(clean_handle)
+        val = data.get("account_owners", {}).get(clean_handle)
+        if isinstance(val, list):
+            return str(val[0]) if val else None
+        return str(val) if val is not None else None
     except Exception:
         return None
 
@@ -501,6 +571,11 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
         base_clean = base.replace("_master.mp4", "").replace(".mp4", "").lower()
         parent_clean = parent.lower()
 
+        def _extract_owner_str(v):
+            if isinstance(v, list):
+                return str(v[0]) if v else None
+            return str(v) if v is not None else None
+
         # 1. Check registered handles against parent dir, filename, and path (longest handles first)
         for h in sorted(owners.keys(), key=len, reverse=True):
             hl = h.strip().lstrip("@").lower()
@@ -509,7 +584,9 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
             if (parent_clean and (parent_clean.startswith(hl) or f"{hl}_" in parent_clean)) or \
                (base_clean and (base_clean.startswith(hl) or f"{hl}_" in base_clean)) or \
                f"/{hl}_" in norm_path or f"/{hl}/" in norm_path or norm_path.startswith(f"{hl}_"):
-                return owners[h]
+                res = _extract_owner_str(owners[h])
+                if res:
+                    return res
 
         # 2. Check local metadata.json if path points to a file in a clip folder
         if os.path.exists(video_path_or_cid):
@@ -523,7 +600,9 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
                         for field in ["ownerUsername", "owner", "uploader", "creator"]:
                             u = str(m_data.get(field) or "").strip().lstrip("@")
                             if u and u in owners:
-                                return owners[u]
+                                res = _extract_owner_str(owners[u])
+                                if res:
+                                    return res
                     except Exception:
                         pass
 
@@ -533,7 +612,7 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
         entry = indexer.find_entry_by_shortcode(base_clean) or {}
         owner_name = str(entry.get("ownerUsername") or "").strip().lstrip("@")
         if owner_name and owner_name in owners:
-            return owners[owner_name]
+            return _extract_owner_str(owners[owner_name])
     except Exception as _e:
         logger.debug("Notice in get_account_owner_for_file: %s", _e)
     return None

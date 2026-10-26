@@ -627,10 +627,13 @@ async def handle_telegram_callback(update, context):
         targets = get_rotated_max_two_accounts(max_accounts=2, for_chat_id=chat_id)
         if targets:
             goal = f"Ingest reels for creator accounts: {', '.join(['@' + t for t in targets])}, edit each with beat-synced rhythm and BGM, and audit quality."
+            logger.info(f"🤖 [UNIVERSAL AGENT] Routing batch scrape trigger to Gemini Director: '{goal}'")
+            await _dispatch_agent_goal(update, goal, context=context)
         else:
-            goal = "Run scheduled content scraper batch for active creator accounts, render reels, and audit."
-        logger.info(f"🤖 [UNIVERSAL AGENT] Routing batch scrape trigger to Gemini Director: '{goal}'")
-        await _dispatch_agent_goal(update, goal, context=context)
+            await query.edit_message_text(
+                text="⚠️ **No active target accounts configured for your account.**\n\nUse `/addaccount @handle` or ⚙️ **Auto Input Setup** to configure accounts first.",
+                reply_markup=build_back_button_keyboard()
+            )
         return
 
     # ── ⚙️ Auto Input Setup Wizard ────────────────────────────────────────────
@@ -1669,26 +1672,28 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         except Exception as _um_err:
             logger.warning(f"Notice saving user schedule times: {_um_err}")
 
-        # 2. Update .env and in-memory environment safely
-        env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
-        try:
-            os.makedirs(os.path.dirname(env_path), exist_ok=True)
-            lines_env = open(env_path).readlines() if os.path.exists(env_path) else []
-            existing = {l.split("=")[0]: l for l in lines_env if "=" in l}
-            existing["SCRAPING_AUTO_INPUT_TIMES"] = f'SCRAPING_AUTO_INPUT_TIMES="{data["scrape_times"]}"\n'
-            existing["PUBLISH_STATIC_TIMES"] = f'PUBLISH_STATIC_TIMES="{data["publish_times"]}"\n'
-            existing["CLIPS_PER_ACCOUNT_PER_RUN"] = f'CLIPS_PER_ACCOUNT_PER_RUN="{data["clips_per_account"]}"\n'
-            existing["AUTO_SCRAPE_LIMIT"] = f'AUTO_SCRAPE_LIMIT="{data["clips_per_account"]}"\n'
-            existing["MAX_PUBLISH_PER_DAY"] = f'MAX_PUBLISH_PER_DAY="{data["max_publish_per_day"]}"\n'
-            existing["SCRAPE_DAYS_PER_WEEK"] = f'SCRAPE_DAYS_PER_WEEK="{data["days_per_week"]}"\n'
-            with open(env_path, "w") as f:
-                f.writelines(existing.values())
-        except Exception as _env_err:
-            logger.error(f"Failed to write auto-setup to .env: {_env_err}")
+        # 2. Update .env and in-memory environment safely (Only for Admin)
+        from Telegram_Storage_Modules.telegram_user_manager import is_admin_user
+        if is_admin_user(str(chat_id)):
+            env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
+            try:
+                os.makedirs(os.path.dirname(env_path), exist_ok=True)
+                lines_env = open(env_path).readlines() if os.path.exists(env_path) else []
+                existing = {l.split("=")[0]: l for l in lines_env if "=" in l}
+                existing["SCRAPING_AUTO_INPUT_TIMES"] = f'SCRAPING_AUTO_INPUT_TIMES="{data["scrape_times"]}"\n'
+                existing["PUBLISH_STATIC_TIMES"] = f'PUBLISH_STATIC_TIMES="{data["publish_times"]}"\n'
+                existing["CLIPS_PER_ACCOUNT_PER_RUN"] = f'CLIPS_PER_ACCOUNT_PER_RUN="{data["clips_per_account"]}"\n'
+                existing["AUTO_SCRAPE_LIMIT"] = f'AUTO_SCRAPE_LIMIT="{data["clips_per_account"]}"\n'
+                existing["MAX_PUBLISH_PER_DAY"] = f'MAX_PUBLISH_PER_DAY="{data["max_publish_per_day"]}"\n'
+                existing["SCRAPE_DAYS_PER_WEEK"] = f'SCRAPE_DAYS_PER_WEEK="{data["days_per_week"]}"\n'
+                with open(env_path, "w") as f:
+                    f.writelines(existing.values())
+            except Exception as _env_err:
+                logger.error(f"Failed to write auto-setup to .env: {_env_err}")
 
-        os.environ["AUTO_INPUT_SCHEDULE_TIMES"] = data["scrape_times"]
-        os.environ["SCRAPING_AUTO_INPUT_TIMES"] = data["scrape_times"]
-        os.environ["AUTO_SCRAPE_LIMIT"] = str(data["clips_per_account"])
+            os.environ["AUTO_INPUT_SCHEDULE_TIMES"] = data["scrape_times"]
+            os.environ["SCRAPING_AUTO_INPUT_TIMES"] = data["scrape_times"]
+            os.environ["AUTO_SCRAPE_LIMIT"] = str(data["clips_per_account"])
 
         # 3. Save source accounts with owner_chat_id
         try:
@@ -3053,13 +3058,14 @@ async def _async_static_scheduler_task(bot_app=None):
                         keyboard = build_telegram_session_keyboard(session_id=sess_id)
 
                         # Determine list of target chats to notify:
-                        # 1. Normal user who configured the account receives the review card directly!
+                        # User who configured the account receives the review card directly.
+                        # Admins only receive review cards for accounts they own or unowned system accounts.
                         target_recipients = set()
                         if req_chat:
                             target_recipients.add(str(req_chat))
-                        # 2. Admins also receive copy
-                        for aid in admin_ids:
-                            target_recipients.add(str(aid))
+                        else:
+                            for aid in admin_ids:
+                                target_recipients.add(str(aid))
 
                         for target_chat in target_recipients:
                             try:

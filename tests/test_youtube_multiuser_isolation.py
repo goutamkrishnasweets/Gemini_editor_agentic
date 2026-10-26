@@ -282,3 +282,76 @@ def test_apify_scrape_targets_reels_tab(monkeypatch):
         assert "https://www.instagram.com/anothercreator/reels/" in direct_urls
         assert call_args["resultsLimit"] == 8  # effective_limit per scrape run
 
+
+def test_source_accounts_multiuser_isolation(tmp_path, monkeypatch):
+    """
+    Verifies that accounts added by non-admin users NEVER appear in admin's account list,
+    accounts added by admin NEVER appear in non-admin's account list,
+    and neither user can remove or rotate each other's accounts.
+    """
+    from Downloader_Modules.scheduled_scraper_manager import (
+        add_source_account,
+        get_active_accounts_metadata,
+        get_rotated_max_two_accounts,
+        remove_source_account,
+    )
+
+    sa_file = tmp_path / "source_accounts.json"
+    users_file = tmp_path / "telegram_users.json"
+    monkeypatch.setattr("Downloader_Modules.scheduled_scraper_manager.ACCOUNTS_JSON", str(sa_file))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.USERS_JSON_PATH", str(users_file))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_ADMIN_ID", "100")
+
+    with patch("Downloader_Modules.scheduled_scraper_manager.sync_source_accounts_to_telegram_vault"), \
+         patch("Telegram_Storage_Modules.telegram_user_manager.sync_users_json_to_telegram_vault"):
+
+        # 1. Non-admin user "200" adds @mobile_multiplex and @disha_my_heartbeat
+        assert add_source_account("mobile_multiplex", "instagram", owner_chat_id="200") is True
+        assert add_source_account("disha_my_heartbeat", "instagram", owner_chat_id="200") is True
+
+        # 2. Admin user "100" checks their accounts -> MUST BE EMPTY!
+        admin_meta = get_active_accounts_metadata(for_chat_id="100")
+        assert len(admin_meta) == 0, f"Admin must NOT see non-admin accounts! Saw: {admin_meta}"
+
+        admin_rotated = get_rotated_max_two_accounts(max_accounts=2, for_chat_id="100")
+        assert len(admin_rotated) == 0, f"Admin rotation must NOT pick non-admin accounts! Saw: {admin_rotated}"
+
+        # 3. Non-admin user "200" checks their accounts -> MUST SEE both
+        user_meta = get_active_accounts_metadata(for_chat_id="200")
+        user_handles = [a["handle"] for a in user_meta]
+        assert "mobile_multiplex" in user_handles
+        assert "disha_my_heartbeat" in user_handles
+        assert len(user_handles) == 2
+
+        user_rotated = get_rotated_max_two_accounts(max_accounts=2, for_chat_id="200")
+        assert len(user_rotated) == 2
+        assert set(user_rotated) == {"mobile_multiplex", "disha_my_heartbeat"}
+
+        # 4. Admin "100" adds an admin account
+        assert add_source_account("admin_channel", "instagram", owner_chat_id="100") is True
+
+        # 5. Verify strict mutual isolation:
+        # Admin only sees @admin_channel
+        admin_meta_2 = get_active_accounts_metadata(for_chat_id="100")
+        admin_handles = [a["handle"] for a in admin_meta_2]
+        assert admin_handles == ["admin_channel"]
+
+        # Non-admin only sees their 2 accounts, NOT @admin_channel
+        user_meta_2 = get_active_accounts_metadata(for_chat_id="200")
+        user_handles_2 = [a["handle"] for a in user_meta_2]
+        assert "admin_channel" not in user_handles_2
+        assert set(user_handles_2) == {"mobile_multiplex", "disha_my_heartbeat"}
+
+        # 6. Cross-user removal permissions:
+        # Admin CANNOT remove non-admin's account
+        assert remove_source_account("mobile_multiplex", requestor_chat_id="100") is False
+        # Non-admin CANNOT remove admin's account
+        assert remove_source_account("admin_channel", requestor_chat_id="200") is False
+
+        # 7. Non-admin can remove their own account
+        assert remove_source_account("mobile_multiplex", requestor_chat_id="200") is True
+        user_meta_3 = get_active_accounts_metadata(for_chat_id="200")
+        assert [a["handle"] for a in user_meta_3] == ["disha_my_heartbeat"]
+
+
