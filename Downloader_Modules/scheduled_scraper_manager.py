@@ -251,13 +251,13 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
     except ValueError:
         clips_per_run = 6
 
-    scrape_limit = 6
+    scrape_limit = 8
     try:
-        scrape_limit = int(os.getenv("APIFY_REELS_PER_ACCOUNT", "6"))
+        scrape_limit = int(os.getenv("AUTO_SCRAPE_LIMIT", os.getenv("APIFY_REELS_PER_ACCOUNT", "8")))
     except ValueError:
-        scrape_limit = 6
+        scrape_limit = 8
 
-    # Run ingestion for selected accounts (scrapes 6 clips, avoiding top 3 pinned clips)
+    # Run ingestion for selected accounts (scrapes 8 clips, avoiding top 3 pinned clips)
     ingest_res = run_phase1_ingestion(mode="auto", limit_per_account=scrape_limit, target_accounts=target_accounts)
     downloaded_files = ingest_res.get("downloaded_files", [])
     if not ingest_res.get("success") or not downloaded_files:

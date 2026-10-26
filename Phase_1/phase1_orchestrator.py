@@ -147,7 +147,7 @@ def run_phase1_pipeline(
         sources = cfg_res.get("accounts", [])
 
         # Step 3: Apify Harvest & Pre-screen
-        limit = limit_per_account if limit_per_account else 3
+        limit = limit_per_account if limit_per_account else int(os.getenv("AUTO_SCRAPE_LIMIT", "8"))
         should_bypass = bool(target_accounts)
         reels = harvest_reels_from_apify(
             sources,

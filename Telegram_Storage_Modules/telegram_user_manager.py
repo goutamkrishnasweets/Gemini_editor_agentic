@@ -78,6 +78,12 @@ def load_all_users() -> Dict[str, Dict]:
                 elif suffix in ("auto_input_schedule_times",):
                     if not u_rec.get("auto_input_schedule_times"):
                         u_rec["auto_input_schedule_times"] = val
+                elif suffix in ("auto_scrape_limit", "autoscraplimit", "scrape_limit"):
+                    if not u_rec.get("auto_scrape_limit"):
+                        try:
+                            u_rec["auto_scrape_limit"] = int(val)
+                        except (ValueError, TypeError):
+                            pass
 
     return users
 
@@ -519,6 +525,50 @@ def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> 
     return False
 
 
+def set_user_auto_scrape_limit(user_id_str: str, limit_val: int) -> bool:
+    """Saves user personal auto-scrape limit (default 8) and syncs to GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    try:
+        val = int(limit_val)
+        if val <= 0:
+            val = 8
+    except (ValueError, TypeError):
+        val = 8
+
+    u_rec = users.setdefault(user_id_str, {})
+    u_rec["auto_scrape_limit"] = val
+    save_all_users(users)
+    synced = sync_user_secret_to_github(user_id_str, "AUTO_SCRAPE_LIMIT", str(val))
+    logger.info("🔢 [TELEGRAM USER MANAGER] Auto-scrape limit saved for User ID %s: %d (GitHub Synced: %s)", user_id_str, val, synced)
+    return True
+
+
+def get_user_auto_scrape_limit(user_id_str: str) -> int:
+    """Returns user personal auto-scrape limit, falling back to env AUTO_SCRAPE_LIMIT or default 8."""
+    users = load_all_users()
+    u_rec = users.get(str(user_id_str), {})
+    lim = u_rec.get("auto_scrape_limit")
+    if lim:
+        try:
+            return int(lim)
+        except (ValueError, TypeError):
+            pass
+    env_user = os.getenv(f"USER_{user_id_str}_AUTO_SCRAPE_LIMIT")
+    if env_user:
+        try:
+            return int(env_user)
+        except (ValueError, TypeError):
+            pass
+    env_root = os.getenv("AUTO_SCRAPE_LIMIT")
+    if env_root:
+        try:
+            return int(env_root)
+        except (ValueError, TypeError):
+            pass
+    return 8
+
+
 def set_user_instagram_token(user_id_str: str, token: str) -> bool:
     """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets."""
     users = load_all_users()
@@ -640,6 +690,8 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/setgroup YOUR_GROUP_ID`\n",
         f"⏰ **Schedule Times:** `{_val('auto_input_schedule_times', 'AUTO_INPUT_SCHEDULE_TIMES')}`",
         "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
+        f"🔢 **Auto-Scrape Limit:** `{_val('auto_scrape_limit', 'AUTO_SCRAPE_LIMIT') or '8'} reels/account`",
+        "   👉 Command: `/setautoscraplimit <number>` (e.g. `/setautoscraplimit 8`)\n",
         f"📸 **Instagram Token:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
         "   👉 Command: `/instagramtoken YOUR_ACCESS_TOKEN`\n",
         f"🆔 **Instagram Business ID:** `{_val('ig_business_id', 'IG_BUSINESS_ID')}`",

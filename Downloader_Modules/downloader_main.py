@@ -168,9 +168,9 @@ def run_phase1_ingestion(
     """
     if limit_per_account is None:
         try:
-            limit_per_account = int(os.getenv("APIFY_REELS_PER_ACCOUNT", "5"))
+            limit_per_account = int(os.getenv("AUTO_SCRAPE_LIMIT", os.getenv("APIFY_REELS_PER_ACCOUNT", "8")))
         except (ValueError, TypeError):
-            limit_per_account = 5
+            limit_per_account = 8
 
     logger.info(f"📥 [PHASE 1 INGESTION] Starting Phase 1 Orchestrator (mode='{mode}', platform='{platform}')...")
     downloads_dir = os.path.join(_REPO_ROOT, "downloads")

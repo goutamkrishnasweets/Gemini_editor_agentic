@@ -311,14 +311,17 @@ def _stage1_metadata_filter(item: Dict) -> tuple:
         if likes > 0 and likes < MIN_VIEW_AND_LIKES:
             return False, f"low_likes_{likes}"
 
-    # Rule 4: Strict aspect ratio (only when dimensions are available)
+    # Rule 4: Aspect ratio filter
+    # 9:16 = 1.777... Portrait feed videos: 4:5 = 1.25, 4:3 = 1.33. Square: 1:1 = 1.0.
+    # Allow aspect ratio >= 1.0 (vertical, portrait, square).
+    # Non-9:16 videos are dynamically blur-padded / scaled to 1080x1920 in synthesis.
+    # Extreme horizontal/landscape videos (e.g. 16:9 widescreen ratio < 0.8) are filtered.
     h = item.get("dimensionsHeight", 0) or 0
     w = item.get("dimensionsWidth", 0) or 0
     if h > 0 and w > 0:
         ratio = h / w
-        # 9:16 = 1.777... We require at least 1.6 to be safe (allows slight crop)
-        # 1:1 = 1.0, 4:3 = 1.33, these get filtered
-        if ratio < 1.6:
+        min_aspect_ratio = float(os.getenv("MIN_ASPECT_RATIO", "1.0"))
+        if ratio < min_aspect_ratio:
             return False, f"wrong_aspect_ratio_{w}x{h}_ratio{ratio:.2f}"
 
     # Rule 5: Must be a video
@@ -652,7 +655,7 @@ def apify_get_video_url_any(url: str, actor_name: Optional[str] = None) -> Optio
 def apify_scrape_creator_accounts(
     creator_name:    str,
     source_accounts: List[str],
-    limit_per_account: int = 11,
+    limit_per_account: int = 8,
     bypass_cooldown: bool = False,
 ) -> List[Dict]:
     """
@@ -710,18 +713,27 @@ def apify_scrape_creator_accounts(
         len(source_accounts), creator_name, limit_per_account
     )
 
-    profile_urls = [
-        f"https://www.instagram.com/{acc.lstrip('@')}/"
-        for acc in source_accounts
-    ]
+    profile_urls = []
+    for acc in source_accounts:
+        clean = acc.strip()
+        if clean.startswith("http"):
+            u = clean.rstrip("/")
+            if not u.endswith("/reels"):
+                u = u + "/reels/"
+            profile_urls.append(u)
+        else:
+            uname = clean.lstrip("@").strip("/")
+            profile_urls.append(f"https://www.instagram.com/{uname}/reels/")
 
     try:
         client = _get_client()
 
         # ── Deep-scrape pool size ─────────────────────────────────────────────
         # APIFY_DEEP_LIMIT overrides the caller's limit_per_account when set.
-        # This lets you widen the Apify fetch pool without changing DOWNLOADS_PER_ACCOUNT.
-        effective_limit = APIF_DEEP_LIMIT if APIF_DEEP_LIMIT > 0 else limit_per_account
+        # Otherwise defaults to limit_per_account or AUTO_SCRAPE_LIMIT (default 8).
+        default_limit = int(os.getenv("AUTO_SCRAPE_LIMIT", "8"))
+        chosen_limit = limit_per_account if (limit_per_account and limit_per_account > 0) else default_limit
+        effective_limit = APIF_DEEP_LIMIT if APIF_DEEP_LIMIT > 0 else chosen_limit
 
         # ── How far back to scrape ────────────────────────────────────────────
         # scrapePostsUntilDate tells the actor to keep going backwards in time

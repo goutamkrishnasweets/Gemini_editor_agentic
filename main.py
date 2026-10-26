@@ -1597,23 +1597,29 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         sess["step"] = 4
         await msg.reply_text(
             f"✅ **Publishing times set**: `{data['publish_times']}`\n\n"
-            f"🎬 **Step 4/6: Clips Per Account Per Run**\n\n"
-            f"How many clips should the bot scrape from each account per scheduled run?\n"
-            f"*(Recommended: `5–11`, max: `11`)*\n\nSend a number 👇",
+            f"🎬 **Step 4/6: Clips Per Account Per Run (Auto-Scrape Limit)**\n\n"
+            f"How many clips should the bot scrape from each account per run?\n"
+            f"*(Recommended: `6–8` to bypass pinned posts, default: `8`, max: `25`)*\n\nSend a number 👇",
             reply_markup=back_kbd
         )
         return True
 
     if step == 4:
         try:
-            clips = min(int(text.strip()), 11)
+            clips = max(1, min(int(text.strip()), 25))
         except ValueError:
-            clips = 5
+            clips = 8
         data["clips_per_account"] = clips
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_auto_scrape_limit
+            set_user_auto_scrape_limit(str(chat_id), clips)
+            logger.info("⚙️ [AUTO SETUP] Chat %s Step 4: Auto-scrape limit saved & synced to GitHub: %d", chat_id, clips)
+        except Exception as _sl_err:
+            logger.warning("⚠️ Error saving auto scrape limit in Step 4: %s", _sl_err)
         logger.info("⚙️ [AUTO SETUP] Chat %s Step 4: Clips per account set to: %d", chat_id, clips)
         sess["step"] = 5
         await msg.reply_text(
-            f"✅ **Clips per account**: `{clips}` clips per run\n\n"
+            f"✅ **Clips per account (Auto-Scrape Limit)**: `{clips}` clips per run\n\n"
             f"📅 **Step 5/6: Daily Publish Limit**\n\n"
             f"How many reels should the bot publish **per day** per social account?\n"
             f"*(Recommended: `2`, to keep accounts safe)*\n\nSend a number 👇",
@@ -1648,13 +1654,15 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
 
         # 1. Save to Telegram User Manager (Per-User Isolation)
         try:
-            from Telegram_Storage_Modules.telegram_user_manager import set_user_schedule_times, load_all_users, save_all_users
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_schedule_times, set_user_auto_scrape_limit, load_all_users, save_all_users
             set_user_schedule_times(str(chat_id), data["scrape_times"])
+            set_user_auto_scrape_limit(str(chat_id), data.get("clips_per_account", 8))
             users = load_all_users()
             u_rec = users.setdefault(str(chat_id), {})
             u_rec["auto_input_schedule_times"] = data["scrape_times"]
             u_rec["publish_times"] = data["publish_times"]
             u_rec["clips_per_account"] = data["clips_per_account"]
+            u_rec["auto_scrape_limit"] = data["clips_per_account"]
             u_rec["max_publish_per_day"] = data["max_publish_per_day"]
             u_rec["days_per_week"] = data["days_per_week"]
             save_all_users(users)
@@ -1670,6 +1678,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
             existing["SCRAPING_AUTO_INPUT_TIMES"] = f'SCRAPING_AUTO_INPUT_TIMES="{data["scrape_times"]}"\n'
             existing["PUBLISH_STATIC_TIMES"] = f'PUBLISH_STATIC_TIMES="{data["publish_times"]}"\n'
             existing["CLIPS_PER_ACCOUNT_PER_RUN"] = f'CLIPS_PER_ACCOUNT_PER_RUN="{data["clips_per_account"]}"\n'
+            existing["AUTO_SCRAPE_LIMIT"] = f'AUTO_SCRAPE_LIMIT="{data["clips_per_account"]}"\n'
             existing["MAX_PUBLISH_PER_DAY"] = f'MAX_PUBLISH_PER_DAY="{data["max_publish_per_day"]}"\n'
             existing["SCRAPE_DAYS_PER_WEEK"] = f'SCRAPE_DAYS_PER_WEEK="{data["days_per_week"]}"\n'
             with open(env_path, "w") as f:
@@ -1679,6 +1688,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
 
         os.environ["AUTO_INPUT_SCHEDULE_TIMES"] = data["scrape_times"]
         os.environ["SCRAPING_AUTO_INPUT_TIMES"] = data["scrape_times"]
+        os.environ["AUTO_SCRAPE_LIMIT"] = str(data["clips_per_account"])
 
         # 3. Save source accounts with owner_chat_id
         try:
@@ -2503,7 +2513,16 @@ def run_master_pipeline(
     # Phase 1: Ingestion (when mode == 'auto', or when URL/target_accounts provided and not already in vault)
     if not target_clip_dirs and (mode == "auto" or url or target_accounts):
         logger.info(f"📥 [PHASE 1] Running Content Ingestion for target: {target_accounts or url or 'auto-pool'} (platform='{platform}')...")
-        ingest_res = run_phase1_ingestion(mode=mode, url=url, limit_per_account=3, target_accounts=target_accounts, platform=platform)
+        effective_scrape_limit = 8
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_auto_scrape_limit
+            effective_scrape_limit = get_user_auto_scrape_limit(str(requestor_chat_id or ""))
+        except Exception:
+            try:
+                effective_scrape_limit = int(os.getenv("AUTO_SCRAPE_LIMIT", "8"))
+            except Exception:
+                effective_scrape_limit = 8
+        ingest_res = run_phase1_ingestion(mode=mode, url=url, limit_per_account=effective_scrape_limit, target_accounts=target_accounts, platform=platform)
         if not ingest_res.get("success") and not input_path:
             logger.warning("⚠️ [MASTER PIPELINE] Ingestion completed with no new clips to process.")
             if requestor_chat_id:
@@ -3112,6 +3131,7 @@ def start_telegram_bot_service():
                         BotCommand("setbranding", "Set your custom brand watermark text"),
                         BotCommand("setgroup", "Set your Telegram Public Group ID"),
                         BotCommand("setschedule", "Set daily scraping schedule times (HH:MM)"),
+                        BotCommand("setautoscraplimit", "Set auto-scrape limit (default: 8, recommended: 6-8)"),
                         BotCommand("instagramtoken", "Set Instagram Access Token"),
                         BotCommand("instagramid", "Set Instagram Business Account ID"),
                         BotCommand("facebookid", "Set Facebook Page ID"),
@@ -3355,6 +3375,32 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
 
+        async def _cmd_setautoscraplimit(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text(
+                    "Usage: `/setautoscraplimit <number>`\n\n"
+                    "*(Recommended: `6–8` to bypass pinned posts, default: `8`, max: `25`)*\n"
+                    "Example: `/setautoscraplimit 8`"
+                )
+                return
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_auto_scrape_limit
+                val = int(args_text.strip())
+                if val <= 0:
+                    val = 8
+                val = min(val, 25)
+                uid = str(update.effective_chat.id)
+                set_user_auto_scrape_limit(uid, val)
+                os.environ["AUTO_SCRAPE_LIMIT"] = str(val)
+                await update.message.reply_text(
+                    f"🔢 **Auto-Scrape Limit updated to:** `{val}` clips per account\n\n"
+                    f"✅ Saved to your profile & synced to GitHub Secrets as `AUTO_SCRAPE_LIMIT`!\n"
+                    f"💡 *(Values 6–8 ensure up to 3 pinned posts are safely bypassed)*"
+                )
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving auto-scrape limit: {_e}")
+
         async def _cmd_myconfig(update, context):
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import format_user_credentials_summary
@@ -3437,6 +3483,8 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setbranding", _cmd_setbranding))
         app.add_handler(CommandHandler("setgroup", _cmd_setgroup))
         app.add_handler(CommandHandler("setschedule", _cmd_setschedule))
+        app.add_handler(CommandHandler("setautoscraplimit", _cmd_setautoscraplimit))
+        app.add_handler(CommandHandler("autoscraplimit", _cmd_setautoscraplimit))
         app.add_handler(CommandHandler("setytclient", _cmd_setytclient))
         app.add_handler(CommandHandler("instagramtoken", _cmd_instagramtoken))
         app.add_handler(CommandHandler("instagramid", _cmd_instagramid))

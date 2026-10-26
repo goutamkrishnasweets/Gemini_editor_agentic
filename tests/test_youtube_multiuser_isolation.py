@@ -209,3 +209,76 @@ def test_process_yt_auth_code_input_creates_isolated_file(tmp_path, monkeypatch)
     assert code_file.exists()
     assert user_file.exists()
     assert user_file.read_text(encoding="utf-8") == "4/0Aean..."
+
+
+def test_auto_scrape_limit_user_isolation(tmp_path, monkeypatch):
+    """Verifies set_user_auto_scrape_limit and get_user_auto_scrape_limit work with user isolation and defaults."""
+    from Telegram_Storage_Modules.telegram_user_manager import (
+        set_user_auto_scrape_limit,
+        get_user_auto_scrape_limit,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.USERS_JSON_PATH", str(tmp_path / "data" / "telegram_users.json"))
+    monkeypatch.setenv("TELEGRAM_ADMIN_ID", "100")
+
+    with patch("Telegram_Storage_Modules.telegram_user_manager.sync_user_secret_to_github") as mock_sync:
+        # Default should be 8 when nothing set
+        assert get_user_auto_scrape_limit("777") == 8
+
+        # Set limit for non-admin user
+        set_user_auto_scrape_limit("777", 6)
+        assert get_user_auto_scrape_limit("777") == 6
+        mock_sync.assert_called_with("777", "AUTO_SCRAPE_LIMIT", "6")
+
+        # Set limit for admin
+        mock_sync.reset_mock()
+        set_user_auto_scrape_limit("100", 10)
+        assert get_user_auto_scrape_limit("100") == 10
+        mock_sync.assert_called_with("100", "AUTO_SCRAPE_LIMIT", "10")
+
+
+def test_apify_aspect_ratio_filter_accepts_4_5_and_4_3(monkeypatch):
+    """Verifies that 4:5 and 4:3 videos are accepted while 16:9 landscape videos are rejected."""
+    from Downloader_Modules.apify_downloader import _stage1_metadata_filter
+
+    # 9:16 vertical reel (1080x1920)
+    reel_9_16 = {"isPinned": False, "isSponsored": False, "dimensionsHeight": 1920, "dimensionsWidth": 1080, "type": "Video", "videoUrl": "http://example.com/v.mp4"}
+    passed, reason = _stage1_metadata_filter(reel_9_16)
+    assert passed is True
+
+    # 4:5 portrait post (1350x1080)
+    reel_4_5 = {"isPinned": False, "isSponsored": False, "dimensionsHeight": 1350, "dimensionsWidth": 1080, "type": "Video", "videoUrl": "http://example.com/v.mp4"}
+    passed, reason = _stage1_metadata_filter(reel_4_5)
+    assert passed is True
+
+    # 4:3 post (1440x1080)
+    reel_4_3 = {"isPinned": False, "isSponsored": False, "dimensionsHeight": 1440, "dimensionsWidth": 1080, "type": "Video", "videoUrl": "http://example.com/v.mp4"}
+    passed, reason = _stage1_metadata_filter(reel_4_3)
+    assert passed is True
+
+    # 16:9 landscape post (1080x1920 transposed -> 1920 width, 1080 height)
+    reel_16_9 = {"isPinned": False, "isSponsored": False, "dimensionsHeight": 1080, "dimensionsWidth": 1920, "type": "Video", "videoUrl": "http://example.com/v.mp4"}
+    passed, reason = _stage1_metadata_filter(reel_16_9)
+    assert passed is False
+    assert "wrong_aspect_ratio" in reason
+
+
+def test_apify_scrape_targets_reels_tab(monkeypatch):
+    """Verifies that source accounts are transformed into Instagram /reels/ URLs."""
+    from Downloader_Modules.apify_downloader import apify_scrape_creator_accounts
+
+    with patch("Downloader_Modules.apify_downloader._get_client") as mock_client:
+        mock_actor = MagicMock()
+        mock_client.return_value.actor.return_value = mock_actor
+        mock_actor.call.return_value = {"defaultDatasetId": "dataset_123"}
+        mock_client.return_value.dataset.return_value.iterate_items.return_value = []
+
+        apify_scrape_creator_accounts("test_creator", ["testcreator", "https://www.instagram.com/anothercreator"], limit_per_account=8)
+
+        call_args = mock_actor.call.call_args[1]["run_input"]
+        direct_urls = call_args["directUrls"]
+        assert "https://www.instagram.com/testcreator/reels/" in direct_urls
+        assert "https://www.instagram.com/anothercreator/reels/" in direct_urls
+        assert call_args["resultsLimit"] == 8  # effective_limit per scrape run
+

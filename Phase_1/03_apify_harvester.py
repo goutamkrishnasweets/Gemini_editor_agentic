@@ -19,7 +19,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def harvest_reels_from_apify(
     target_accounts: List[str],
-    limit_per_account: int = 3,
+    limit_per_account: int = 8,
     bypass_cooldown: bool = False,
     callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
 ) -> List[Dict[str, Any]]:
