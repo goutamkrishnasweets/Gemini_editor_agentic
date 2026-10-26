@@ -49,7 +49,7 @@ _PUBLISH_WORDS = ("publish", "post ", "upload", "broadcast", "share to", "go liv
 def classify_api_error(err: Exception) -> str:
     """
     Classify a Gemini SDK error. Returns one of:
-      auth | signature | quota | server | model_gone | fatal
+      auth | signature | quota | server | model_gone | model_invalid | fatal
     Only 'quota' and 'server' are retried (bounded). Everything else fails fast
     (or recovers once) instead of looping forever.
     """
@@ -68,6 +68,8 @@ def classify_api_error(err: Exception) -> str:
         return "server"
     if any(k in s for k in ("404", "not_found", "not found", "no longer available", "unsupported", "bidigeneratecontent")):
         return "model_gone"
+    if any(k in s for k in ("400", "invalid_argument", "invalid argument", "bad request")):
+        return "model_invalid"
     return "fatal"
 
 
@@ -222,12 +224,15 @@ class AutonomousDirector:
             f"{DIRECTOR_SYSTEM_INSTRUCTION}"
         )
 
+        is_lite = any(w in name_lower for w in ("lite", "nano", "small", "mini"))
+
         kwargs: Dict[str, Any] = dict(
             system_instruction=dynamic_instruction,
             tools=self.tools,
             temperature=0.2,
         )
-        if os.getenv("DIRECTOR_THINKING", "off").lower() != "on":
+        # Thinking config is only valid for full reasoning models (Flash/Pro), Lite/Nano endpoints reject it with 400
+        if not is_lite and os.getenv("DIRECTOR_THINKING", "off").lower() != "on":
             try:
                 kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
             except Exception:
@@ -335,8 +340,15 @@ class AutonomousDirector:
                         continue
 
                     # Route model failure through Governor (the Director NEVER rotates models on its own)
-                    if _HAS_GOVERNOR and gemini_router is not None and kind in ("model_gone", "quota", "server"):
-                        ban_reason = "404" if kind == "model_gone" else ("429" if kind == "quota" else "5xx")
+                    if _HAS_GOVERNOR and gemini_router is not None and kind in ("model_gone", "model_invalid", "quota", "server"):
+                        if kind == "model_invalid":
+                            ban_reason = "400"
+                        elif kind == "model_gone":
+                            ban_reason = "404"
+                        elif kind == "quota":
+                            ban_reason = "429"
+                        else:
+                            ban_reason = "5xx"
                         gemini_router.mark_model_banned(self.model_name, error_type=ban_reason)
 
                         # Request the next best unbanned model dynamically from Governor
@@ -353,8 +365,8 @@ class AutonomousDirector:
                             continue
 
                     # If no alternative model could be provided by Governor, fail cleanly
-                    if kind == "model_gone":
-                        return _fail("model_gone", f"Model '{self.model_name}' is unavailable (all model fallbacks exhausted): {api_err}", turn)
+                    if kind in ("model_gone", "model_invalid"):
+                        return _fail(kind, f"Model '{self.model_name}' is unavailable or rejected parameters (all model fallbacks exhausted): {api_err}", turn)
 
                     # quota / server retry tracking
                     api_attempts += 1

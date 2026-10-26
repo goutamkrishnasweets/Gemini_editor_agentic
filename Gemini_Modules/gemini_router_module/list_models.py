@@ -188,7 +188,8 @@ def _is_valid_generative_model(model_name: str) -> bool:
         "embedding", "embed", "imagen", "image", "preview-image", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
         "computer-use", "live-translate", "thinking", "preview",
-        "audio", "native-audio", "bidi", "realtime", "omni"
+        "audio", "native-audio", "bidi", "realtime", "omni",
+        "banana", "1.5", "canary", "test"
     ]
     for kw in excluded_keywords:
         if kw in name:

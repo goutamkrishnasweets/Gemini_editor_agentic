@@ -954,17 +954,19 @@ class GeminiGovernor:
                 if name in exclude_set:
                     continue
 
-                # 🛡️ 1.5 Filter (Configurable: skipped only if GEMINI_BLOCK_1_5 is explicitly True)
-                if os.getenv("GEMINI_BLOCK_1_5", "0").lower() in ("1", "true", "yes") and "1.5" in name:
+                # 🛡️ 1.5 Filter (Blocked by default unless GEMINI_ALLOW_1_5 is explicitly set)
+                block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "1").lower() in ("1", "true", "yes") or os.getenv("GEMINI_ALLOW_1_5", "0").lower() not in ("1", "true", "yes")
+                if block_1_5 and "1.5" in name:
                     continue
 
                 name_lower = name.lower()
-                # Skip specialized non-generative or experimental preview endpoints
+                # Skip specialized non-generative, canary, or experimental preview endpoints
                 if any(kw in name_lower for kw in (
                     "embedding", "embed", "imagen", "image", "preview-image", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
                     "robotics", "computer-use", "live-translate", "thinking",
-                    "audio", "native-audio", "bidi", "realtime", "omni"
+                    "audio", "native-audio", "bidi", "realtime", "omni",
+                    "banana", "canary", "test"
                 )):
                     continue
 
@@ -1144,12 +1146,13 @@ class GeminiGovernor:
         with self.state_lock:
             boosts = getattr(self, "TASK_MODEL_RATINGS", {})
             task_boost = boosts.get(task_type, {})
-            block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "0").lower() in ("1", "true", "yes")
+            block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "1").lower() in ("1", "true", "yes") or os.getenv("GEMINI_ALLOW_1_5", "0").lower() not in ("1", "true", "yes")
             non_gen_kws = (
                 "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                 "text-001", "tts", "preview-tts", "customtools", "transcribe",
-                "robotics", "computer-use", "live-translate", "3.", "3-", "thinking",
-                "audio", "native-audio", "bidi", "realtime"
+                "robotics", "computer-use", "live-translate", "thinking",
+                "audio", "native-audio", "bidi", "realtime",
+                "banana", "canary", "test"
             )
 
             valid_models = []
