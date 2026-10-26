@@ -77,6 +77,8 @@ class AudioPoolManager:
       - active/: Eligible for selection.
       - cooldown/: Temporarily ineligible clips (recently used).
     """
+    _last_vault_sync_time: float = 0.0
+    _VAULT_SYNC_DEBOUNCE_SEC: float = 20.0
 
     def __init__(self, base_dir: Optional[str] = None):
         if base_dir is None or base_dir == "Original_audio":
@@ -489,7 +491,7 @@ class AudioPoolManager:
 
         return updated_count
 
-    def _save_metadata(self, sync_to_vault: bool = True):
+    def _save_metadata(self, sync_to_vault: bool = True, force_vault_sync: bool = False):
         """Saves metadata atomically with file locking and syncs to Telegram Storage Group."""
         with self.lock:
             temp_path = self.meta_path + ".tmp"
@@ -509,16 +511,24 @@ class AudioPoolManager:
                 _safe_replace(temp_path, self.meta_path)
 
                 if sync_to_vault:
-                    self._sync_to_telegram_vault()
+                    self._sync_to_telegram_vault(force=force_vault_sync)
             except Exception as e:
                 logger.error(f"❌ Failed to save audio pool metadata: {e}")
                 if os.path.exists(temp_path):
                     try: os.remove(temp_path)
                     except: pass
 
-    def _sync_to_telegram_vault(self):
-        """Uploads pool_metadata.json to Telegram Storage Group via telegram_http.py and updates pinned master_vault_index.json."""
+    def _sync_to_telegram_vault(self, force: bool = False):
+        """Uploads pool_metadata.json to Telegram Storage Group via telegram_http.py and updates pinned master_vault_index.json (debounced)."""
         try:
+            now = time.time()
+            if not force and (now - AudioPoolManager._last_vault_sync_time) < self._VAULT_SYNC_DEBOUNCE_SEC:
+                logger.debug(
+                    "[AudioPoolManager] Skipping vault sync due to debounce (%.1fs < %.0fs limit)",
+                    now - AudioPoolManager._last_vault_sync_time, self._VAULT_SYNC_DEBOUNCE_SEC
+                )
+                return
+
             if not os.path.exists(self.meta_path):
                 return
 
@@ -532,11 +542,12 @@ class AudioPoolManager:
             if res:
                 doc_id = extract_file_id(res)
                 if doc_id:
+                    AudioPoolManager._last_vault_sync_time = now
                     indexer = TelegramVaultIndexer()
                     indexer.vault_index["pool_metadata_file_id"] = doc_id
                     indexer.vault_index["metadata_pool_file_id"] = doc_id
                     indexer._save_local_index()
-                    indexer.upload_and_pin_vault_index_sync()
+                    indexer.upload_and_pin_vault_index_sync(force=force)
                     logger.info("✅ [POOL METADATA VAULT BACKUP] Uploaded & PINNED pool_metadata.json to Telegram Storage Group (file_id: %s)", doc_id[:15])
         except Exception as _e:
             logger.warning("⚠️ Notice triggering pool metadata sync: %s", _e)

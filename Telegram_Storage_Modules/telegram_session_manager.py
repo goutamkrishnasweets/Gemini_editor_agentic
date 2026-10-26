@@ -22,12 +22,19 @@ class TelegramSessionManager:
     """
     Manages persistent Telegram approval sessions and title capture states.
     """
+    _last_vault_sync_time: float = 0.0
+    _VAULT_SYNC_DEBOUNCE_SEC: float = 20.0
 
     def __init__(self, sessions_file: str = SESSIONS_FILE):
         self.sessions_file = sessions_file
-        self._last_vault_sync_time = 0.0
+        self._last_disk_mtime: float = 0.0
         os.makedirs(os.path.dirname(self.sessions_file), exist_ok=True)
         self.sessions: Dict[str, Dict[str, Any]] = self._load_sessions()
+        if os.path.exists(self.sessions_file):
+            try:
+                self._last_disk_mtime = os.path.getmtime(self.sessions_file)
+            except Exception:
+                pass
 
     def _load_sessions(self) -> Dict[str, Dict[str, Any]]:
         if os.path.exists(self.sessions_file):
@@ -38,15 +45,41 @@ class TelegramSessionManager:
                 logger.warning(f"⚠️ Could not load telegram sessions file: {e}")
         return {}
 
-    def _save_sessions(self):
+    def _refresh_from_disk(self):
+        """Refreshes internal session state from disk if modified by another instance or thread."""
+        if os.path.exists(self.sessions_file):
+            try:
+                mtime = os.path.getmtime(self.sessions_file)
+                if mtime > self._last_disk_mtime:
+                    disk_sessions = self._load_sessions()
+                    for sid, sdata in disk_sessions.items():
+                        if sid not in self.sessions:
+                            self.sessions[sid] = sdata
+                        else:
+                            cur = self.sessions[sid]
+                            if sdata.get("updated_at", 0) >= cur.get("updated_at", 0):
+                                for k, v in sdata.items():
+                                    if v is not None or cur.get(k) is None:
+                                        cur[k] = v
+                    self._last_disk_mtime = mtime
+            except Exception as e:
+                logger.debug("Notice refreshing sessions from disk: %s", e)
+
+    def _save_sessions(self, force_vault_sync: bool = False):
         try:
+            self._refresh_from_disk()
             with open(self.sessions_file, "w", encoding="utf-8") as f:
                 json.dump(self.sessions, f, indent=2, ensure_ascii=False)
+            if os.path.exists(self.sessions_file):
+                try:
+                    self._last_disk_mtime = os.path.getmtime(self.sessions_file)
+                except Exception:
+                    pass
             
-            # Automatic sync to Telegram Storage Group Vault (debounced: max once per 15s to prevent pin flood 429)
+            # Automatic sync to Telegram Storage Group Vault (debounced: max once per 20s to prevent pin flood 429)
             try:
                 now = time.time()
-                if (now - self._last_vault_sync_time) >= 15.0:
+                if force_vault_sync or (now - TelegramSessionManager._last_vault_sync_time) >= self._VAULT_SYNC_DEBOUNCE_SEC:
                     from Telegram_Storage_Modules.telegram_user_manager import _upload_file_to_telegram_storage
                     from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
                     storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
@@ -54,11 +87,11 @@ class TelegramSessionManager:
                         caption = f"📝 **[VAULT BACKUP]** `telegram_sessions.json` (Updated {time.strftime('%H:%M:%S')})"
                         ts_doc_id = _upload_file_to_telegram_storage(self.sessions_file, caption=caption)
                         if ts_doc_id:
-                            self._last_vault_sync_time = now
+                            TelegramSessionManager._last_vault_sync_time = now
                             indexer = TelegramVaultIndexer()
                             indexer.vault_index["telegram_sessions_file_id"] = ts_doc_id
                             indexer._save_local_index()
-                            indexer.upload_and_pin_vault_index_sync()
+                            indexer.upload_and_pin_vault_index_sync(force=force_vault_sync)
                             logger.info("✅ [SESSION VAULT BACKUP] Uploaded & PINNED updated telegram_sessions.json to Storage Group (file_id: %s)", ts_doc_id[:15])
             except Exception as _ts_err:
                 logger.debug("Notice uploading telegram_sessions.json to vault: %s", _ts_err)
@@ -301,6 +334,7 @@ class TelegramSessionManager:
         """Retrieves session by session_id, or by matching clip_id (most recent active session first)."""
         if not session_id_or_clip_id:
             return None
+        self._refresh_from_disk()
         sid = str(session_id_or_clip_id).strip()
         if sid in self.sessions:
             return self.sessions[sid]

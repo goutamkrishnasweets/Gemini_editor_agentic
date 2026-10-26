@@ -41,6 +41,10 @@ MASTER_INDEX_FILE = os.path.join(DATA_DIR, "master_vault_index.json")
 # Cooldown guard: prevents duplicate vault hydration within 60 seconds
 _LAST_HYDRATION_TIMESTAMP = 0.0
 
+# Pin rate limit guard: prevents Telegram 429 Too Many Requests on pinChatMessage
+_LAST_VAULT_PIN_TIMESTAMP = 0.0
+_MIN_VAULT_PIN_INTERVAL_SEC = 15.0
+
 
 def _empty_vault_index() -> Dict[str, Any]:
     return {
@@ -677,10 +681,19 @@ class TelegramVaultIndexer:
 
         return pool
 
-    def upload_and_pin_vault_index_sync(self, upload_fn=None):
-        """Uploads master_vault_index.json to TELEGRAM_STORAGE_GROUP_ID and pins it."""
+    def upload_and_pin_vault_index_sync(self, upload_fn=None, force: bool = False):
+        """Uploads master_vault_index.json to TELEGRAM_STORAGE_GROUP_ID and pins it (debounced)."""
+        global _LAST_VAULT_PIN_TIMESTAMP
         storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         if not storage_group_id or not os.path.exists(self.index_file):
+            return
+
+        now = time.time()
+        if not force and (now - _LAST_VAULT_PIN_TIMESTAMP) < _MIN_VAULT_PIN_INTERVAL_SEC:
+            logger.debug(
+                "⏳ [VAULT PIN DEBOUNCE] Skipping master_vault_index pin (last pinned %.1fs ago < %.0fs limit).",
+                now - _LAST_VAULT_PIN_TIMESTAMP, _MIN_VAULT_PIN_INTERVAL_SEC
+            )
             return
 
         try:
@@ -697,12 +710,17 @@ class TelegramVaultIndexer:
                 if msg_id:
                     self.vault_index["pinned_message_id"] = msg_id
                     self._save_local_index()
+                    pin_ok = False
                     try:
                         from Telegram_Storage_Modules.telegram_http import pin_message
-                        pin_message(message_id=int(msg_id), chat_id=str(storage_group_id))
+                        pin_ok = pin_message(message_id=int(msg_id), chat_id=str(storage_group_id))
                     except Exception as _p_call_err:
                         logger.warning("Notice on pinChatMessage call: %s", _p_call_err)
-                    logger.info("📌 [VAULT PIN SUCCESS] Uploaded & PINNED master_vault_index.json in Storage Group (Message ID: %s)", msg_id)
+                    if pin_ok:
+                        _LAST_VAULT_PIN_TIMESTAMP = time.time()
+                        logger.info("📌 [VAULT PIN SUCCESS] Uploaded & PINNED master_vault_index.json in Storage Group (Message ID: %s)", msg_id)
+                    else:
+                        logger.warning("⚠️ [VAULT PIN NOTICE] Uploaded master_vault_index.json (Message ID: %s) but pinChatMessage did not confirm.", msg_id)
         except Exception as _pin_err:
             logger.warning("⚠️ Vault index upload/pin notice: %s", _pin_err)
 
@@ -2434,12 +2452,17 @@ class TelegramVaultIndexer:
                     if msg_id:
                         self.vault_index["pinned_message_id"] = msg_id
                         self._save_local_index()
+                        pin_ok = False
                         try:
                             from Telegram_Storage_Modules.telegram_http import pin_message
-                            pin_message(message_id=int(msg_id), chat_id=str(storage_group_id))
+                            pin_ok = pin_message(message_id=int(msg_id), chat_id=str(storage_group_id))
                         except Exception as _p_err:
                             logger.warning("Notice on purge pinChatMessage call: %s", _p_err)
-                        logger.info("📌 [VAULT PURGE PIN SUCCESS] Uploaded & PINNED updated master_vault_index.json")
+                        if pin_ok:
+                            _LAST_VAULT_PIN_TIMESTAMP = time.time()
+                            logger.info("📌 [VAULT PURGE PIN SUCCESS] Uploaded & PINNED updated master_vault_index.json")
+                        else:
+                            logger.warning("⚠️ [VAULT PURGE PIN NOTICE] Uploaded updated master_vault_index.json but pinChatMessage was not confirmed.")
         except Exception as _sync_e:
             logger.warning(f"⚠️ Vault purge sync notice: {_sync_e}")
 

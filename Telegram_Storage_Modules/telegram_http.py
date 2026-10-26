@@ -11,6 +11,7 @@ Supports Pyrogram MTProto fallback for files > 20MB (up to 2GB).
 
 import os
 import json
+import time
 import uuid
 import logging
 import asyncio
@@ -694,8 +695,8 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
 
 # ── PIN / CHAT ─────────────────────────────────────────────────────────────────
 
-def pin_message(message_id: int, chat_id: Optional[str] = None) -> bool:
-    """Pins a message in the storage group. Returns True on success."""
+def pin_message(message_id: int, chat_id: Optional[str] = None, max_retries: int = 3) -> bool:
+    """Pins a message in the storage group. Returns True on success, with 429 retry backoff."""
     chat_id = chat_id or _group_id()
     body = json.dumps({"chat_id": chat_id, "message_id": message_id, "disable_notification": True}).encode()
     req = urllib.request.Request(
@@ -703,12 +704,36 @@ def pin_message(message_id: int, chat_id: Optional[str] = None) -> bool:
         data=body,
         headers={"Content-Type": "application/json", "User-Agent": "AMTCE-Vault/2.0"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode()).get("ok", False)
-    except Exception as e:
-        logger.warning("[telegram_http] pinChatMessage failed: %s", e)
-        return False
+    for attempt in range(1, max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                return bool(data.get("ok", False))
+        except urllib.error.HTTPError as he:
+            if he.code == 429:
+                retry_after = 5.0
+                try:
+                    err_data = json.loads(he.read().decode())
+                    retry_after = float(err_data.get("parameters", {}).get("retry_after", 5.0))
+                except Exception:
+                    pass
+                if attempt < max_retries:
+                    wait_time = min(retry_after + 0.5, 20.0)
+                    logger.warning(
+                        "[telegram_http] HTTP 429 Rate Limit for pinChatMessage (msg_id=%s). Sleeping %.1fs before retry (attempt %d/%d)...",
+                        message_id, wait_time, attempt, max_retries
+                    )
+                    time.sleep(wait_time)
+                    continue
+            logger.warning("[telegram_http] pinChatMessage failed: %s", he)
+            return False
+        except Exception as e:
+            if attempt < max_retries:
+                time.sleep(1.0 * attempt)
+                continue
+            logger.warning("[telegram_http] pinChatMessage failed: %s", e)
+            return False
+    return False
 
 
 def get_pinned_message(chat_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
