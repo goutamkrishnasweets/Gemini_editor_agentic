@@ -82,50 +82,56 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "title_max": 70,
         "title_suffix": "#Shorts",
         "description_max": 5000,
-        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 15,
+        "hashtags_min": 3, "hashtags_max": 15, "hashtags_total_max": 15,
         "disclosure": "(Disclosure: #ad #affiliate — qualifying purchases earn commission)",
         "links_label": "🛍️ FEATURED PRODUCTS / LINKS:",
         "cta_re": r"(comment|below|drop|which|would you|thoughts|your (?:take|pick|opinion)|\?|👇)",
         "rules": [
             "Title: front-load the highest-intent search query for this product/topic (comparison, "
             "'best X', honest review, unboxing/setup, specific problem it solves). Price words ONLY if a price is in EVIDENCE.",
-            "Description lines 1-2 are the search snippet: plain-language summary using the primary + secondary keywords naturally.",
+            "Description lines 1-2 are the search snippet: plain-language summary using primary + secondary keywords naturally.",
+            "Include a structured gap with '🔍 Search Keywords:' containing 5-10 comma- or pipe-separated search queries derived from EVIDENCE.",
             "Then (only if product slots exist) the links block: the label, then one slot per line.",
             "Then the disclosure line exactly as given.",
             "Last line: ONE question that invites a comment (comment velocity ranks).",
+            "Hashtags: LLM decides optimal count up to 15 relevant niche & intent tags strictly derived from EVIDENCE.",
         ],
     },
     "instagram": {
-        "label": "Instagram Reels (above-the-fold hook + semantic caption indexing)",
-        "title_max": 80,
+        "label": "Instagram Reels (above-the-fold hook + semantic caption indexing + structured gaps)",
+        "title_max": 100,
         "description_max": 2200,
         "hook_visible_chars": 125,
-        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 5,
+        "hashtags_min": 5, "hashtags_max": 30, "hashtags_total_max": 30,
         "disclosure": "(#ad)",
         "links_label": "🔗 FEATURED ITEM / SHOP LINK:",
-        "cta_re": r"(save|share|send)",
+        "cta_re": r"(save|share|send|comment|rate|thoughts|👇|\?)",
         "rules": [
-            "Title = the hook: a sharp curiosity gap, no keyword soup.",
-            "Caption line 1 must work ALONE: only ~125 characters show before '… more'.",
-            "The caption is indexed as search text: use the primary keyword and natural variants in plain language, once or twice.",
-            "Then (only if product slots exist) the links block, then the disclosure line exactly as given. "
-            "Never write #affiliate on Instagram: the hashtag cap counts EVERY # in caption + comments and #ad already uses one.",
+            "Title = the hook: a sharp curiosity gap, pattern interrupt or tension. No corporate or robotic summary.",
+            "Caption line 1 must work ALONE: only ~125 characters show before '… more'. Make it a scroll-stopping hook.",
+            "Use clean structured gaps (blank line between each block) for mobile readability and visual scannability.",
+            "Second block: punchy context + debate/rating question to trigger comments (comment velocity drives explore distribution).",
+            "Third block: include '🔍 Search Keywords:' with 8-15 high-intent search queries separated by ' | ' derived directly from the input process (transcript, detected entities, visual context, source caption).",
+            "Then (only if product slots exist) the links block, then the disclosure line exactly as given.",
             "End with a save/share trigger.",
-            "Hashtags: niche/topic/community tags only. Total # in caption + hashtag list must fit the cap above.",
+            "Hashtags: No artificial cap below platform capacity (up to 30). LLM decides optimal volume and density. "
+            "Must be semantically connected to EVIDENCE (hero entity, niche community, style/action, long-tail intent).",
         ],
     },
     "facebook": {
         "label": "Facebook Reels (comment velocity + social graph)",
         "title_max": 255,
         "description_max": 63206,
-        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 10,
+        "hashtags_min": 3, "hashtags_max": 20, "hashtags_total_max": 25,
         "disclosure": "(#ad #affiliate)",
         "links_label": "🛍️ Featured Items:",
         "cta_re": r"(which|would you|comment|below|thoughts|vote|👇|\?)",
         "rules": [
             "Title: conversational, specific, no clickbait the video doesn't pay off.",
             "Description: a relatable binary-choice or opinion prompt that makes people argue in comments; keep it under ~600 chars.",
+            "Structured spacing between hook, context, and links.",
             "Then (only if product slots exist) the links block and the disclosure line exactly as given.",
+            "Hashtags: LLM decides optimal count (up to 20) derived from EVIDENCE.",
         ],
     },
     "telegram": {
@@ -133,13 +139,14 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "title_max": 255,
         "description_max": 1000,   # bot video captions cap at 1024; keep a margin
         "soft_text_max": 300,      # text length EXCLUDING URLs
-        "hashtags_min": 1, "hashtags_max": 3, "hashtags_total_max": 10,
+        "hashtags_min": 1, "hashtags_max": 10, "hashtags_total_max": 15,
         "disclosure": "(#ad #affiliate)",
         "links_label": "",
         "cta_re": None,
         "rules": [
             "Format: one bold headline line (🔥 **Title**), ONE punchy takeaway/verdict sentence, product slots one per line, "
             "disclosure line exactly as given. Zero filler.",
+            "Hashtags: 1-10 relevant niche tags.",
         ],
     },
 }
@@ -589,9 +596,10 @@ def build_evidence(
 # ══════════════════════════════════════════════════════════════════════════════
 
 _RULES = """\
-GROUNDING
-- Use ONLY facts present in EVIDENCE. Never invent prices, ratings, specs, discounts, test results, or personal experience
-  ("I tested this", "after 30 days"). If a claim or number is not in EVIDENCE, leave it out.
+GROUNDING & DATA EXTRACTION
+- Extract all keywords, entities, and context directly from the data collected in the input process:
+  EVIDENCE (transcript, detected entities, visual intel, source caption, source hashtags, editing vibe, audio vibe).
+- Use ONLY facts present in EVIDENCE. Never invent prices, ratings, specs, discounts, test results, or personal experience.
 - subject.confidence says how sure the heuristic was. If transcript/caption/entities contradict subject.value, trust them
   and put the corrected subject in analysis.subject_override.
 - creator_handle and tagged_users are context only. Never print handles, @mentions or raw IDs.
@@ -599,27 +607,44 @@ GROUNDING
 - If previous_attempt exists, do not reuse its titles verbatim; keep its keywords unless EVIDENCE contradicts them.
 LANGUAGE
 - Write in the language/register of the user title, caption and transcript (English, Hinglish, Malayalam, ...).
-  Keep search keywords in the form people actually type.
-STYLE
-- No motivational/corporate filler ("elevate your perspective", "radiate confidence", "true confidence comes from ...").
-- Short lines, a blank line between blocks, emoji only as bullets/markers. Mobile-scannable. No walls of text.
+  Keep search keywords in the form people actually type into platform search bars.
+STYLE & STRUCTURED GAPS
+- No motivational/corporate filler ("elevate your perspective", "radiate confidence", "this reel showcases...").
+- Mobile-scannable layout with STRUCTURED GAPS: exactly one blank line (`\\n\\n`) between distinct blocks:
+  1. Hook / Pattern Interrupt (≤ 125 chars)
+  2. Context & engagement/debate question (drives comments)
+  3. Search Keywords block ('🔍 Search Keywords: [query1] | [query2] | ...') for algorithmic search indexing
+  4. Product Links & Disclosure (only if product slots exist in EVIDENCE)
+  5. Hashtags block
 - Never write "link in bio", "in my bio", "check bio". Links are inline.
+KEYWORDS & SEARCH INDEXING
+- Derive high-intent search queries from the input process (transcript words, detected entities, visual context, source caption).
+- Provide these in the 'keywords' array for each platform AND embed them as a clean search block inside the description.
+HASHTAGS (LLM-OPTIMIZED DENSITY)
+- There is NO low artificial maximum: you (the LLM) decide the optimal hashtag volume and density up to the platform ceiling
+  (up to 30 for Instagram, up to 15 for YouTube, up to 20 for Facebook).
+- Every single hashtag must be SEMANTICALLY CONNECTED to the actual content in EVIDENCE:
+  * Primary Entity / Subject (e.g. #DishaPatani)
+  * Niche Community (e.g. #BollywoodDance)
+  * Style, Technique or Action from visual/audio context (e.g. #Choreography, #DanceReels, #Footwork)
+  * Long-tail search intent (e.g. #DanceTutorial, #DanceInspo)
+- Never use spammy generic tags (#viral #trending #reels #fyp #foryou #explore).
 LINKS
 - Product slots like [[AFF_LINK_1]] must be copied verbatim, one per line, never altered, never placed in a title,
   and you must never invent a URL. No product_links in EVIDENCE => no links block, no disclosure line.
-HASHTAGS
-- Only tags that describe THIS video's niche/topic. Never #viral #trending #reels #fyp #foryou #explore.
 """
 
 _GENERATE_TEMPLATE = """\
-You are an elite short-form SEO strategist. Write platform-native titles, captions and hashtags for ONE video,
-grounded strictly in EVIDENCE. Adapt vocabulary and search intent to whatever the product/niche actually is.
+You are an elite short-form SEO strategist. Write platform-native titles, captions, keywords, and hashtags for ONE video,
+grounded strictly in the EVIDENCE collected from the input process. Adapt vocabulary and search intent to whatever the subject/niche actually is.
 
 WORK IN THIS ORDER (silently; output only the JSON):
-1. ANALYZE the evidence: the one query this video should rank for, supporting keywords found in the transcript/caption/entities,
-   search intent, audience, and the single curiosity/tension the video resolves.
-2. For EACH platform write 3 title candidates using different hook types (question / contrast / outcome / specific-detail-from-evidence),
-   choose the one that best serves THAT platform's goal, then write its description and hashtags.
+1. ANALYZE the evidence: extract primary search query, secondary keywords, 8-15 long-tail search queries from transcript/caption/entities,
+   search intent, target audience, and the scroll-stopping curiosity hook.
+2. For EACH platform:
+   - Write 3 title candidates (different hook angles: question / contrast / outcome / specific detail from evidence).
+   - Write a structured description with clear visual gaps (\\n\\n) containing: Hook line, engagement trigger, '🔍 Search Keywords:' block, and product links (if any).
+   - Generate a rich, semantically connected hashtag stack (up to platform ceiling) where you decide the optimal count.
 
 __RULES__
 PLATFORM BRIEFS
@@ -633,13 +658,20 @@ Return ONLY this JSON (no prose, no code fences). Include only these platforms: 
   "analysis": {
     "primary_keyword": "",
     "secondary_keywords": [],
+    "search_queries": [],
     "search_intent": "review|comparison|how-to|deal|discovery|entertainment",
     "audience": "",
     "hook_angle": "",
     "subject_override": ""
   },
   "platforms": {
-    "<platform>": {"title": "", "title_alternates": ["", ""], "description": "", "hashtags": ["#tag"]}
+    "<platform>": {
+      "title": "",
+      "title_alternates": ["", ""],
+      "description": "",
+      "keywords": ["query 1", "query 2"],
+      "hashtags": ["#tag1", "#tag2"]
+    }
   },
   "content_category": "",
   "target_audience": ""
@@ -653,7 +685,7 @@ For EACH platform in CURRENT_DRAFT:
 1. Score 0-10 on: __CRITERIA__.
 2. List up to 3 concrete weaknesses (quote the offending text).
 3. If any score is below 8 or LINT_ISSUES is non-empty for that platform, return "revised": a COMPLETE replacement
-   {title, title_alternates, description, hashtags} that fixes them. Otherwise "revised": null.
+   {title, title_alternates, description, keywords, hashtags} that fixes them. Otherwise "revised": null.
 Do not lengthen anything for its own sake. Do not add claims absent from EVIDENCE. Keep [[AFF_LINK_n]] slots verbatim.
 Lint 'hard' issues are mandatory fixes; 'soft' issues are strong suggestions.
 
@@ -697,7 +729,7 @@ def _render_brief(platform: str) -> str:
     if s.get("soft_text_max"):
         d += f"; text excluding URLs ≤ {s['soft_text_max']}"
     lines.append(d)
-    lines.append(f"- Hashtags: {s['hashtags_min']}-{s['hashtags_max']} tags; total # across caption + list ≤ {s['hashtags_total_max']}")
+    lines.append(f"- Hashtags: optimal count up to {s['hashtags_max']} tags (platform ceiling ≤ {s['hashtags_total_max']}); you decide the optimal density based on evidence depth")
     lines.append(f"- If product slots exist, include this exact disclosure line: {s['disclosure']}")
     lines.extend(f"- {r}" for r in s["rules"])
     return "\n".join(lines)
@@ -1063,9 +1095,14 @@ def _finalize_platform(
 
     content = {"title": title, "description": desc, "hashtags": tags}
     score, issues = lint_platform(platform, content, links, primary_keyword)
+    kws = raw.get("keywords") or []
+    if not isinstance(kws, list):
+        kws = [str(kws)]
+    kws = [strip_system_and_tracking_tokens(str(k)) for k in kws if str(k).strip()]
     return {
         **content,
         "title_alternates": alts,
+        "keywords": kws,
         "seo_score": score,
         "keyword_density": _keyword_density(desc, primary_keyword),
         "lint_issues": issues,
@@ -1101,16 +1138,43 @@ def _heuristic_draft(evidence: Dict[str, Any], platforms: List[str]) -> Dict[str
     else:
         base = subj
 
+    # Extract semantic search queries directly from input process data
+    search_kws = [k for k in [subj] + ctx[:5] + (evidence.get("detected_entities") or [])[:5] if k and len(k) > 2]
+    search_kws = list(dict.fromkeys(search_kws))
+    kw_block = f"\n\n🔍 Search Keywords:\n{' | '.join(search_kws)}" if search_kws else ""
+
     tags = _backfill_tags({}, evidence) + [_to_tag(c) for c in ctx]
+    for ent in (evidence.get("detected_entities") or [])[:6]:
+        ent_tag = _to_tag(ent)
+        if ent_tag and ent_tag not in tags:
+            tags.append(ent_tag)
     tags = [t for t in dict.fromkeys(tags) if t]
+
     return {
-        "youtube": {"title": base, "hashtags": tags,
-                    "description": f"{base}\n\n💬 What's your take? Tell us in the comments 👇"},
-        "instagram": {"title": base, "hashtags": tags,
-                      "description": f"{base}\n\n💾 Save this for later & share it with a friend!"},
-        "facebook": {"title": base, "hashtags": tags,
-                     "description": f"{base}\n\nWould you pick this? Tell us below 👇"},
-        "telegram": {"title": base, "hashtags": tags, "description": f"🔥 **{base}**"},
+        "youtube": {
+            "title": base,
+            "hashtags": tags,
+            "keywords": search_kws,
+            "description": f"{base}\n\n💬 What's your take? Tell us in the comments 👇{kw_block}"
+        },
+        "instagram": {
+            "title": base,
+            "hashtags": tags,
+            "keywords": search_kws,
+            "description": f"{base}\n\nRate this 1-10 in the comments 👇\n\n💾 Save this for later & share with a friend!{kw_block}"
+        },
+        "facebook": {
+            "title": base,
+            "hashtags": tags,
+            "keywords": search_kws,
+            "description": f"{base}\n\nWould you pick this? Tell us below 👇{kw_block}"
+        },
+        "telegram": {
+            "title": base,
+            "hashtags": tags,
+            "keywords": search_kws,
+            "description": f"🔥 **{base}**{kw_block}"
+        },
     }
 
 
@@ -1358,7 +1422,9 @@ def format_for_telegram_preview(seo_data: Dict[str, Any]) -> str:
         hard = [i for i in data.get("lint_issues", []) if i.get("severity") == "hard"]
         if hard:
             lines.append(f"⚠️ {len(hard)} unresolved hard issue(s): {_md_escape(hard[0].get('message', ''))}")
-        lines.append(f"🏷️ Hashtags: {_md_escape(' '.join(data.get('hashtags', [])[:5]))}")
+        if data.get("keywords"):
+            lines.append(f"🔍 Keywords: {_md_escape(' | '.join(data.get('keywords', [])[:8]))}")
+        lines.append(f"🏷️ Hashtags: {_md_escape(' '.join(data.get('hashtags', [])[:15]))}")
         desc = data.get("description")
         if desc:
             preview = desc[:100] + "..." if len(desc) > 100 else desc

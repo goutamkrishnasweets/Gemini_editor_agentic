@@ -458,7 +458,7 @@ def tool_reedit_session(
             is_inpaint = bool(
                 edit_directive and any(
                     kw in edit_directive.lower()
-                    for kw in ["inpaint", "inapint", "watermark", "clean", "logo", "remove", "erase", "filmygyan", "flimygyan"]
+                    for kw in ["inpaint", "inapint", "watermark", "clean", "logo", "remove", "erase", "delogo"]
                 )
             )
 

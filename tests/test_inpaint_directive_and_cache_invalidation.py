@@ -38,9 +38,9 @@ def test_is_inpaint_directive_typo_resilience():
         "remove watermark",
         "clean the watermrk",
         "erase logo",
-        "flimygyan",
-        "filmygyan",
-        "viralbhayani",
+        "logo still visible in bottom right",
+        "inpaint not in correct position",
+        "missed the corner logo",
         "viral bhayani logo",
         "voompla watermark",
     ]
@@ -61,10 +61,10 @@ def test_is_inpaint_directive_typo_resilience():
 
 
 def test_extract_watermark_keywords():
-    assert extract_watermark_keywords("Inapint flimygyan") == "filmygyan"
+    assert extract_watermark_keywords("Inapint custombrand") == "custombrand"
     assert extract_watermark_keywords("inpaint filmygyan") == "filmygyan"
     assert extract_watermark_keywords("remove viralbhayani logo") == "viralbhayani"
-    assert extract_watermark_keywords("flimygyan") == "filmygyan"
+    assert extract_watermark_keywords("custom_channel_name") == "custom_channel_name"
     
     # Generic directives return fallback
     generic = extract_watermark_keywords("remove watermark")

@@ -3,7 +3,7 @@ Watermark and Inpainting Directive Helper
 =========================================
 Robust parsing and keyword extraction for human re-edit directives.
 Provides typo-tolerant detection for watermark removal/inpainting requests
-and extracts target watermark handles/branding (e.g. 'filmygyan', 'viralbhayani').
+and extracts target watermark handles/branding dynamically without hardcoded brands.
 """
 
 import re
@@ -20,23 +20,19 @@ INPAINT_ACTION_PATTERNS = [
     r"\b(?:remov(?:e|al|ed|ing))\b",            # remove, removal, removed, removing
 ]
 
-# Known paparazzi / media agency watermark handles
-KNOWN_WATERMARK_BRANDS = [
-    r"\b(?:f[li]{1,2}m[yi]gyan)\b",             # filmygyan, flimygyan, filmigyan, flimigyan
-    r"\b(?:viral\s*bhayani)\b",                 # viralbhayani, viral bhayani
-    r"\b(?:voompla)\b",
-    r"\b(?:manav\.?\s*manglani)\b",
-    r"\b(?:instant\s*bollywood)\b",
-    r"\b(?:yogen\s*shah)\b",
-    r"\b(?:pinkvilla)\b",
-    r"\b(?:bollywood\s*(?:hungama|bubble|life)?)\b",
-    r"\b(?:paparazzi)\b",
-    r"\b(?:getty\s*(?:images)?)\b",
-    r"\b(?:shutterstock)\b",
-]
+# ── Failure Feedback Detection Signals ────────────────────────────────────────
+# Centralized here so any module (hybrid_watermark, gemini_enhance_for_watermark, etc.)
+# can import this without duplicating the regex.
+_FEEDBACK_SIGNALS_RE = re.compile(
+    r"\b(?:missed|still|left|right|top|bottom|corner|position|2\s+watermark|two\s+watermark|"
+    r"second\s+watermark|different\s+logo|not\s+removed|not\s+in\s+correct|wrong\s+spot|"
+    r"wrong\s+position|inpaint(?:ing)?|blur(?:red)?|failed|attempt|retry|didn'?t\s+work|"
+    r"still\s+there|visible|partially|incomplete)\b",
+    re.IGNORECASE
+)
 
 _COMBINED_INPAINT_RE = re.compile(
-    "|".join(INPAINT_ACTION_PATTERNS + KNOWN_WATERMARK_BRANDS),
+    "|".join(INPAINT_ACTION_PATTERNS),
     re.IGNORECASE
 )
 
@@ -51,36 +47,46 @@ _STRIP_ACTION_WORDS_RE = re.compile(
 def is_inpaint_directive(directive: Optional[str]) -> bool:
     """
     Returns True if the directive requests watermark removal, delogo, inpainting,
-    or mentions a known media/watermark brand. Typo-tolerant.
+    or contains retry failure feedback signals. Typo-tolerant.
     """
     if not directive or not isinstance(directive, str):
         return False
-    return bool(_COMBINED_INPAINT_RE.search(directive))
+    return bool(_COMBINED_INPAINT_RE.search(directive) or _FEEDBACK_SIGNALS_RE.search(directive))
 
 
 def extract_watermark_keywords(directive: Optional[str]) -> str:
     """
-    Extracts the specific watermark handle/branding from the directive.
-    Strips out generic command words ("inpaint", "remove", "please") and
-    canonicalizes known handles (e.g. 'flimygyan' -> 'filmygyan').
+    Extracts target branding, handle, or hint text from the directive by stripping
+    out generic command words ("inpaint", "remove", "please").
     Returns a cleaned keyword string suitable for forensic perception prompts.
     """
     if not directive or not isinstance(directive, str):
         return "watermark logo branding"
 
-    # Check for known brand canonicalization first
+    # Strip generic action words and return the brand/handle as-is.
+    # Gemini's semantic vision handles typos natively — no manual canonicalization needed.
     cleaned = _STRIP_ACTION_WORDS_RE.sub(" ", directive).strip()
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    if re.search(r"\bf[li]{1,2}m[yi]gyan\b", directive, re.IGNORECASE):
-        cleaned = re.sub(r"\bf[li]{1,2}m[yi]gyan\b", "filmygyan", cleaned, flags=re.IGNORECASE)
-        if "filmygyan" not in cleaned.lower():
-            cleaned = (cleaned + " filmygyan").strip()
-
-    if re.search(r"\bviral\s*bhayani\b", directive, re.IGNORECASE):
-        cleaned = re.sub(r"\bviral\s*bhayani\b", "viralbhayani", cleaned, flags=re.IGNORECASE)
-        if "viralbhayani" not in cleaned.lower():
-            cleaned = (cleaned + " viralbhayani").strip()
-
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned if cleaned else "watermark logo branding"
+
+
+def is_feedback_directive(directive: Optional[str]) -> bool:
+    """
+    Returns True if the directive reads like a failure feedback report
+    from a user inspecting a previous watermark removal attempt,
+    rather than a brand/handle target hint.
+
+    Examples that return True:
+      "logo still visible in bottom right"
+      "inpaint not in correct position"
+      "there are 2 watermarks still"
+      "missed the circular logo top left"
+
+    Examples that return False:
+      "my_brand_logo"
+      "retro style watermark"
+      "music beats"
+    """
+    if not directive or not isinstance(directive, str):
+        return False
+    return bool(_FEEDBACK_SIGNALS_RE.search(directive))

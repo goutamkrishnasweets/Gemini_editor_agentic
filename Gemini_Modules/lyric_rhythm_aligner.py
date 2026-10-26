@@ -555,12 +555,32 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
 
         loop = asyncio.new_event_loop()
         try:
+            asyncio.set_event_loop(loop)
             res = loop.run_until_complete(asyncio.wait_for(_async_recognize(), timeout=4.0))
             if res and res.get("title"):
                 logger.info(f"🎵 [SHAZAM FINGERPRINT] Recognized track: '{res['title']}' by {res['artist']} ({res['genre']})")
                 return res
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.debug(f"[LYRIC_ALIGNER] Shazam audio recognition notice: {e}")
         finally:
-            loop.close()
+            try:
+                # Cancel pending tasks to prevent unclosed client/connector warnings
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                # Grace period for aiohttp / SSL transport shutdown to prevent Bad file descriptor
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(asyncio.sleep(0.25))
+            except Exception:
+                pass
+            finally:
+                try:
+                    asyncio.set_event_loop(None)
+                except Exception:
+                    pass
+                loop.close()
     except Exception as e:
         logger.debug(f"[LYRIC_ALIGNER] Shazam audio recognition notice: {e}")
     return {}

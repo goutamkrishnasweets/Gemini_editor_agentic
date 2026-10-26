@@ -100,6 +100,7 @@ def detect_watermark(
     force_width: int = None,
     force_height: int = None,
     frame_timestamps: List[float] = None,
+    source_metadata: dict = None,
 ) -> tuple:
     """
     Detects watermarks AND classifies fashion vs NSFW + picks best thumbnail frame in ONE Gemini call.
@@ -145,23 +146,75 @@ def detect_watermark(
         keywords_hint = ""
         if keywords and str(keywords).strip():
             kw_clean = str(keywords).strip()
-            keywords_hint = f"""
+            # Detect if this is a failure feedback report (from user's custom retry)
+            # vs. a simple brand target hint — route to correct prompt mode
+            _feedback_signals = [
+                "missed", "still", "left", "right", "top", "bottom", "corner",
+                "position", "2 watermark", "two watermark", "second watermark",
+                "different logo", "not removed", "not in correct", "wrong spot",
+                "wrong position", "inpaint", "blur", "failed", "attempt", "retry",
+            ]
+            is_failure_feedback = any(sig in kw_clean.lower() for sig in _feedback_signals)
+            if is_failure_feedback:
+                keywords_hint = f"""
+─────────────────────────────────────────────────
+🚨 PREVIOUS ATTEMPT FAILURE REPORT — RETRY DIRECTIVE:
+The user inspected the previous watermark removal and reported this specific failure:
+"{kw_clean}"
+This is critical: the previous Gemini pass MISSED or INCORRECTLY handled something.
+Re-examine EVERY zone of EVERY frame with maximum aggression.
+Pay special attention to the area/issue described above.
+Return ALL watermarks including any that are partially removed or faint.
+─────────────────────────────────────────────────
+"""
+            else:
+                keywords_hint = f"""
 ─────────────────────────────────────────────────
 ⚠️ TARGET BRANDING HINT (CRITICAL USER DIRECTIVE):
 The user explicitly requested removal of this watermark/branding:
 "{kw_clean}"
-Conduct an aggressive inspection for any text, handle, bug, or logo resembling or containing "{kw_clean}" in all frames and flag it!
+Conduct an aggressive inspection for any text, handle, bug, icon, or logo resembling or associated with "{kw_clean}" in all frames and flag it!
+This includes both text AND pure graphic logos — if it belongs to that brand, flag it.
 ─────────────────────────────────────────────────
 """
 
-        # 🎯 FORENSIC PROMPT v17.0 — WATERMARK HUNT + BEST FRAME + FASHION/NSFW DETECTION
-        # Part A: Watermark detection (UNCHANGED — do not modify)
+        # ── Source Identity Metadata Block ──────────────────────────────────────────
+        source_metadata_block = ""
+        if source_metadata and isinstance(source_metadata, dict):
+            _meta_lines = []
+            if source_metadata.get("platform"):
+                _meta_lines.append(f"  \u2022 Platform:        {source_metadata['platform']}")
+            if source_metadata.get("account_handle"):
+                _meta_lines.append(f"  \u2022 Account Handle:  {source_metadata['account_handle']}")
+            if source_metadata.get("title"):
+                _meta_lines.append(f"  \u2022 Video Title:     {source_metadata['title']}")
+            if source_metadata.get("description"):
+                _desc = str(source_metadata["description"])[:300]
+                _meta_lines.append(f"  \u2022 Description:     {_desc}")
+            if source_metadata.get("hashtags"):
+                _ht = source_metadata["hashtags"]
+                if isinstance(_ht, list):
+                    _ht = " ".join(_ht[:15])
+                _meta_lines.append(f"  \u2022 Hashtags:        {str(_ht)[:200]}")
+            if _meta_lines:
+                source_metadata_block = (
+                    "\u2500" * 49 + "\n"
+                    "\U0001f4e1 SOURCE IDENTITY METADATA (use to cross-reference visual branding):\n"
+                    + "\n".join(_meta_lines) + "\n"
+                    "This video came from the account above. "
+                    "If you see any text, handle, icon, or logo associated with that account in the frames \u2014 it is SOURCE BRANDING. Flag it.\n"
+                    + "\u2500" * 49 + "\n"
+                )
+
+        # 🎯 FORENSIC PROMPT v18.0 — WATERMARK HUNT + BEST FRAME + FASHION/NSFW DETECTION
+        # Part A: Watermark detection
         # Part B: Best thumbnail frame selection + clothing coverage (fashion vs NSFW)
         frame_labels = ", ".join([f"Frame {i}" for i in range(n_full)])
         prompt = f"""You are an elite forensic video analyst and visual quality inspector.
 You have been given {n_full} frame(s) from a video: {frame_labels}.
 Frames are numbered starting at 0 (Frame 0 = first image, Frame {n_full - 1} = last image).
 
+{source_metadata_block}
 ══════════════════════════════════════════════════════════════
 PART A — WATERMARK / BRANDING DETECTION
 ══════════════════════════════════════════════════════════════
@@ -172,11 +225,16 @@ WHAT TO FLAG (source branding that must be removed):
 ─────────────────────────────────────────────────
 FLAG EVERY ONE of these, no matter where they appear in the frame:
 
-1. LOGO / ICON MARKS
-   • Any graphic symbol, icon, or logo — whether a professional brand mark, a phone camera app icon,
-     a social media platform logo (Instagram reel icon, TikTok logo, YouTube play button), or a custom studio emblem
-   • Semi-transparent / watermarked logos overlaid anywhere on the video (center, corner, edge, mid-frame)
-   • Animated or pulsing logo bugs (they still count even if they appear briefly)
+1. LOGO / ICON MARKS (with or without text)
+   • Any graphic symbol, icon, emblem, or logo — EVEN IF IT HAS NO TEXT AT ALL
+   • A watermark does NOT need an @handle or readable name — a pure graphic is still branding
+   • Examples: camera silhouette, stylized letter, crown icon, geometric badge, film reel icon,
+     circular studio logo, network bug, abstract icon in corner, photography watermark emblem
+   • Social media platform logos (Instagram reel icon, TikTok logo, YouTube play button)
+   • Semi-transparent / watermarked logos overlaid anywhere (center, corner, edge, mid-frame)
+   • Animated or pulsing logo bugs (count even if they appear briefly)
+   • Custom studio emblems, photographer watermarks, fashion house insignia
+   ⚠️ KEY RULE: If a graphic persists in the same position across multiple frames — it is branding. Flag it.
 
 2. STUDIO / VIDEOGRAPHER BRANDING
    • Names like "MAHESH VIDEO", "XYZ Studio", "ABC Photography", "Creative Films" — any studio tag
@@ -245,6 +303,11 @@ Ask: "Did the VIDEOGRAPHER or DISTRIBUTOR add this to claim/brand the video?"
 Ask: "Is this text what someone is SAYING or READING in the video?"
   → YES → It's a CAPTION. Do NOT flag it.
   → NO → It could be branding. Check the other rules.
+
+Ask: "Is this a GRAPHIC, ICON, EMBLEM or LOGO that is NOT part of the filmed scene?"
+  → YES (persists across frames, overlaid in a fixed corner or margin, not a real-world prop or sign) → FLAG IT
+  → NO (it's a prop, a T-shirt print, a physical sign inside the scene) → LEAVE IT
+  NOTE: The filmed scene is what the camera naturally records. Anything overlaid in post-production is source branding.
 
 ─────────────────────────────────────────────────
 MANDATORY FULL-FRAME SWEEP (do all 9 zones):
@@ -358,7 +421,8 @@ CRITICAL RULE: The threshold is EXACTLY 30%.
 If no human visible in the video, set coverage = 100 and is_nsfw = false.
 
 """
-        if keywords: prompt += f"\n\nADDITIONAL FOCUS HINTS: {keywords}"
+        # NOTE: keywords are already injected at the TOP of the prompt via keywords_hint.
+        # Do NOT append them again here — doing so creates conflicting signals at the bottom of the prompt.
 
         
         request_contents = pil_images + [prompt]
@@ -604,7 +668,7 @@ def evaluate(video_path, frames):
         return {"score": 0.8, "status": "CHECK_PASSED", "watermarks": res}
     return {"score": 0.4, "status": "CLEAN", "watermarks": []}
 
-def detect_watermark_from_video(video_path: str, keywords: str = "") -> tuple:
+def detect_watermark_from_video(video_path: str, keywords: str = "", source_metadata: dict = None) -> tuple:
     """Convenience entry point: extracts 12 strategic keyframes from a video_path and executes detect_watermark."""
     if not os.path.exists(video_path):
         return None, None
@@ -640,7 +704,8 @@ def detect_watermark_from_video(video_path: str, keywords: str = "") -> tuple:
             keywords=keywords,
             force_width=vw,
             force_height=vh,
-            frame_timestamps=timestamps
+            frame_timestamps=timestamps,
+            source_metadata=source_metadata,
         )
     except Exception as exc:
         logger.warning(f"detect_watermark_from_video error for {video_path}: {exc}")
