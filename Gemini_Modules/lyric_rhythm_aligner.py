@@ -261,12 +261,22 @@ def _clean_json(text: str) -> str:
     except json.JSONDecodeError:
         pass
 
-    # Optional last resort: pip install json_repair --break-system-packages
+    # Try json_repair if available
     try:
         from json_repair import repair_json
         repaired = repair_json(text)
-        json.loads(repaired)  # verify before trusting it
-        return repaired
+        if repaired:
+            json.loads(repaired)  # verify before trusting it
+            return repaired
+    except Exception:
+        pass
+
+    # Pure-Python repair for unescaped newlines inside strings
+    try:
+        sanitized = re.sub(r"[\r\n]+", " ", text)
+        sanitized = re.sub(r",\s*([\]}])", r"\1", sanitized)
+        json.loads(sanitized)
+        return sanitized
     except Exception:
         pass
 
@@ -554,6 +564,8 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
             }
 
         loop = asyncio.new_event_loop()
+        # Suppress benign aiohttp / SSL transport socket-close notices during teardown
+        loop.set_exception_handler(lambda _loop, _ctx: None)
         try:
             asyncio.set_event_loop(loop)
             res = loop.run_until_complete(asyncio.wait_for(_async_recognize(), timeout=4.0))
@@ -565,14 +577,14 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
         finally:
             try:
                 # Cancel pending tasks to prevent unclosed client/connector warnings
-                pending = asyncio.all_tasks(loop)
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
                 for task in pending:
                     task.cancel()
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                # Grace period for aiohttp / SSL transport shutdown to prevent Bad file descriptor
+                # Grace period for aiohttp / SSL transport shutdown
                 loop.run_until_complete(loop.shutdown_asyncgens())
-                loop.run_until_complete(asyncio.sleep(0.25))
+                loop.run_until_complete(asyncio.sleep(0.1))
             except Exception:
                 pass
             finally:
@@ -580,7 +592,10 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
                     asyncio.set_event_loop(None)
                 except Exception:
                     pass
-                loop.close()
+                try:
+                    loop.close()
+                except Exception:
+                    pass
     except Exception as e:
         logger.debug(f"[LYRIC_ALIGNER] Shazam audio recognition notice: {e}")
     return {}
@@ -589,11 +604,15 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
 def _build_shazam_context(track_info: Dict[str, Any]) -> str:
     if not track_info or not track_info.get("title"):
         return "\n\n### AUDIO TRACK IDENTIFICATION (SHAZAM FINGERPRINT): Unknown / Unindexed\n"
+    # Escape quotes in track metadata so Gemini doesn't emit unescaped quotes in JSON
+    t_title = str(track_info.get("title", "")).replace('"', '\\"')
+    t_artist = str(track_info.get("artist", "")).replace('"', '\\"')
+    t_genre = str(track_info.get("genre", "")).replace('"', '\\"')
     return (
         f"\n\n### AUDIO TRACK IDENTIFICATION (SHAZAM AUDIO FINGERPRINT):\n"
-        f"  - Track Title: '{track_info.get('title')}'\n"
-        f"  - Artist: '{track_info.get('artist')}'\n"
-        f"  - Primary Genre: '{track_info.get('genre')}'\n"
+        f"  - Track Title: '{t_title}'\n"
+        f"  - Artist: '{t_artist}'\n"
+        f"  - Primary Genre: '{t_genre}'\n"
         "USE THIS KNOWN SONG IDENTIFICATION to ensure 100% exact lyric words in `transcript` and `lyrics[].text`. "
         "Correct any misheard ASR words (e.g. Whisper mistranslating song lyrics to English phonetics) using the official lyrics of this song!\n"
     )
