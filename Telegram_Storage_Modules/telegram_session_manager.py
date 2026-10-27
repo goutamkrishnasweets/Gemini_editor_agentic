@@ -104,15 +104,17 @@ class TelegramSessionManager:
         creator: str = "General",
         clip_id: Optional[str] = None,
         raw_video_path: Optional[str] = None,
+        clean_video_path: Optional[str] = None,
         requestor_chat_id: Optional[int] = None,
         selected_audio: Optional[str] = None,
         raw_video_file_id: Optional[str] = None,
+        wm_clean_file_id: Optional[str] = None,
         social_url: Optional[str] = None,
         processed_file_id: Optional[str] = None
     ) -> str:
         """
         Creates a new review session for a rendered video reel.
-        Robustly resolves clip_id, raw_video_path, selected_audio, and raw_video_file_id.
+        Robustly resolves clip_id, raw_video_path, clean_video_path, selected_audio, and file_ids.
         """
         bname = os.path.basename(video_path)
         if not clip_id or clip_id == "Processed Shorts":
@@ -132,20 +134,37 @@ class TelegramSessionManager:
                     raw_video_path = cand_path
                     break
 
-        if not raw_video_file_id and clip_id:
+        if not clean_video_path and clip_id:
+            clean_cid = clip_id.replace("manual_", "").replace("auto_", "").strip()
+            for cand_clean in [
+                os.path.join(_REPO_ROOT, "downloads", clip_id, f"manual_clean_{clean_cid}.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", clip_id, f"auto_clean_{clean_cid}.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", clip_id, "video_inpainted_clean.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"manual_{clean_cid}", f"manual_clean_{clean_cid}.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"auto_{clean_cid}", f"auto_clean_{clean_cid}.mp4"),
+            ]:
+                if os.path.exists(cand_clean) and os.path.getsize(cand_clean) > 1024:
+                    clean_video_path = cand_clean
+                    break
+
+        if (not raw_video_file_id or not wm_clean_file_id) and clip_id:
             try:
                 from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
                 vi = TelegramVaultIndexer()
-                clean_cid = clip_id.replace("manual_", "").strip()
+                clean_cid = clip_id.replace("manual_", "").replace("auto_", "").strip()
                 entry = vi.find_entry_by_shortcode(clean_cid) or vi.find_entry_by_shortcode(clip_id)
                 if entry:
-                    raw_video_file_id = (
-                        entry.get("media_file_ids", {}).get("wm_clean_file_id") or
-                        entry.get("wm_clean_file_id") or
-                        entry.get("media_file_ids", {}).get("raw_video_file_id") or
-                        entry.get("raw_video_file_id") or
-                        entry.get("raw_file_id")
-                    )
+                    if not raw_video_file_id:
+                        raw_video_file_id = (
+                            entry.get("media_file_ids", {}).get("raw_video_file_id") or
+                            entry.get("raw_video_file_id") or
+                            entry.get("raw_file_id")
+                        )
+                    if not wm_clean_file_id:
+                        wm_clean_file_id = (
+                            entry.get("media_file_ids", {}).get("wm_clean_file_id") or
+                            entry.get("wm_clean_file_id")
+                        )
             except Exception:
                 pass
 
@@ -170,7 +189,10 @@ class TelegramSessionManager:
             "requestor_chat_id": requestor_chat_id,
             "video_path": os.path.abspath(video_path),
             "raw_video_path": os.path.abspath(raw_video_path) if raw_video_path and os.path.exists(raw_video_path) else None,
+            "clean_video_path": os.path.abspath(clean_video_path) if clean_video_path and os.path.exists(clean_video_path) else None,
+            "clean_raw_path": os.path.abspath(clean_video_path) if clean_video_path and os.path.exists(clean_video_path) else None,
             "raw_video_file_id": raw_video_file_id,
+            "wm_clean_file_id": wm_clean_file_id,
             "processed_file_id": processed_file_id,
             "master_file_id": processed_file_id,
             "social_url": social_url,

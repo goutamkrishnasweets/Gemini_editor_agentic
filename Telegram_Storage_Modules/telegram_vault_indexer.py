@@ -1125,7 +1125,7 @@ class TelegramVaultIndexer:
         prefix = "auto_clean_" if is_auto else "manual_clean_"
         clean_filename = f"{prefix}{shortcode}.mp4"
 
-        # 1. Local disk check across candidate directories
+        # 1. Local disk check across candidate directories — ONLY genuine clean/inpainted videos allowed
         candidate_dirs = [
             dest_dir,
             os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}"),
@@ -1137,9 +1137,6 @@ class TelegramVaultIndexer:
             clean_filename,
             f"manual_clean_{shortcode}.mp4",
             f"auto_clean_{shortcode}.mp4",
-            f"{folder_prefix}{shortcode}.mp4",
-            f"manual_{shortcode}.mp4",
-            f"auto_{shortcode}.mp4",
             "video_inpainted_clean.mp4",
         ]
         for c_dir in candidate_dirs:
@@ -1167,7 +1164,7 @@ class TelegramVaultIndexer:
                         bname = os.path.basename(sp).lower()
                         if "_master.mp4" in bname or "processed shorts" in sp.lower():
                             continue
-                        if ("clean" in bname or bname.startswith(("manual_", "auto_"))) and os.path.exists(sp) and os.path.getsize(sp) > 1024:
+                        if ("clean" in bname or "inpainted" in bname) and os.path.exists(sp) and os.path.getsize(sp) > 1024:
                             return sp
                     break
         except Exception:
@@ -1505,25 +1502,32 @@ class TelegramVaultIndexer:
         if not bot or not chat_id or not identifier:
             return False
 
-        shortcode = identifier.replace("manual_", "").replace("auto_", "").strip()
-        is_auto = "auto_" in str(identifier).lower()
-        prefix = "auto_" if is_auto else "manual_"
-        clean_filename = f"{prefix}{shortcode}.mp4"
+        shortcode = identifier.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_raw_", "").replace("auto_raw_", "").replace("manual_", "").replace("auto_", "").strip()
+        is_auto = "auto" in str(identifier).lower()
+        folder_prefix = "auto_" if is_auto else "manual_"
+        clean_prefix = "auto_clean_" if is_auto else "manual_clean_"
+        clean_filename = f"{clean_prefix}{shortcode}.mp4"
         caption = f"🧼 **Raw Watermark Cleaned Video**\n📁 `{clean_filename}`"
         search_keys = self._normalize_search_keys(identifier)
 
-        # 1. Check if clean video file already exists on local disk
+        # 1. Check if genuine clean video file already exists on local disk
         candidate_dirs = [
             os.path.join(_REPO_ROOT, "downloads", identifier),
-            os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", shortcode),
         ]
+        clean_candidates = [
+            clean_filename,
+            f"manual_clean_{shortcode}.mp4",
+            f"auto_clean_{shortcode}.mp4",
+            "video_inpainted_clean.mp4",
+        ]
         local_clean = None
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
-                for c_fn in [clean_filename, f"manual_{shortcode}.mp4", f"auto_{shortcode}.mp4", "video_inpainted_clean.mp4"]:
+                for c_fn in clean_candidates:
                     c_out = os.path.join(c_dir, c_fn)
                     if os.path.exists(c_out) and os.path.getsize(c_out) > 1024:
                         local_clean = c_out
@@ -1541,8 +1545,10 @@ class TelegramVaultIndexer:
                         for s_k in ["clean_video_path", "clean_raw_path"]:
                             sp = s.get(s_k)
                             if sp and os.path.exists(sp) and os.path.getsize(sp) > 1024:
-                                local_clean = sp
-                                break
+                                bname = os.path.basename(sp).lower()
+                                if "_master.mp4" not in bname and ("clean" in bname or "inpainted" in bname):
+                                    local_clean = sp
+                                    break
                     if local_clean:
                         break
             except Exception:
@@ -1550,11 +1556,12 @@ class TelegramVaultIndexer:
 
         if local_clean and os.path.exists(local_clean) and os.path.getsize(local_clean) > 1024:
             try:
+                real_caption = f"🧼 **Raw Watermark Cleaned Video**\n📁 `{os.path.basename(local_clean)}`"
                 with open(local_clean, "rb") as vf:
                     await bot.send_video(
                         chat_id=int(chat_id),
                         video=vf,
-                        caption=caption,
+                        caption=real_caption,
                         supports_streaming=True,
                         read_timeout=600,
                         write_timeout=600
@@ -1606,11 +1613,12 @@ class TelegramVaultIndexer:
         hydrated_path = self.hydrate_clean_video_from_vault(identifier)
         if hydrated_path and os.path.exists(hydrated_path) and os.path.getsize(hydrated_path) > 1024:
             try:
+                real_caption = f"🧼 **Raw Watermark Cleaned Video**\n📁 `{os.path.basename(hydrated_path)}`"
                 with open(hydrated_path, "rb") as vf:
                     await bot.send_video(
                         chat_id=int(chat_id),
                         video=vf,
-                        caption=caption,
+                        caption=real_caption,
                         supports_streaming=True,
                         read_timeout=600,
                         write_timeout=600
@@ -1619,6 +1627,38 @@ class TelegramVaultIndexer:
                 return True
             except Exception as _h_err:
                 logger.error(f"❌ Failed to send hydrated clean video: {_h_err}")
+
+        # 4. Fallback: On-demand upfront inpainting if raw video exists on disk
+        try:
+            raw_cands = [
+                os.path.join(_REPO_ROOT, "downloads", identifier, "video.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}", "video.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}", "video.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}", "video.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", shortcode, "video.mp4"),
+            ]
+            raw_target = next((rc for rc in raw_cands if os.path.exists(rc) and os.path.getsize(rc) > 1024), None)
+            if raw_target:
+                from Watermark_and_Inpainting.watermark_main import run_watermark_removal
+                target_dir = os.path.dirname(raw_target)
+                target_out = os.path.join(target_dir, clean_filename)
+                logger.info(f"🧼 [ON-DEMAND INPAINT] Generating clean video for '{identifier}' from raw source: {raw_target}")
+                inp_res, _ = run_watermark_removal(input_path=raw_target, output_path=target_out, retry_level=1)
+                if inp_res and os.path.exists(inp_res) and os.path.getsize(inp_res) > 1024:
+                    real_caption = f"🧼 **Raw Watermark Cleaned Video**\n📁 `{os.path.basename(inp_res)}`"
+                    with open(inp_res, "rb") as vf:
+                        await bot.send_video(
+                            chat_id=int(chat_id),
+                            video=vf,
+                            caption=real_caption,
+                            supports_streaming=True,
+                            read_timeout=600,
+                            write_timeout=600
+                        )
+                    logger.info(f"✅ [CLEAN VIDEO DISPATCH] Sent on-demand cleaned video to chat {chat_id} for '{identifier}'")
+                    return True
+        except Exception as _ondemand_err:
+            logger.warning(f"On-demand clean generation notice: {_ondemand_err}")
 
         return False
 

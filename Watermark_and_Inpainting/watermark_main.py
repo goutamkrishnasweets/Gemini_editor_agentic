@@ -92,6 +92,11 @@ def run_watermark_removal(
     if not watermarks:
         log("⏹️ No watermarks detected. Copying source to destination...")
         shutil.copy2(input_path, output_path)
+        try:
+            with open(f"{output_path}.coords.json", "w", encoding="utf-8") as _scf:
+                json.dump({"watermark_boxes": [], "is_clean": True, "copied_from_raw": True}, _scf)
+        except Exception:
+            pass
         log("✅ PROCESS COMPLETE: Video was already clean.")
         return output_path, "\n".join(log_lines)
 

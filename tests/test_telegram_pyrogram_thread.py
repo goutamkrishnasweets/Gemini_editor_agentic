@@ -270,3 +270,65 @@ def test_hydrate_clean_video_rejects_master_reel_in_session(tmp_path):
                 clean_path = tvi.hydrate_clean_video_from_vault("manual_Dc8dzXbIIq7")
                 # Must NOT return the master reel!
                 assert clean_path is None or "_master.mp4" not in clean_path
+
+
+def test_hydrate_clean_video_never_returns_raw_file(tmp_path):
+    from unittest.mock import MagicMock
+    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+
+    tvi = TelegramVaultIndexer()
+    test_dir = tmp_path / "downloads" / "manual_Dc8dzXbIIq7"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    raw_file = test_dir / "manual_Dc8dzXbIIq7.mp4"
+    raw_video = test_dir / "video.mp4"
+    with open(raw_file, "wb") as f:
+        f.write(b"RAW_DATA" * 100)
+    with open(raw_video, "wb") as f:
+        f.write(b"RAW_VIDEO_DATA" * 100)
+
+    # When no clean video exists and vault returns no file_id, it must NOT return the raw files!
+    with patch.object(tvi, "find_entry_by_shortcode", return_value=None):
+        with patch.object(tvi, "lookup_downloaded_source", return_value=None):
+            clean_res = tvi.hydrate_clean_video_from_vault("manual_Dc8dzXbIIq7", dest_dir=str(test_dir))
+            assert clean_res is None or "_clean" in clean_res or "inpainted" in clean_res
+            if clean_res:
+                assert "manual_Dc8dzXbIIq7.mp4" != os.path.basename(clean_res)
+                assert "video.mp4" != os.path.basename(clean_res)
+
+
+def test_send_clean_video_never_sends_raw_file(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+
+    tvi = TelegramVaultIndexer()
+    test_dir = tmp_path / "downloads" / "manual_Dc8dzXbIIq7"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    raw_file = test_dir / "manual_Dc8dzXbIIq7.mp4"
+    with open(raw_file, "wb") as f:
+        f.write(b"RAW_VIDEO_ONLY" * 100)
+
+    mock_bot = MagicMock()
+    mock_bot.send_video = AsyncMock(return_value=True)
+
+    with patch.object(tvi, "find_entry_by_shortcode", return_value=None):
+        with patch.object(tvi, "lookup_downloaded_source", return_value=None):
+            # Point _REPO_ROOT to tmp_path
+            with patch("Telegram_Storage_Modules.telegram_vault_indexer._REPO_ROOT", str(tmp_path)):
+                with patch("Watermark_and_Inpainting.watermark_main.run_watermark_removal") as mock_wm:
+                    clean_target = str(test_dir / "manual_clean_Dc8dzXbIIq7.mp4")
+                    with open(clean_target, "wb") as cf:
+                        cf.write(b"CLEAN_RESULT_DATA" * 100)
+                    mock_wm.return_value = (clean_target, "cleaned")
+
+                    sent = asyncio.run(tvi.send_clean_video_to_user_chat(
+                        bot=mock_bot,
+                        chat_id=12345678,
+                        identifier="manual_Dc8dzXbIIq7"
+                    ))
+                    assert sent is True
+                    mock_bot.send_video.assert_called_once()
+                    call_kwargs = mock_bot.send_video.call_args[1]
+                    assert "manual_clean_Dc8dzXbIIq7.mp4" in call_kwargs["caption"]
+                    assert "manual_Dc8dzXbIIq7.mp4`" not in call_kwargs["caption"]
+

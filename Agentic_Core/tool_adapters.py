@@ -433,8 +433,39 @@ def tool_reedit_session(
             if os.path.exists(cand):
                 raw_input = cand
 
+        # Check if inpaint requested in directive
+        try:
+            from Watermark_and_Inpainting.watermark_directive_helper import is_inpaint_directive
+            is_inpaint = is_inpaint_directive(edit_directive)
+        except Exception:
+            is_inpaint = bool(
+                edit_directive and any(
+                    kw in edit_directive.lower()
+                    for kw in ["inpaint", "inapint", "watermark", "clean", "logo", "remove", "erase", "delogo"]
+                )
+            )
+
+        clean_input = sess.get("clean_video_path") or sess.get("clean_raw_path")
+        if not clean_input and clip_id and clip_id != "Processed Shorts":
+            clean_sc = clip_id.replace("manual_", "").replace("auto_", "").strip()
+            for cand_clean in [
+                os.path.join(_REPO_ROOT, "downloads", clip_id, f"manual_clean_{clean_sc}.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", clip_id, f"auto_clean_{clean_sc}.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", clip_id, "video_inpainted_clean.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"manual_{clean_sc}", f"manual_clean_{clean_sc}.mp4"),
+                os.path.join(_REPO_ROOT, "downloads", f"auto_{clean_sc}", f"auto_clean_{clean_sc}.mp4"),
+            ]:
+                if os.path.exists(cand_clean) and os.path.getsize(cand_clean) > 1024:
+                    clean_input = cand_clean
+                    break
+
         video_path = sess.get("video_path")
-        target_input = raw_input
+        if not is_inpaint and clean_input and os.path.exists(clean_input) and os.path.getsize(clean_input) > 1024:
+            target_input = clean_input
+            logger.info(f"🧼 [TOOL: RE-EDIT] Reusing pre-cleaned video source for creative re-edit: {os.path.basename(target_input)}")
+        else:
+            target_input = raw_input
+
         if not target_input and video_path and "_master.mp4" not in video_path and os.path.exists(video_path):
             target_input = video_path
 
@@ -449,18 +480,6 @@ def tool_reedit_session(
                         if os.path.exists(cand):
                             target_input = cand
                             break
-
-        # Check if inpaint requested in directive
-        try:
-            from Watermark_and_Inpainting.watermark_directive_helper import is_inpaint_directive
-            is_inpaint = is_inpaint_directive(edit_directive)
-        except Exception:
-            is_inpaint = bool(
-                edit_directive and any(
-                    kw in edit_directive.lower()
-                    for kw in ["inpaint", "inapint", "watermark", "clean", "logo", "remove", "erase", "delogo"]
-                )
-            )
 
         # Telegram Vault recovery if source is missing on disk or if inpainting requested
         if is_inpaint or not target_input or not os.path.exists(target_input):

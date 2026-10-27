@@ -409,7 +409,7 @@ def run_phase2_pipeline(
             _emit("step_05", "running", {"message": "Building rhythm & micro-shot timeline..."})
             forensic_res["route_params"] = forensic_res.get("route_params", {})
             timeline_res = step05.build_rhythm_timeline(
-                video_path=video_path,
+                video_path=working_video_path,
                 selected_bgm_path=selected_bgm_path,
                 forensic_context=forensic_res,
             )
