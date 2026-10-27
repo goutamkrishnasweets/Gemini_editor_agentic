@@ -48,15 +48,17 @@ except Exception:
         except Exception:
             gemini_router = None
 
-from dotenv import load_dotenv
-
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if os.path.exists(os.path.join(_REPO_ROOT, ".env")):
-    load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
-elif os.path.exists(os.path.join(_REPO_ROOT, "Credentials", ".env")):
-    load_dotenv(os.path.join(_REPO_ROOT, "Credentials", ".env"), override=True)
-else:
-    load_dotenv(".env", override=True)
+try:
+    from dotenv import load_dotenv
+    if os.path.exists(os.path.join(_REPO_ROOT, ".env")):
+        load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
+    elif os.path.exists(os.path.join(_REPO_ROOT, "Credentials", ".env")):
+        load_dotenv(os.path.join(_REPO_ROOT, "Credentials", ".env"), override=True)
+    else:
+        load_dotenv(".env", override=True)
+except ImportError:
+    pass
 
 logger = logging.getLogger("forensic_analyzer")
 

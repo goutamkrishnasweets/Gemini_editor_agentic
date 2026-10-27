@@ -34,7 +34,7 @@ jobs:
       - name: Install Test Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio python-telegram-bot
+          pip install pytest pytest-asyncio python-telegram-bot python-dotenv requests
 
       - name: Run Multi-User Concurrency Tests
         run: |
@@ -71,7 +71,7 @@ jobs:
           FROM python:3.10-slim
           WORKDIR /app
           COPY requirements.txt .
-          RUN pip install --no-cache-dir python-telegram-bot
+          RUN pip install --no-cache-dir python-telegram-bot python-dotenv requests
           COPY . .
           ENV PYTHONUNBUFFERED=1 BATCH_ONLY_MODE=1
           ENTRYPOINT ["python", "-u", "main.py"]
