@@ -355,3 +355,160 @@ def test_source_accounts_multiuser_isolation(tmp_path, monkeypatch):
         assert [a["handle"] for a in user_meta_3] == ["disha_my_heartbeat"]
 
 
+def test_normalize_time_slot_am_pm_and_24h():
+    """Verifies normalize_time_slot correctly parses 12-hour AM/PM and 24-hour time strings."""
+    from main import normalize_time_slot
+    assert normalize_time_slot("7pm") == "19:00"
+    assert normalize_time_slot("7 pm") == "19:00"
+    assert normalize_time_slot("7:00pm") == "19:00"
+    assert normalize_time_slot("10 pm") == "22:00"
+    assert normalize_time_slot("10:30 am") == "10:30"
+    assert normalize_time_slot("12:00 am") == "00:00"
+    assert normalize_time_slot("12:00 pm") == "12:00"
+    assert normalize_time_slot("19:00") == "19:00"
+    assert normalize_time_slot("7:00") == "07:00"
+    assert normalize_time_slot("invalid") is None
+    assert normalize_time_slot("") is None
+
+
+def test_get_account_owner_multi_layer_resolution(tmp_path, monkeypatch):
+    """
+    Verifies multi-layer resolution for get_account_owner and get_account_owner_for_file:
+    Layer 1: metadata.json owner_chat_id
+    Layer 2: source_accounts.json case-insensitive matching
+    Layer 3: fallback to telegram_users.json
+    """
+    from Downloader_Modules.scheduled_scraper_manager import (
+        get_account_owner,
+        get_account_owner_for_file,
+    )
+
+    sa_file = tmp_path / "source_accounts.json"
+    users_file = tmp_path / "telegram_users.json"
+    monkeypatch.setattr("Downloader_Modules.scheduled_scraper_manager.ACCOUNTS_JSON", str(sa_file))
+    monkeypatch.setattr("Downloader_Modules.scheduled_scraper_manager.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.USERS_JSON_PATH", str(users_file))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.DATA_DIR", str(tmp_path))
+
+    # Scenario A: Layer 2 - case-insensitive in source_accounts.json
+    sa_data = {
+        "source_accounts": ["Mobile_Multiplex"],
+        "account_owners": {"Mobile_Multiplex": "200"}
+    }
+    with open(sa_file, "w", encoding="utf-8") as f:
+        json.dump(sa_data, f)
+    with open(users_file, "w", encoding="utf-8") as f:
+        json.dump({}, f)
+
+    assert get_account_owner("mobile_multiplex") == "200"
+    assert get_account_owner("@MOBILE_MULTIPLEX") == "200"
+
+    # Scenario B: Layer 3 - source_accounts.json has empty account_owners, but telegram_users.json has it
+    sa_data_empty = {
+        "source_accounts": ["mobile_multiplex"],
+        "account_owners": {}
+    }
+    with open(sa_file, "w", encoding="utf-8") as f:
+        json.dump(sa_data_empty, f)
+
+    users_data = {
+        "300": {
+            "nickname": "TestUser",
+            "source_accounts": ["mobile_multiplex"]
+        }
+    }
+    with open(users_file, "w", encoding="utf-8") as f:
+        json.dump(users_data, f)
+
+    assert get_account_owner("mobile_multiplex") == "300"
+    assert get_account_owner("@Mobile_Multiplex") == "300"
+
+    # Scenario C: Layer 1 - metadata.json in clip folder
+    clip_dir = tmp_path / "downloads" / "test_clip_123"
+    clip_dir.mkdir(parents=True)
+    video_file = clip_dir / "video.mp4"
+    video_file.write_text("fake video content")
+    meta_file = clip_dir / "metadata.json"
+    with open(meta_file, "w", encoding="utf-8") as f:
+        json.dump({"owner_chat_id": "400"}, f)
+
+    assert get_account_owner_for_file(str(video_file)) == "400"
+
+
+def test_get_rotated_max_two_accounts_fallback_telegram_users(tmp_path, monkeypatch):
+    """Verifies get_rotated_max_two_accounts recovers user accounts even if source_accounts.json owners was cleared."""
+    from Downloader_Modules.scheduled_scraper_manager import get_rotated_max_two_accounts
+
+    sa_file = tmp_path / "source_accounts.json"
+    users_file = tmp_path / "telegram_users.json"
+    monkeypatch.setattr("Downloader_Modules.scheduled_scraper_manager.ACCOUNTS_JSON", str(sa_file))
+    monkeypatch.setattr("Downloader_Modules.scheduled_scraper_manager.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.USERS_JSON_PATH", str(users_file))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.DATA_DIR", str(tmp_path))
+
+    # Empty owners in source_accounts
+    sa_data = {
+        "source_accounts": ["default_account"],
+        "account_owners": {}
+    }
+    with open(sa_file, "w", encoding="utf-8") as f:
+        json.dump(sa_data, f)
+
+    users_data = {
+        "200": {
+            "nickname": "NonAdminUser",
+            "source_accounts": ["user200_account"]
+        }
+    }
+    with open(users_file, "w", encoding="utf-8") as f:
+        json.dump(users_data, f)
+
+    with patch("Downloader_Modules.scheduled_scraper_manager.sync_source_accounts_to_telegram_vault"):
+        rotated = get_rotated_max_two_accounts(max_accounts=2, for_chat_id="200")
+        assert "user200_account" in rotated
+
+
+def test_get_scheduled_users_for_slot(tmp_path, monkeypatch):
+    """Verifies get_scheduled_users_for_slot discovers both registered non-admin users and admins matching the slot."""
+    from main import get_scheduled_users_for_slot
+
+    users_file = tmp_path / "telegram_users.json"
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.USERS_JSON_PATH", str(users_file))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_ADMIN_ID", "100")
+    monkeypatch.setenv("AUTO_INPUT_SCHEDULE_TIMES", "06:00,19:00")
+
+    users_data = {
+        "200": {
+            "nickname": "User1",
+            "auto_input_schedule_times": "19:00,22:00"
+        },
+        "300": {
+            "nickname": "User2",
+            "auto_input_schedule_times": "7pm"  # 12-hour format normalized to 19:00
+        },
+        "400": {
+            "nickname": "User3",
+            "auto_input_schedule_times": "10:00"
+        }
+    }
+    with open(users_file, "w", encoding="utf-8") as f:
+        json.dump(users_data, f)
+
+    # Slot 19:00 should match User1 (200), User2 (300, 7pm), and Admin (100)
+    users_19 = get_scheduled_users_for_slot("19:00")
+    assert "200" in users_19
+    assert "300" in users_19
+    assert "100" in users_19
+    assert "400" not in users_19
+
+    # Slot 22:00 should match User1 (200) only
+    users_22 = get_scheduled_users_for_slot("22:00")
+    assert users_22 == ["200"]
+
+    # Slot 10:00 should match User3 (400) only
+    users_10 = get_scheduled_users_for_slot("10:00")
+    assert users_10 == ["400"]
+
+
+

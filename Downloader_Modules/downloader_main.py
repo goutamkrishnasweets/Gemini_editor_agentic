@@ -419,7 +419,7 @@ def run_phase1_ingestion(
                     downloaded_files.append(os.path.abspath(item))
                 elif isinstance(item, dict):
                     shortcode = item.get("shortcode") or f"clip_{int(time.time())}"
-                    owner = item.get("ownerUsername") or item.get("uploader") or "creator"
+                    owner = item.get("ownerUsername") or item.get("username") or item.get("uploader") or "creator"
                     clip_folder_name = f"{owner}_{shortcode}"
                     clip_dir = os.path.join(downloads_dir, clip_folder_name)
 
@@ -442,13 +442,21 @@ def run_phase1_ingestion(
                             )
                             out_file = res[0] if isinstance(res, (tuple, list)) else res
                             if out_file and isinstance(out_file, str) and os.path.exists(out_file):
-                                # Save full JSON metadata alongside video.mp4
+                                # Save full JSON metadata alongside video.mp4 with owner_chat_id stamped
+                                try:
+                                    from Downloader_Modules.scheduled_scraper_manager import get_account_owner
+                                    owner_chat = get_account_owner(owner)
+                                    if owner_chat:
+                                        item["owner_chat_id"] = str(owner_chat).strip()
+                                except Exception as _oe:
+                                    logger.debug("Notice stamping owner_chat_id in metadata: %s", _oe)
+
                                 meta_path = os.path.join(clip_dir, "metadata.json")
                                 with open(meta_path, "w", encoding="utf-8") as mf:
                                     json.dump(item, mf, indent=2, ensure_ascii=False)
 
                                 downloaded_files.append(os.path.abspath(out_file))
-                                logger.info(f"   ✓ [SAVED] {clip_folder_name}/video.mp4 & metadata.json")
+                                logger.info(f"   ✓ [SAVED] {clip_folder_name}/video.mp4 & metadata.json (owner={item.get('owner_chat_id')})")
 
                                 # ⚡ Background Upload to Telegram Storage Vault (Non-blocking)
                                 send_raw_download_to_telegram_vault_async(

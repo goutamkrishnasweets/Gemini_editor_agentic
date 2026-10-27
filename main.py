@@ -2876,13 +2876,32 @@ def run_master_pipeline(
 # ── Dual Pipeline Schedulers (Scraping vs Publishing) ────────────────────────
 
 def normalize_time_slot(slot_str: str) -> Optional[str]:
-    """Normalizes time string into standard HH:MM 24-hour format."""
-    try:
-        parts = slot_str.strip().split(":")
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
-    except Exception:
-        pass
+    """
+    Normalizes time string into standard HH:MM 24-hour format.
+    Supports '19:00', '7:00', '7pm', '7:00pm', '10 PM', '07:30 AM', etc.
+    """
+    if not slot_str or not isinstance(slot_str, str):
+        return None
+    s = slot_str.strip().lower()
+    # Check 12-hour AM/PM formats e.g. "7pm", "7:00pm", "7 pm", "10:30 am"
+    m_ampm = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$", s)
+    if m_ampm:
+        hour = int(m_ampm.group(1))
+        minute = int(m_ampm.group(2)) if m_ampm.group(2) else 0
+        meridiem = m_ampm.group(3)
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+
+    # Check 24-hour format e.g. "19:00", "7:00", "07:00"
+    parts = s.split(":")
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        h, m = int(parts[0]), int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return f"{h:02d}:{m:02d}"
     return None
 
 
@@ -2983,6 +3002,45 @@ def get_seconds_until_next_slot(slots: List[str]) -> tuple[str, float, str]:
     return (next_slot, delay_s, tz_label)
 
 
+def get_scheduled_users_for_slot(target_slot: str) -> List[Optional[str]]:
+    """
+    Identifies all users (non-admins and/or admin) who scheduled the given slot.
+    Returns a deduplicated list of chat_id strings (or None for unassigned/system runs).
+    """
+    from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+    users = load_all_users()
+    admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
+    admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()] if admin_raw else []
+
+    target_runs: List[Optional[str]] = []
+
+    # Check registered users for matching schedule slots
+    for uid, u_rec in users.items():
+        u_sched = u_rec.get("auto_input_schedule_times") or ""
+        if u_sched:
+            slots = [normalize_time_slot(p) for p in str(u_sched).split(",") if normalize_time_slot(p)]
+            if target_slot in slots:
+                uid_str = str(uid).strip()
+                if uid_str not in target_runs:
+                    target_runs.append(uid_str)
+
+    # Check admin env schedules
+    env_raw = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("SCRAPING_AUTO_INPUT_TIMES") or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES") or "06:00,19:00"
+    env_slots = [normalize_time_slot(p) for p in env_raw.split(",") if normalize_time_slot(p)]
+    if target_slot in env_slots:
+        for aid in admin_ids:
+            if aid not in target_runs:
+                target_runs.append(aid)
+        if not admin_ids and None not in target_runs:
+            target_runs.append(None)
+
+    # Fallback to system pool if no user or admin explicitly claimed the slot
+    if not target_runs:
+        target_runs = [None]
+
+    return target_runs
+
+
 def run_scheduled_pipeline_loop():
     """
     Blocking CLI Loop for Static Time Scheduler.
@@ -3011,8 +3069,14 @@ def run_scheduled_pipeline_loop():
 
         logger.info(f"⏰ [SCHEDULER] Trigger time reached ({next_slot})! Executing max 2-account scraper batch...")
         try:
-            rendered = run_scheduled_scraper_batch(max_accounts=2)
-            logger.info(f"✅ [SCHEDULER] Completed batch run: {len(rendered)} reel(s) rendered.")
+            from Core_Modules.container_job_manager import ContainerJobManager
+            _cjm = ContainerJobManager.instance()
+            target_user_runs = get_scheduled_users_for_slot(next_slot)
+            for target_chat_run in target_user_runs:
+                logger.info(f"🚀 [SCHEDULER] Processing scheduled slot {next_slot} for user: {target_chat_run or 'System/Admin'}")
+                rendered = _cjm.run_best_available(chat_id=target_chat_run, max_accounts=2)
+                if rendered:
+                    logger.info(f"✅ [SCHEDULER] Inline batch done for {target_chat_run or 'System'}: {len(rendered)} reel(s) rendered.")
         except Exception as e:
             logger.error(f"❌ [SCHEDULER] Pipeline execution error: {e}")
 
@@ -3044,48 +3108,55 @@ async def _async_static_scheduler_task(bot_app=None):
 
         logger.info(f"⏰ [ASYNC SCHEDULER] Trigger time reached ({next_slot})! Starting 2-account ingestion & AI edit cycle...")
         try:
-            rendered = run_scheduled_scraper_batch(max_accounts=2)
-            if bot_app and rendered:
-                from Downloader_Modules.scheduled_scraper_manager import get_account_owner_for_file
-                admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
-                admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()] if admin_raw else []
+            from Core_Modules.container_job_manager import ContainerJobManager
+            from Downloader_Modules.scheduled_scraper_manager import get_account_owner_for_file
+            _cjm = ContainerJobManager.instance()
+            target_user_runs = get_scheduled_users_for_slot(next_slot)
+            admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
+            admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()] if admin_raw else []
 
-                for r_file in rendered:
-                    try:
-                        owner_id = get_account_owner_for_file(r_file)
-                        req_chat = int(owner_id) if (owner_id and str(owner_id).isdigit()) else None
-                        sess_id = session_manager.create_session(video_path=r_file, requestor_chat_id=req_chat)
-                        keyboard = build_telegram_session_keyboard(session_id=sess_id)
+            for target_chat_run in target_user_runs:
+                logger.info(f"🚀 [ASYNC SCHEDULER] Running scheduled cycle for user: {target_chat_run or 'System/Admin'}")
+                # run_best_available: Docker container if enabled, else inline batch
+                rendered = _cjm.run_best_available(chat_id=target_chat_run, max_accounts=2)
+                # Docker mode returns [] immediately (async); delivery only for inline results
+                if bot_app and rendered:
+                    for r_file in rendered:
+                        try:
+                            owner_id = get_account_owner_for_file(r_file) or (str(target_chat_run) if target_chat_run else None)
+                            req_chat = int(owner_id) if (owner_id and str(owner_id).isdigit()) else None
+                            sess_id = session_manager.create_session(video_path=r_file, requestor_chat_id=req_chat)
+                            keyboard = build_telegram_session_keyboard(session_id=sess_id)
 
-                        # Determine list of target chats to notify:
-                        # User who configured the account receives the review card directly.
-                        # Admins only receive review cards for accounts they own or unowned system accounts.
-                        target_recipients = set()
-                        if req_chat:
-                            target_recipients.add(str(req_chat))
-                        else:
-                            for aid in admin_ids:
-                                target_recipients.add(str(aid))
+                            # Determine list of target chats to notify:
+                            # User who configured the account receives the review card directly.
+                            # Admins only receive review cards for accounts they own or unowned system accounts.
+                            target_recipients = set()
+                            if req_chat:
+                                target_recipients.add(str(req_chat))
+                            else:
+                                for aid in admin_ids:
+                                    target_recipients.add(str(aid))
 
-                        for target_chat in target_recipients:
-                            try:
-                                sent_msg = await _send_video_safe_main(
-                                    bot_app.bot,
-                                    target_chat,
-                                    r_file,
-                                    caption=(
-                                        f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
-                                        f"📁 `{os.path.basename(r_file)}`\n"
-                                        f"🆔 `Session: {sess_id}`"
-                                    ),
-                                    reply_markup=keyboard
-                                )
-                                if sent_msg and (str(target_chat) == str(req_chat) or not req_chat):
-                                    session_manager.update_message_id(sess_id, sent_msg.message_id)
-                            except Exception as _push_e:
-                                logger.warning(f"Failed to send scheduled video to recipient {target_chat}: {_push_e}")
-                    except Exception as _e:
-                        logger.warning(f"Failed to process scheduled video {r_file}: {_e}")
+                            for target_chat in target_recipients:
+                                try:
+                                    sent_msg = await _send_video_safe_main(
+                                        bot_app.bot,
+                                        target_chat,
+                                        r_file,
+                                        caption=(
+                                            f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
+                                            f"📁 `{os.path.basename(r_file)}`\n"
+                                            f"🆔 `Session: {sess_id}`"
+                                        ),
+                                        reply_markup=keyboard
+                                    )
+                                    if sent_msg and (str(target_chat) == str(req_chat) or not req_chat):
+                                        session_manager.update_message_id(sess_id, sent_msg.message_id)
+                                except Exception as _push_e:
+                                    logger.warning(f"Failed to send scheduled video to recipient {target_chat}: {_push_e}")
+                        except Exception as _e:
+                            logger.warning(f"Failed to process scheduled video {r_file}: {_e}")
         except Exception as e:
             logger.error(f"❌ [ASYNC SCHEDULER] Error during scheduled run: {e}")
 
@@ -3542,6 +3613,22 @@ def start_telegram_bot_service():
         _m_thread.start()
         logger.info("🛡️ [STORAGE GUARDIAN] Periodic 30-minute storage sweeper thread active.")
 
+        # Orphan container reaper — cleans dangling gemini_job_* containers every 6h
+        # Safe no-op when Docker is not running or USE_DOCKER_CONTAINERS != "1"
+        def _container_orphan_reaper():
+            import time as _t
+            while True:
+                _t.sleep(21600)  # 6 hours
+                try:
+                    from Core_Modules.container_job_manager import ContainerJobManager
+                    ContainerJobManager.instance().cleanup_orphaned_containers()
+                except Exception as _re:
+                    logger.debug("Container orphan reaper notice: %s", _re)
+
+        _reaper_thread = threading.Thread(target=_container_orphan_reaper, daemon=True, name="ContainerOrphanReaper")
+        _reaper_thread.start()
+        logger.info("🧹 [CONTAINER REAPER] Periodic 6-hour orphan container cleanup thread active.")
+
         # CI Session Timer: ONLY active inside GitHub Actions!
         # On Oracle Cloud (or local server), GITHUB_ACTIONS is not set, so this timer NEVER runs
         # and the bot runs 24/7/365 continuously without interruption.
@@ -3581,18 +3668,83 @@ if __name__ == "__main__":
         parser.add_argument("--bot", action="store_true", help="Launch Telegram Bot polling listener mode + timed auto-input scheduler")
         parser.add_argument("--legacy", action="store_true", help="Force legacy procedural pipeline instead of Universal Agent")
         parser.add_argument("--batch", action="store_true", help="Run a single scheduled batch scrape & edit cycle and exit")
+        parser.add_argument("--batch-user", type=str, default=None, metavar="CHAT_ID",
+                            help="Run isolated batch pipeline for a specific user chat_id and exit (used by Docker containers)")
 
         args = parser.parse_args()
 
         # Resolve mode from argument or environment variable
         env_mode = os.getenv("DISPATCH_MODE")
         is_batch_run = args.batch or (args.mode == "batch") or (env_mode == "batch") or (os.getenv("CI_BATCH_MODE") == "1")
+        batch_user_id = args.batch_user or os.getenv("USER_CHAT_ID") or None
 
+        # ── Telegram Review Card Delivery Helper for Batch Runs ──────────────
+        def _dispatch_batch_user_delivery(rendered_files, user_id=None):
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+            if not bot_token or not rendered_files:
+                return
+            import asyncio
+            from telegram import Bot
+            async def _send_all():
+                bot = Bot(token=bot_token)
+                admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
+                admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()] if admin_raw else []
+                from Downloader_Modules.scheduled_scraper_manager import get_account_owner_for_file
+                for r_file in rendered_files:
+                    try:
+                        owner_id = get_account_owner_for_file(r_file) or (str(user_id) if user_id else None)
+                        req_chat = int(owner_id) if (owner_id and str(owner_id).isdigit()) else None
+                        sess_id = session_manager.create_session(video_path=r_file, requestor_chat_id=req_chat)
+                        keyboard = build_telegram_session_keyboard(session_id=sess_id)
+                        target_recipients = set()
+                        if req_chat:
+                            target_recipients.add(str(req_chat))
+                        else:
+                            for aid in admin_ids:
+                                target_recipients.add(str(aid))
+                        for target_chat in target_recipients:
+                            try:
+                                sent_msg = await _send_video_safe_main(
+                                    bot,
+                                    target_chat,
+                                    r_file,
+                                    caption=(
+                                        f"⏰ **[AI EDIT COMPLETE]** Batch Job Finished!\n"
+                                        f"📁 `{os.path.basename(r_file)}`\n"
+                                        f"🆔 `Session: {sess_id}`"
+                                    ),
+                                    reply_markup=keyboard
+                                )
+                                if sent_msg and (str(target_chat) == str(req_chat) or not req_chat):
+                                    session_manager.update_message_id(sess_id, sent_msg.message_id)
+                            except Exception as _push_e:
+                                logger.warning(f"Failed to send batch video to {target_chat}: {_push_e}")
+                    except Exception as _pe:
+                        logger.warning(f"Notice delivering batch reel {r_file}: {_pe}")
+            try:
+                asyncio.run(_send_all())
+            except Exception as _ae:
+                logger.warning(f"Notice during batch video delivery: {_ae}")
+
+        # ── --batch-user mode: isolated per-user run inside a Docker container ──
+        if batch_user_id:
+            _uid = str(batch_user_id).strip() or None
+            from Downloader_Modules.scheduled_scraper_manager import run_scheduled_scraper_batch
+            logger.info("🐳 [CONTAINER BATCH] Running isolated batch for user=%s...", _uid or "system")
+            rendered = run_scheduled_scraper_batch(max_accounts=int(os.getenv("MAX_ACCOUNTS", "2")), for_chat_id=_uid)
+            logger.info("✅ [CONTAINER BATCH] Done: %d reel(s) rendered for user=%s.", len(rendered), _uid or "system")
+            if rendered:
+                _dispatch_batch_user_delivery(rendered, _uid)
+            sys.exit(0)
+
+        # ── --batch mode: system pool batch run (no specific user) ────────────
         if is_batch_run:
             from Downloader_Modules.scheduled_scraper_manager import run_scheduled_scraper_batch
             logger.info("🚀 [BATCH RUN] Triggering single scheduled batch scrape & master edit cycle...")
             rendered = run_scheduled_scraper_batch(max_accounts=2)
             logger.info(f"✅ [BATCH RUN] Batch completed successfully: {len(rendered)} reel(s) rendered.")
+            if rendered:
+                _dispatch_batch_user_delivery(rendered, None)
             sys.exit(0)
 
         mode_val = args.mode or (env_mode if env_mode in ["auto", "manual"] else None)

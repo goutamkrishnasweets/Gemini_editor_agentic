@@ -125,7 +125,7 @@ def get_active_accounts_metadata(for_chat_id: Optional[Any] = None) -> List[Dict
             # No admin bypass — admin only sees accounts they added, and non-admins only see theirs.
             if for_chat_id is not None:
                 user_id_str = str(for_chat_id)
-                if user_id_str not in owner_list:
+                if user_id_str not in owner_list and get_account_owner(h) != user_id_str:
                     continue
 
             added_at = timestamps.get(h, now)
@@ -166,8 +166,30 @@ def get_rotated_max_two_accounts(max_accounts: int = 2, for_chat_id: Optional[An
                     owner_list = [str(x) for x in curr_owners]
                 elif isinstance(curr_owners, (str, int)):
                     owner_list = [str(curr_owners)]
-                if user_id_str in owner_list:
-                    user_accs.append(acc)
+
+                # Case-insensitive owner check from source_accounts.json
+                for k, v in owners.items():
+                    if k.strip().lstrip("@").lower() == acc.strip().lstrip("@").lower():
+                        if isinstance(v, list):
+                            owner_list.extend([str(x) for x in v])
+                        elif isinstance(v, (str, int)):
+                            owner_list.append(str(v))
+
+                if user_id_str in owner_list or get_account_owner(acc) == user_id_str:
+                    if acc not in user_accs:
+                        user_accs.append(acc)
+
+            # Fallback layer: check telegram_users.json directly
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+                users = load_all_users()
+                u_rec = users.get(user_id_str, {})
+                for u_acc in u_rec.get("source_accounts", []):
+                    clean_u_acc = str(u_acc).strip().lstrip("@")
+                    if clean_u_acc and clean_u_acc not in user_accs:
+                        user_accs.append(clean_u_acc)
+            except Exception as _fe:
+                logger.debug("Notice reading telegram_users.json in account rotation: %s", _fe)
 
             all_accounts = user_accs
             if not all_accounts:
@@ -377,11 +399,13 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
                 hashtags = sanitize_raw_handles_out(raw_tags, raw_handle)
 
                 logger.info(f"📤 [SCHEDULED PUBLISH] Clip {clips_published_this_session+1}/{target_publish_quota} Title: '{viral_title}'")
+                clip_owner_id = get_account_owner_for_file(r_file) or (str(for_chat_id) if for_chat_id else None)
                 pub_res = run_phase4_publishing(
                     video_path=r_file,
                     title=viral_title,
                     description=description,
-                    tags=hashtags
+                    tags=hashtags,
+                    user_id=clip_owner_id
                 )
                 if pub_res.get("success", True):
                     clips_published_this_session += 1
@@ -544,26 +568,46 @@ def get_account_owner(account_handle: str) -> Optional[str]:
         data = _load_accounts_json()
         val = data.get("account_owners", {}).get(clean_handle)
         if isinstance(val, list):
-            return str(val[0]) if val else None
-        return str(val) if val is not None else None
+            return str(val[0]).strip() if val else None
+        if val is not None:
+            return str(val).strip()
+
+        # Fallback 1: case-insensitive match in source_accounts.json
+        owners = data.get("account_owners", {})
+        for k, v in owners.items():
+            if k.strip().lstrip("@").lower() == clean_handle.lower():
+                if isinstance(v, list):
+                    return str(v[0]).strip() if v else None
+                return str(v).strip() if v is not None else None
+
+        # Fallback 2: check telegram_users.json
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+            users = load_all_users()
+            for uid, udata in users.items():
+                u_accs = [str(a).strip().lstrip("@").lower() for a in udata.get("source_accounts", []) if a]
+                if clean_handle.lower() in u_accs:
+                    return str(uid).strip()
+        except Exception:
+            pass
     except Exception:
-        return None
+        pass
+    return None
 
 
 def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
     """
     Extracts the creator handle or shortcode from a video file path or clip ID
     and looks up the owner's Telegram chat_id.
-    Handles underscores in handles, parent folder paths, and metadata sidecars.
+    Multi-layer resolution:
+      1. Explicit owner_chat_id / requestor_chat_id in clip folder's metadata.json
+      2. Handle matching in source_accounts.json (account_owners)
+      3. Fallback handle matching in telegram_users.json (source_accounts)
+      4. Fallback search via TelegramVaultIndexer shortcode index
     """
     if not video_path_or_cid:
         return None
     try:
-        data = _load_accounts_json()
-        owners = data.get("account_owners", {})
-        if not owners:
-            return None
-
         clean_path = str(video_path_or_cid).replace("\\", "/")
         base = os.path.basename(clean_path)
         parent = os.path.basename(os.path.dirname(clean_path)) if os.path.dirname(clean_path) else ""
@@ -573,10 +617,29 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
 
         def _extract_owner_str(v):
             if isinstance(v, list):
-                return str(v[0]) if v else None
-            return str(v) if v is not None else None
+                return str(v[0]).strip() if v else None
+            return str(v).strip() if v is not None else None
 
-        # 1. Check registered handles against parent dir, filename, and path (longest handles first)
+        # Layer 1: Check local metadata.json directly for explicit owner_chat_id
+        if os.path.exists(video_path_or_cid):
+            check_dirs = [os.path.dirname(video_path_or_cid)] if os.path.isfile(video_path_or_cid) else [video_path_or_cid]
+            for d in check_dirs:
+                m_path = os.path.join(d, "metadata.json")
+                if os.path.exists(m_path):
+                    try:
+                        with open(m_path, "r", encoding="utf-8") as mf:
+                            m_data = json.load(mf)
+                        explicit_owner = m_data.get("owner_chat_id") or m_data.get("requestor_chat_id")
+                        if explicit_owner:
+                            return str(explicit_owner).strip()
+                    except Exception:
+                        pass
+
+        # Layer 2: Load owners from source_accounts.json
+        data = _load_accounts_json()
+        owners = data.get("account_owners", {})
+
+        # Check registered handles against parent dir, filename, and path (longest handles first)
         for h in sorted(owners.keys(), key=len, reverse=True):
             hl = h.strip().lstrip("@").lower()
             if not hl:
@@ -588,7 +651,7 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
                 if res:
                     return res
 
-        # 2. Check local metadata.json if path points to a file in a clip folder
+        # Check metadata.json fields against source_accounts owners
         if os.path.exists(video_path_or_cid):
             check_dirs = [os.path.dirname(video_path_or_cid)] if os.path.isfile(video_path_or_cid) else [video_path_or_cid]
             for d in check_dirs:
@@ -598,21 +661,51 @@ def get_account_owner_for_file(video_path_or_cid: str) -> Optional[str]:
                         with open(m_path, "r", encoding="utf-8") as mf:
                             m_data = json.load(mf)
                         for field in ["ownerUsername", "owner", "uploader", "creator"]:
-                            u = str(m_data.get(field) or "").strip().lstrip("@")
-                            if u and u in owners:
-                                res = _extract_owner_str(owners[u])
-                                if res:
-                                    return res
+                            u = str(m_data.get(field) or "").strip().lstrip("@").lower()
+                            if not u:
+                                continue
+                            for oh, ov in owners.items():
+                                if oh.strip().lstrip("@").lower() == u:
+                                    res = _extract_owner_str(ov)
+                                    if res:
+                                        return res
                     except Exception:
                         pass
 
-        # 3. Fallback: check TelegramVaultIndexer
-        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
-        indexer = TelegramVaultIndexer()
-        entry = indexer.find_entry_by_shortcode(base_clean) or {}
-        owner_name = str(entry.get("ownerUsername") or "").strip().lstrip("@")
-        if owner_name and owner_name in owners:
-            return _extract_owner_str(owners[owner_name])
+        # Layer 3: Fallback lookup against telegram_users.json
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+            users = load_all_users()
+            for uid, udata in users.items():
+                u_accs = [str(a).strip().lstrip("@").lower() for a in udata.get("source_accounts", []) if a]
+                for uh in u_accs:
+                    if (parent_clean and (parent_clean.startswith(uh) or f"{uh}_" in parent_clean)) or \
+                       (base_clean and (base_clean.startswith(uh) or f"{uh}_" in base_clean)) or \
+                       f"/{uh}_" in norm_path or f"/{uh}/" in norm_path or norm_path.startswith(f"{uh}_"):
+                        return str(uid).strip()
+        except Exception as _ue:
+            logger.debug("Notice in telegram_users fallback: %s", _ue)
+
+        # Layer 4: Fallback check TelegramVaultIndexer
+        try:
+            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            indexer = TelegramVaultIndexer()
+            entry = indexer.find_entry_by_shortcode(base_clean) or {}
+            owner_name = str(entry.get("ownerUsername") or "").strip().lstrip("@").lower()
+            if owner_name:
+                for oh, ov in owners.items():
+                    if oh.strip().lstrip("@").lower() == owner_name:
+                        return _extract_owner_str(ov)
+                # Also check owner_name against telegram_users.json
+                from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+                users = load_all_users()
+                for uid, udata in users.items():
+                    u_accs = [str(a).strip().lstrip("@").lower() for a in udata.get("source_accounts", []) if a]
+                    if owner_name in u_accs:
+                        return str(uid).strip()
+        except Exception:
+            pass
+
     except Exception as _e:
         logger.debug("Notice in get_account_owner_for_file: %s", _e)
     return None

@@ -1,0 +1,43 @@
+# Files that should NEVER be in the Docker image
+# (secrets, local dev state, Windows build artefacts)
+
+# Credentials & secrets
+Credentials/.env
+Credentials/telegram_config.json
+Credentials/youtube/token.json
+Credentials/*.json
+.env
+
+# Git history
+.git
+.github
+
+# Local Python cache
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Local test & dev data
+data/telegram_users.json
+data/telegram_sessions.json
+data/scraper_rotation_pointer.json
+data/published_registry.json
+
+# Downloaded media (never bake into image)
+downloads/
+output/
+temp/
+logs/
+cache/
+scratch/
+models/
+storage/
+
+# Windows-only IDE artefacts
+.vscode
+.idea
+*.swp
+
+# graphify
+graphify-out/
