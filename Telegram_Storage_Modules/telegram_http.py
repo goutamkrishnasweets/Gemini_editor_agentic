@@ -66,7 +66,7 @@ def _run_coro_safely(coro_or_factory):
                     return thr_loop.run_until_complete(c)
                 finally:
                     thr_loop.close()
-            return executor.submit(_thread_worker).result()
+            return executor.submit(_thread_worker).result(timeout=120)
     else:
         loop = _ensure_event_loop()
         c = coro_or_factory() if is_callable else coro_or_factory
@@ -278,21 +278,34 @@ def upload_file_with_pyrogram(
                 ext = os.path.splitext(filename)[1].lower()
                 is_video = as_video and ext in [".mp4", ".mkv", ".mov", ".webm", ".avi"]
 
-                if is_video:
-                    msg = await app.send_video(
-                        chat_id=target_chat,
-                        video=local_path,
-                        caption=caption[:1024] if caption else None,
-                        file_name=filename,
-                        supports_streaming=True
+                try:
+                    if is_video:
+                        msg = await asyncio.wait_for(
+                            app.send_video(
+                                chat_id=target_chat,
+                                video=local_path,
+                                caption=caption[:1024] if caption else None,
+                                file_name=filename,
+                                supports_streaming=True
+                            ),
+                            timeout=90.0
+                        )
+                    else:
+                        msg = await asyncio.wait_for(
+                            app.send_document(
+                                chat_id=target_chat,
+                                document=local_path,
+                                caption=caption[:1024] if caption else None,
+                                file_name=filename
+                            ),
+                            timeout=90.0
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[telegram_http] Pyrogram MTProto upload timed out (90s) for %s — aborting to avoid runner freeze",
+                        filename
                     )
-                else:
-                    msg = await app.send_document(
-                        chat_id=target_chat,
-                        document=local_path,
-                        caption=caption[:1024] if caption else None,
-                        file_name=filename
-                    )
+                    return None
 
                 if msg:
                     video_dict = {}

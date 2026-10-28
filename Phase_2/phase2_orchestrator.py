@@ -286,6 +286,27 @@ def run_phase2_pipeline(
                         retry_level=1
                     )
                     if inpainted_path and os.path.exists(inpainted_path) and os.path.getsize(inpainted_path) > 1024:
+                        # ── COMPRESS INPAINT OUTPUT if too large (prevents Pyrogram MTProto freeze) ──
+                        _inpaint_size = os.path.getsize(inpainted_path)
+                        if _inpaint_size > 40 * 1024 * 1024:
+                            import subprocess as _sp
+                            _comp_path = inpainted_path.replace(".mp4", "_c.mp4")
+                            logger.info(f"🗜️ [INPAINT COMPRESS] Output is {_inpaint_size / (1024*1024):.1f}MB, running FFmpeg compress...")
+                            try:
+                                _sp.run([
+                                    "ffmpeg", "-y", "-i", inpainted_path,
+                                    "-c:v", "libx264", "-crf", "24", "-preset", "fast",
+                                    "-c:a", "aac", "-b:a", "128k", _comp_path
+                                ], timeout=180, capture_output=True)
+                                if os.path.exists(_comp_path) and os.path.getsize(_comp_path) > 1024:
+                                    _new_size = os.path.getsize(_comp_path)
+                                    os.replace(_comp_path, inpainted_path)
+                                    logger.info(f"✅ [INPAINT COMPRESS] Compressed {_inpaint_size/(1024*1024):.1f}MB → {_new_size/(1024*1024):.1f}MB")
+                                else:
+                                    logger.warning(f"⚠️ [INPAINT COMPRESS] FFmpeg output missing or empty, keeping original")
+                            except Exception as _ffmpeg_err:
+                                logger.warning(f"⚠️ [INPAINT COMPRESS] FFmpeg failed: {_ffmpeg_err}, keeping original")
+                        # ── END COMPRESS ──────────────────────────────────────────────────────────────
                         working_video_path = inpainted_path
                         logger.info(f"✅ [UPFRONT INPAINTING SUCCESS] Raw video cleaned: {os.path.basename(working_video_path)}")
 
