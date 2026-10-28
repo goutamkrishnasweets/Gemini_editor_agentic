@@ -376,10 +376,28 @@ async def _send_video_safe_main(
         try:
             if isinstance(video_path_or_file, str):
                 if os.path.isfile(video_path_or_file):
+                    probe_w, probe_h, probe_dur = 1080, 1920, 15
+                    try:
+                        import subprocess
+                        pr = subprocess.run(
+                            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                             "-show_entries", "stream=width,height,duration", "-of", "json", video_path_or_file],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        st_data = json.loads(pr.stdout).get("streams", [{}])[0]
+                        probe_w = int(st_data.get("width") or 1080)
+                        probe_h = int(st_data.get("height") or 1920)
+                        probe_dur = max(1, int(float(st_data.get("duration") or 15)))
+                    except Exception:
+                        pass
+
                     with open(video_path_or_file, "rb") as vf:
                         return await bot_obj.send_video(
                             chat_id=int(chat_id),
                             video=vf,
+                            width=probe_w,
+                            height=probe_h,
+                            duration=probe_dur,
                             caption=caption,
                             reply_markup=reply_markup,
                             supports_streaming=supports_streaming,
@@ -1315,6 +1333,7 @@ async def process_yt_auth_code_input(msg, raw_text: str, user_id: Optional[str] 
 # ── Telegram Message & Media Handler ─────────────────────────────────────────
 
 ACTIVE_PIPELINE_JOBS = set()
+ACTIVE_PIPELINE_TARGETS = set()
 _MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_PIPELINE_JOBS", "2"))
 _PIPELINE_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_JOBS)
 
@@ -1339,7 +1358,32 @@ async def _check_and_notify_busy_state(msg, user_id_str: str):
             logger.debug("Notice on busy state check: %s", _e)
 
 def _dispatch_pipeline_in_background(**kwargs):
-    """Spawns non-blocking daemon thread with bounded concurrency so Telegram bot loop never freezes."""
+    """Spawns non-blocking daemon thread with bounded concurrency and clip deduplication so Telegram bot loop never freezes."""
+    target_key = None
+    if kwargs.get("url"):
+        _raw_u = str(kwargs.get("url")).split("?")[0].strip().rstrip("/")
+        target_key = f"url_{_raw_u.lower()}"
+    elif kwargs.get("input_path"):
+        target_key = f"file_{os.path.abspath(kwargs.get('input_path')).lower()}"
+
+    if target_key and target_key in ACTIVE_PIPELINE_TARGETS:
+        logger.warning(f"⚠️ [PIPELINE DEDUPLICATION] Job for target '{target_key}' is already actively running! Dropping duplicate dispatch.")
+        chat_id = kwargs.get("requestor_chat_id")
+        if chat_id:
+            try:
+                send_telegram_text_sync(
+                    chat_id,
+                    "⏳ **[ACTIVE PROCESSING NOTICE]**\n\n"
+                    "This video is already currently being edited in the background!\n"
+                    "Your finished reel will be delivered here as soon as it completes. Please wait a moment."
+                )
+            except Exception:
+                pass
+        return
+
+    if target_key:
+        ACTIVE_PIPELINE_TARGETS.add(target_key)
+
     job_id = f"{kwargs.get('requestor_chat_id')}_{time.time()}"
     ACTIVE_PIPELINE_JOBS.add(job_id)
     logger.info(f"🚀 [PIPELINE DISPATCH] Spawning background worker thread for requestor {kwargs.get('requestor_chat_id')} (mode={kwargs.get('mode')}, url={kwargs.get('url')})")
@@ -1367,6 +1411,8 @@ def _dispatch_pipeline_in_background(**kwargs):
             if acquired:
                 _PIPELINE_SEMAPHORE.release()
             ACTIVE_PIPELINE_JOBS.discard(job_id)
+            if target_key:
+                ACTIVE_PIPELINE_TARGETS.discard(target_key)
             logger.info(f"🏁 [PIPELINE WORKER FINISHED] Worker thread finished job '{job_id}' (active remaining: {len(ACTIVE_PIPELINE_JOBS)})")
             sys.stdout.flush()
 

@@ -221,6 +221,12 @@ def synthesize_editing_plan(
         if selected_bgm_path and os.path.isfile(selected_bgm_path):
             logger.info(f"🎙️ [STEP 06] Using clean continuous extracted audio from Telegram Vault as track: {selected_bgm_path}")
 
+    if selected_bgm_path and os.path.exists(selected_bgm_path):
+        extra_inputs["audio"] = selected_bgm_path
+        extra_inputs["music"] = selected_bgm_path
+        extra_inputs["bgm"] = selected_bgm_path
+        logger.info(f"🎵 [STEP 06 AUDIO PROPAGATION] Wired audio track into extra_inputs: {os.path.basename(selected_bgm_path)}")
+
     try:
         synthesis_result = engine.run_full_pipeline(
             user_request=user_req,

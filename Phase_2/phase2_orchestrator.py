@@ -13,6 +13,7 @@ import logging
 import importlib
 import tempfile
 import shutil
+import uuid
 from typing import Dict, List, Any, Optional, Callable, Union, Set
 
 logger = logging.getLogger("Phase2.Orchestrator")
@@ -461,11 +462,16 @@ def run_phase2_pipeline(
                 selected_bgm_path = timeline_res["selected_bgm_path"]
             _emit("step_05", "success", {"message": f"Built {len(micro_shots)} micro-shot takes (2.0s-3.5s)."})
 
+            atomic_target_output = os.path.join(
+                master_edits_dir,
+                f".tmp_{folder_name}_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}.mp4"
+            )
+
             # Step 6: Gemini Call 3 FFmpeg Synthesis
             _emit("step_06", "running", {"message": "Synthesizing FFmpeg Master Filtergraph Editing Plan..."})
             synthesis_res = step06.synthesize_editing_plan(
                 video_path=working_video_path,
-                output_path=target_output,
+                output_path=atomic_target_output,
                 selected_bgm_path=selected_bgm_path,
                 forensic_context=forensic_res,
                 micro_shots=micro_shots,
@@ -480,14 +486,19 @@ def run_phase2_pipeline(
             # Step 7: Master Render Verification & QA Gate
             _emit("step_07", "running", {"message": f"Verifying master render for {folder_name}..."})
             render_res = step07.verify_master_render(
-                output_path=target_output,
+                output_path=atomic_target_output,
                 synthesis_result=synthesis_res,
             )
             if render_res is None:
                 render_res = {"success": False, "error": "verify_master_render returned None"}
 
             if render_res.get("success"):
-                out_path = render_res["output_video"]
+                try:
+                    os.replace(atomic_target_output, target_output)
+                    out_path = target_output
+                except Exception as _mve:
+                    logger.warning(f"Atomic rename to target_output failed ({_mve}), using atomic render: {atomic_target_output}")
+                    out_path = atomic_target_output
                 rendered_files.append(out_path)
                 _emit("step_07", "success", {"message": f"Master reel ready: {os.path.basename(out_path)}."})
 
@@ -498,6 +509,11 @@ def run_phase2_pipeline(
                         logger.warning(f"Render callback notice: {cb_err}")
             else:
                 failed_count += 1
+                if os.path.exists(atomic_target_output):
+                    try:
+                        os.remove(atomic_target_output)
+                    except Exception:
+                        pass
                 _emit("step_07", "failed", {"message": f"Master render verification failed: {render_res.get('error')}."})
 
         except Exception as clip_err:

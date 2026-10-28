@@ -883,6 +883,11 @@ class FFmpegCommandGenerator:
         cmd = [self.ffmpeg_path, "-y", "-i", input_path]
         cmd_input_count = 1
 
+        if not bgm_path and extra_inputs:
+            candidate_bgm = extra_inputs.get("music") or extra_inputs.get("bgm") or extra_inputs.get("audio")
+            if candidate_bgm and os.path.exists(candidate_bgm):
+                bgm_path = candidate_bgm
+
         bgm_idx = None
         if bgm_path and os.path.exists(bgm_path):
             cmd.extend(["-i", bgm_path])
@@ -2733,6 +2738,9 @@ class GeminiFFmpegEngine:
             except Exception:
                 pass
             if audio_path and os.path.isfile(audio_path):
+                extra_inputs["audio"] = audio_path
+                extra_inputs["music"] = audio_path
+                extra_inputs["bgm"] = audio_path
                 logger.info(f"🎙️ [CONTINUOUS AUDIO ADOPTED] Retrieved clip's extracted audio from Telegram Vault: {audio_path}")
             else:
                 logger.info("🔇 [AUDIO DIRECTIVE] No BGM path or extracted audio found — source clip will be muted (video_volume=0.00).")
@@ -2762,6 +2770,9 @@ class GeminiFFmpegEngine:
 
         # Automatically inject BGM mix step if external audio track was provided but plan missing audio operation
         if audio_path and os.path.exists(audio_path):
+            extra_inputs["audio"] = audio_path
+            extra_inputs["music"] = audio_path
+            extra_inputs["bgm"] = audio_path
             has_audio_op = any(op.get("operation_type") in ("audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix")
                                for op in gemini_plan_json.get("operations", []))
             if not has_audio_op:
@@ -2930,10 +2941,10 @@ class GeminiFFmpegEngine:
                 logger.info(f"[DurationLock] Source duration: {source_v_dur:.2f}s | Output video: {v_dur:.2f}s | Output audio: {a_dur:.2f}s" if a_dur else f"[DurationLock] Source: {source_v_dur:.2f}s | Output video: {v_dur:.2f}s")
 
             if a_dur and v_dur > 0 and v_dur < a_dur - 0.05:  # >50ms drift = frame-freeze risk
-                logger.warning(f"[DurationLock] Drift detected: video={v_dur:.2f}s audio={a_dur:.2f}s. Repairing.")
+                logger.warning(f"[DurationLock] Drift detected: video={v_dur:.2f}s audio={a_dur:.2f}s. Repairing with faststart.")
                 repaired = output_path.replace(".mp4", "_durfix.mp4")
                 repair_cmd = [self.cmd_generator.ffmpeg_path, "-y", "-i", output_path,
-                              "-c", "copy", "-shortest", repaired]
+                              "-c", "copy", "-shortest", "-movflags", "+faststart", repaired]
                 subprocess.run(repair_cmd, check=True, capture_output=True)
                 if os.path.exists(repaired):
                     os.replace(repaired, output_path)
@@ -3014,9 +3025,11 @@ class GeminiFFmpegEngine:
         bgm_path      = extra_inputs.get("music") or extra_inputs.get("bgm") or extra_inputs.get("audio") or ""
         if bgm_path and not os.path.exists(bgm_path):
             _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            candidate = os.path.join(_repo, "Original_audio", "active", os.path.basename(bgm_path))
-            if os.path.exists(candidate):
-                bgm_path = candidate
+            for _sub in ["active", "pool", ""]:
+                _cand = os.path.join(_repo, "Original_audio", _sub, os.path.basename(bgm_path)) if _sub else os.path.join(_repo, "Original_audio", os.path.basename(bgm_path))
+                if os.path.exists(_cand):
+                    bgm_path = _cand
+                    break
 
         if not bgm_path or not os.path.exists(bgm_path):
             _c_dir = os.path.dirname(input_path)
