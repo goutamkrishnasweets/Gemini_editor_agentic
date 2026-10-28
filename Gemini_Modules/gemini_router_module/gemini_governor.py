@@ -1367,6 +1367,8 @@ class GeminiGovernor:
 
         session_id: Optional[str] = None,
 
+        api_key: Optional[str] = None,
+
     ):
 
         """
@@ -1383,7 +1385,7 @@ class GeminiGovernor:
 
         # ── EARLY API KEY GATE — fail fast, no wasteful retries ──────────────
 
-        _api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "").strip()
+        _api_key = (api_key or "").strip() or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "").strip()
 
         if not _api_key:
 
@@ -1706,16 +1708,16 @@ class GeminiGovernor:
             try:
 
                 # Configure API — supports modern google-genai with fallback to google-generativeai
-                api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+                effective_key = (api_key or "").strip() or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-                if not api_key:
-                    raise ValueError("GEMINI_API_KEY not set — add it to your .env file")
+                if not effective_key:
+                    raise ValueError("GEMINI_API_KEY not set — add it to your .env file or user profile")
 
                 # Dual SDK support
                 if hasattr(genai, "Client"):
                     # Modern google.genai SDK
                     client = genai.Client(
-                        api_key=api_key,
+                        api_key=effective_key,
                         http_options=types.HttpOptions(timeout=300_000) if (types and hasattr(types, "HttpOptions")) else None
                     )
                     config_params = {}
@@ -1731,7 +1733,7 @@ class GeminiGovernor:
                     )
                 elif hasattr(genai, "GenerativeModel") or hasattr(genai, "configure"):
                     # Legacy google.generativeai SDK fallback
-                    genai.configure(api_key=api_key)
+                    genai.configure(api_key=effective_key)
                     legacy_model = genai.GenerativeModel(
                         model_name=current_model,
                         generation_config=gen_config or None,

@@ -167,9 +167,10 @@ class VideoContextExtractor:
     and Audio Beat grid timestamps.
     """
 
-    def __init__(self, sample_fps: float = 1.0, target_width: int = 720):
+    def __init__(self, sample_fps: float = 1.0, target_width: int = 720, api_key: Optional[str] = None):
         self.sample_fps = sample_fps
         self.target_width = target_width
+        self.api_key = api_key
         self.motion_analyzer = MotionAnalyzer(target_width=480) if _HAS_MOTION else None
         self.beat_engine = BeatEngine() if _HAS_BEAT else None
 
@@ -291,7 +292,8 @@ class VideoContextExtractor:
                 task_type="vision",
                 prompt=payload,
                 module_name="video_context_extractor",
-                gen_config={"temperature": 0.3}
+                gen_config={"temperature": 0.3},
+                api_key=self.api_key,
             )
         except Exception as e:
             logger.error(f"[VideoContextExtractor] Gemini call failed: {e}")
@@ -1693,7 +1695,7 @@ class GeminiFFmpegEngine:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.cmd_generator = FFmpegCommandGenerator()
-        self.context_extractor = VideoContextExtractor(sample_fps=1.0, target_width=720)
+        self.context_extractor = VideoContextExtractor(sample_fps=1.0, target_width=720, api_key=self.api_key)
         self.refinement_loop = RefinementLoop(self)
 
     def fetch_rag_reference_examples(self, query: str, profile: Optional[Dict] = None) -> List[Dict]:
@@ -2540,7 +2542,8 @@ class GeminiFFmpegEngine:
                     task_type="creative",
                     prompt=prompt_payload,
                     module_name="gemini_ffmpeg_synthesis",
-                    gen_config={"temperature": 0.2}
+                    gen_config={"temperature": 0.2},
+                    api_key=self.api_key,
                 )
                 if raw_resp:
                     clean_text = self.context_extractor._clean_json(raw_resp)
@@ -2683,7 +2686,8 @@ class GeminiFFmpegEngine:
                                 task_type="creative",
                                 prompt=[_tts_prompt],
                                 module_name="gemini_ffmpeg_synthesis_tts",
-                                gen_config={"response_modalities": ["AUDIO"]}
+                                gen_config={"response_modalities": ["AUDIO"]},
+                                api_key=self.api_key,
                             )
                         _audio_data = None
                         if hasattr(_tts_resp, "candidates"):
@@ -2858,7 +2862,8 @@ class GeminiFFmpegEngine:
                         task_type="creative",
                         prompt=[payload_data["system_instruction"], retry_prompt],
                         module_name="gemini_ffmpeg_synthesis_refinement",
-                        gen_config={"temperature": 0.2}
+                        gen_config={"temperature": 0.2},
+                        api_key=self.api_key,
                     )
                     if retry_resp:
                         clean_retry = self.context_extractor._clean_json(retry_resp)

@@ -236,6 +236,22 @@ class ContainerJobManager:
                 if k.startswith(f"USER_{chat_id}_") and v:
                     user_env_args += ["-e", f"{k}={v}"]
 
+        # Check if user has personal API keys in telegram_users.json
+        user_gemini = None
+        user_apify = None
+        if chat_id:
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+                all_u = load_all_users()
+                u_info = all_u.get(str(chat_id), {})
+                user_gemini = u_info.get("gemini_api_key")
+                user_apify = u_info.get("apify_api_token")
+            except Exception:
+                pass
+
+        gemini_key_to_pass = user_gemini or os.getenv("GEMINI_API_KEY", "")
+        apify_token_to_pass = user_apify or os.getenv("APIFY_API_TOKEN", os.getenv("APIFY_TOKEN", ""))
+
         cmd = [
             "docker", "run",
             "--rm",
@@ -248,12 +264,12 @@ class ContainerJobManager:
             "-v", f"{repo_root}/Credentials:/app/Credentials:ro",
             # User's personal downloads workspace — read-write, isolated by chat_id
             "-v", f"{downloads_dir}:/app/downloads/{uid}:rw",
-            # Pass core env vars
+            # Pass core env vars with user-specific quota overrides
             "-e", f"USER_CHAT_ID={chat_id or ''}",
             "-e", f"TELEGRAM_BOT_TOKEN={os.getenv('TELEGRAM_BOT_TOKEN', '')}",
             "-e", f"TELEGRAM_ADMIN_ID={os.getenv('TELEGRAM_ADMIN_ID', '')}",
-            "-e", f"GEMINI_API_KEY={os.getenv('GEMINI_API_KEY', '')}",
-            "-e", f"APIFY_API_TOKEN={os.getenv('APIFY_API_TOKEN', os.getenv('APIFY_TOKEN', ''))}",
+            "-e", f"GEMINI_API_KEY={gemini_key_to_pass}",
+            "-e", f"APIFY_API_TOKEN={apify_token_to_pass}",
             "-e", f"MAX_ACCOUNTS={max_accounts}",
             # Prevent the container from starting Telegram polling
             "-e", "BATCH_ONLY_MODE=1",

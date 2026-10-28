@@ -625,9 +625,9 @@ class ForensicVideoAnalyzer:
         print(render_explanation(result))
     """
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None):
         self.router = gemini_router
-        self._api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        self._api_key = (api_key or "").strip() or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self._available = bool(self._api_key)
         if not self._available:
             logger.warning("🔬 ForensicAnalyzer: GEMINI_API_KEY not set — will return defaults")
@@ -893,6 +893,7 @@ class ForensicVideoAnalyzer:
                         prompt=[content_part, prompt],
                         module_name="forensic_analyzer",
                         gen_config={"temperature": 0.2, "response_mime_type": "application/json"},
+                        api_key=self._api_key,
                     )
                 else:
                     from google.genai import types

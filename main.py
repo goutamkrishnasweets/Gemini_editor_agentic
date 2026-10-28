@@ -1346,13 +1346,12 @@ async def _check_and_notify_busy_state(msg, user_id_str: str):
             has_gemini = bool(get_user_gemini_key(user_id_str))
             if not has_apify and not has_gemini:
                 await msg.reply_text(
-                    "⏳ **[QUEUE NOTICE] Shared Engine Busy**\n\n"
-                    "Shared keys are currently rendering another job. Your request is queued!\n\n"
-                    "⚡ **Want to skip the queue & process INSTANTLY at max speed?**\n"
+                    "⚡ **[DEDICATED QUOTA TIP]**\n\n"
+                    "Other jobs are currently running. To ensure your requests use dedicated, unshared API quotas:\n\n"
                     "Add your personal API key:\n"
                     "• 🔑 `/setapify <your_apify_token>`\n"
                     "• 🤖 `/setgemini <your_gemini_key>`\n\n"
-                    "*(Users with personal keys bypass all shared queues!)*"
+                    "*(Your requests will execute directly on your personal quotas!)*"
                 )
         except Exception as _e:
             logger.debug("Notice on busy state check: %s", _e)
@@ -1384,15 +1383,23 @@ def _dispatch_pipeline_in_background(**kwargs):
     if target_key:
         ACTIVE_PIPELINE_TARGETS.add(target_key)
 
+    chat_id = kwargs.get("requestor_chat_id")
+    if chat_id:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_gemini_key, get_user_apify_token
+            if not kwargs.get("user_gemini_key"):
+                kwargs["user_gemini_key"] = get_user_gemini_key(chat_id)
+            if not kwargs.get("user_apify_token"):
+                kwargs["user_apify_token"] = get_user_apify_token(chat_id)
+        except Exception as _e_u:
+            logger.debug(f"User key resolution notice: {_e_u}")
+
     job_id = f"{kwargs.get('requestor_chat_id')}_{time.time()}"
     ACTIVE_PIPELINE_JOBS.add(job_id)
     logger.info(f"🚀 [PIPELINE DISPATCH] Spawning background worker thread for requestor {kwargs.get('requestor_chat_id')} (mode={kwargs.get('mode')}, url={kwargs.get('url')})")
     def _worker():
-        acquired = False
         try:
-            _PIPELINE_SEMAPHORE.acquire()
-            acquired = True
-            logger.info(f"▶️ [PIPELINE WORKER START] Worker thread executing job '{job_id}' (active concurrency slot acquired)")
+            logger.info(f"▶️ [PIPELINE WORKER START] Worker thread executing job '{job_id}' (running immediately in parallel, no waitlist)")
             run_master_pipeline(**kwargs)
         except Exception as _pe:
             logger.error(f"❌ Background pipeline error: {_pe}", exc_info=True)
@@ -1408,8 +1415,6 @@ def _dispatch_pipeline_in_background(**kwargs):
                 except Exception as _ne:
                     logger.debug(f"Notice sending background error notification: {_ne}")
         finally:
-            if acquired:
-                _PIPELINE_SEMAPHORE.release()
             ACTIVE_PIPELINE_JOBS.discard(job_id)
             if target_key:
                 ACTIVE_PIPELINE_TARGETS.discard(target_key)
@@ -1942,8 +1947,7 @@ def _run_reedit_direct(session_id: str, directive: str) -> Dict[str, Any]:
     """Deterministic re-edit (preset buttons / custom directive): NO LLM round trips."""
     from Agentic_Core.tool_adapters import tool_reedit_session
     t0 = time.time()
-    with _PIPELINE_SEMAPHORE:
-        r = tool_reedit_session(session_id=session_id, edit_directive=directive)
+    r = tool_reedit_session(session_id=session_id, edit_directive=directive)
     ok = r.get("status") == "success"
     return {
         "status": "success" if ok else "error",
@@ -1959,10 +1963,9 @@ def _run_reedit_direct(session_id: str, directive: str) -> Dict[str, Any]:
 
 
 def _run_director_in_slot(goal: str, progress_callback=None) -> Dict[str, Any]:
-    """Free-form goals only: LLM Director, bounded by the same concurrency semaphore as the pipeline."""
+    """Free-form goals only: LLM Director (runs immediately without waitlist)."""
     from Agentic_Core.run_agent import run_agentic_goal
-    with _PIPELINE_SEMAPHORE:
-        return run_agentic_goal(goal, max_turns=10, progress_callback=progress_callback)
+    return run_agentic_goal(goal, max_turns=10, progress_callback=progress_callback)
 
 
 def _dispatch_direct_route(route, chat_id: int) -> str:
@@ -2512,7 +2515,9 @@ def run_master_pipeline(
     platform: str = "instagram",
     requestor_chat_id: Optional[int] = None,
     user_edit_directive: Optional[str] = None,
-    excluded_audio: Optional[Union[str, List[str], Set[str]]] = None
+    excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
+    user_gemini_key: Optional[str] = None,
+    user_apify_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes End-to-End Master Pipeline across all 4 Phases.
@@ -2891,7 +2896,8 @@ def run_master_pipeline(
             on_rendered_callback=_on_clip_rendered,
             user_edit_directive=user_edit_directive,
             excluded_audio=excluded_audio,
-            requestor_chat_id=requestor_chat_id
+            requestor_chat_id=requestor_chat_id,
+            user_gemini_key=user_gemini_key,
         )
         rendered_master_reels = phase2_res.get("rendered_files", [])
         logger.info(f"🎬 [PHASE 2 & 3 COMPLETE] {len(rendered_master_reels)} master reel(s) ready.")

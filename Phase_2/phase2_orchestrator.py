@@ -49,6 +49,7 @@ def run_phase2_pipeline(
     user_edit_directive: Optional[str] = None,
     excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
     requestor_chat_id: Optional[Union[int, str]] = None,
+    user_gemini_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes Phase 2 Pipeline through indexed steps 01 -> 07.
@@ -376,9 +377,18 @@ def run_phase2_pipeline(
                     if clean_sc:
                         creator_hint = clean_sc
 
+            owner_gemini_key = user_gemini_key
+            if not owner_gemini_key and clip_owner_id:
+                try:
+                    from Telegram_Storage_Modules.telegram_user_manager import get_user_gemini_key
+                    owner_gemini_key = get_user_gemini_key(clip_owner_id)
+                except Exception:
+                    owner_gemini_key = None
+
             forensic_res = step02.run_forensic_perception(
                 video_path=working_video_path,
                 creator_name=creator_hint,
+                api_key=owner_gemini_key,
             )
             forensic_res["working_video_path"] = working_video_path
             forensic_res["watermark_boxes"] = watermark_boxes
@@ -478,6 +488,7 @@ def run_phase2_pipeline(
                 target_duration=15.0,
                 user_edit_directive=user_edit_directive,
                 requestor_chat_id=clip_owner_id,
+                api_key=owner_gemini_key,
             )
             if synthesis_res is None:
                 synthesis_res = {"status": "failed", "error": "synthesize_editing_plan returned None"}

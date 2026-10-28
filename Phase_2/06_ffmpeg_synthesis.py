@@ -93,6 +93,7 @@ def synthesize_editing_plan(
     user_edit_directive: Optional[str] = None,
     intent_vector: Optional[Dict[str, Any]] = None,
     requestor_chat_id: Optional[Union[int, str]] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes Gemini Call 3 to synthesize FFmpeg filtergraph plan.
@@ -100,7 +101,14 @@ def synthesize_editing_plan(
     """
     logger.info(f"🎬 [STEP 06] Running Gemini Call 3 FFmpeg Synthesis for: {os.path.basename(video_path)}")
 
-    engine = GeminiFFmpegEngine()
+    if not api_key and requestor_chat_id:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_gemini_key
+            api_key = get_user_gemini_key(requestor_chat_id)
+        except Exception as _k_err:
+            logger.debug(f"User gemini key lookup notice: {_k_err}")
+
+    engine = GeminiFFmpegEngine(api_key=api_key)
     route_params = (forensic_context or {}).get("route_params", {})
     lyric_intel = (forensic_context or {}).get("lyric_intel", {})
     bpm = (route_params.get("bpm") or lyric_intel.get("tempo_bpm") or 120.0)

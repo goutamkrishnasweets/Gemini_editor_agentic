@@ -88,6 +88,7 @@ def run_forensic_perception(
     video_path: str,
     creator_name: Optional[str] = None,
     audio_candidates: Optional[List[dict]] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes Gemini Call 1.
@@ -95,7 +96,7 @@ def run_forensic_perception(
     and determined audio_strategy (preserve / bed / replace).
     """
     logger.info(f"🔬 [STEP 02] Running Gemini Call 1 Forensic Perception for: {os.path.basename(video_path)}")
-    analyzer = ForensicVideoAnalyzer()
+    analyzer = ForensicVideoAnalyzer(api_key=api_key)
     res = analyzer.analyze(
         video_path=video_path,
         creator_name=creator_name,
