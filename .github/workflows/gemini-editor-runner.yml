@@ -157,7 +157,6 @@ jobs:
                 'TELEGRAM_API_ID': os.getenv('TELEGRAM_API_ID'),
                 'TELEGRAM_API_HASH': os.getenv('TELEGRAM_API_HASH'),
                 'GEMINI_API_KEY': os.getenv('GEMINI_API_KEY'),
-                'GOOGLE_API_KEY': os.getenv('GEMINI_API_KEY'),
                 'APIFY_API_TOKEN': os.getenv('APIFY_TOKEN'),
                 'APIFY_TOKEN': os.getenv('APIFY_TOKEN'),
                 'CLIENT_SECRET_JSON': os.getenv('CLIENT_SECRET_JSON'),

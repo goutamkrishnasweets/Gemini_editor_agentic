@@ -76,6 +76,10 @@ except Exception:
 
 
 
+# Suppress redundant warning from google.genai._api_client
+if os.environ.get("GEMINI_API_KEY") and os.environ.get("GOOGLE_API_KEY"):
+    os.environ.pop("GOOGLE_API_KEY", None)
+
 try:
     from google import genai
     from google.genai import types
