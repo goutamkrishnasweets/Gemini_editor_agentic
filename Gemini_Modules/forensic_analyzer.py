@@ -919,6 +919,11 @@ class ForensicVideoAnalyzer:
         """Upload compressed video, ask Gemini, parse JSON. Raises on failure."""
         from google import genai
 
+        if self._api_key:
+            try:
+                os.environ.pop("GOOGLE_API_KEY", None)
+            except Exception:
+                pass
         client = genai.Client(api_key=self._api_key)
         uploaded = None
         try:

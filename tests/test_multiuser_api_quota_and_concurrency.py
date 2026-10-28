@@ -139,6 +139,50 @@ class TestMultiUserQuotaAndConcurrency(unittest.TestCase):
             self.assertIn("GEMINI_API_KEY=AIzaSyUser777DedicatedKey", cmd)
             self.assertIn("APIFY_API_TOKEN=apify_token_user_777", cmd)
 
+    def test_governor_does_not_ban_models_on_file_access_403(self):
+        """Verify that a 403 on a File resource does NOT permanently ban healthy Gemini models."""
+        from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
+
+        model = "gemini-3.5-flash-lite"
+        with gemini_router.state_lock:
+            if model in gemini_router.model_states:
+                gemini_router.model_states[model]["status"] = "ACTIVE"
+                gemini_router.model_states[model]["ban_remaining_seconds"] = 0
+
+        # Simulate Google Files 403 error message
+        file_403_msg = "403 PERMISSION_DENIED. {'error': {'code': 403, 'message': 'You do not have permission to access the File 96lo0v0gsnwx or it may not exist.', 'status': 'PERMISSION_DENIED'}}"
+        
+        # Call mark_model_banned with the file error
+        gemini_router.mark_model_banned(model, error_type="403", error_message=file_403_msg)
+
+        # Model should still be ACTIVE, NOT BANNED!
+        with gemini_router.state_lock:
+            state = gemini_router.model_states.get(model, {})
+            self.assertEqual(state.get("status"), "ACTIVE", "Model should NOT be banned on File resource errors!")
+
+    def test_get_user_gemini_key_env_var_and_admin_fallback(self):
+        """Verify that get_user_gemini_key checks USER_<id>_GEMINI_API_KEY env var and admin fallback."""
+        from Telegram_Storage_Modules.telegram_user_manager import get_user_gemini_key, get_user_apify_token
+
+        with patch("Telegram_Storage_Modules.telegram_user_manager.load_all_users", return_value={}), \
+             patch.dict(os.environ, {
+                 "USER_12345_GEMINI_API_KEY": "AIzaSyUser12345SecretKey",
+                 "USER_12345_APIFY_API_TOKEN": "apify_token_user_12345",
+                 "GEMINI_API_KEY": "AIzaSyAdminRootKey",
+                 "TELEGRAM_ADMIN_ID": "admin_999"
+             }):
+
+            # Non-admin user with USER_<id>_ env var
+            key = get_user_gemini_key("12345")
+            tok = get_user_apify_token("12345")
+            self.assertEqual(key, "AIzaSyUser12345SecretKey")
+            self.assertEqual(tok, "apify_token_user_12345")
+
+            # Admin user fallback to root key
+            admin_key = get_user_gemini_key("admin_999")
+            self.assertEqual(admin_key, "AIzaSyAdminRootKey")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -830,6 +830,14 @@ class GeminiGovernor:
                 logger.warning(f"🔥 Model {model_name} isolated for 90s due to Server Error.")
 
             elif error_type in ("404", "403", "400", "not_found", "model_deprecated", "permission_denied", "client_error"):
+                err_msg_lower = str(error_message).lower()
+                if "permission to access the file" in err_msg_lower or (
+                    "file" in err_msg_lower and ("does not exist" in err_msg_lower or "may not exist" in err_msg_lower)
+                ):
+                    logger.warning(
+                        f"⚠️ Model {model_name} NOT banned: error was a File Resource access issue, not a model defect."
+                    )
+                    return
                 state["status"] = "BANNED"
                 state["ban_remaining_seconds"] = 86400  # 24-hour ban for deprecated/inaccessible model
                 logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to {error_type} error.")
@@ -1950,6 +1958,19 @@ class GeminiGovernor:
 
 
                 err_lower = err_msg.lower()
+
+                # ── FILE RESOURCE PERMISSION / NOT FOUND GUARD ───────────────
+                if "permission to access the file" in err_lower or (
+                    "file" in err_lower and ("does not exist" in err_lower or "may not exist" in err_lower)
+                ):
+                    logger.error(
+                        f"🛑 [VANGUARD] File Resource Error (not a model defect): {e}. "
+                        "The uploaded file handle is inaccessible or scoped to another API key. "
+                        "Aborting model retry loop immediately without banning healthy models."
+                    )
+                    raise e
+                # ────────────────────────────────────────────────────────────
+
                 if "404" in err_lower or "not_found" in err_lower or "not found" in err_lower or "deprecated" in err_lower:
                     error_type = "404"
                 elif "403" in err_lower or "permission_denied" in err_lower or "denied access" in err_lower or "permission denied" in err_lower:

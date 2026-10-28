@@ -398,9 +398,16 @@ def set_user_apify_token(user_id_str: str, apify_token: str) -> bool:
 def get_user_apify_token(user_id_str: str) -> Optional[str]:
     """Returns user personal Apify API token if present."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     if user_id_str in users:
-        return users[user_id_str].get("apify_api_token", "").strip() or None
+        val = users[user_id_str].get("apify_api_token", "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{user_id_str}_APIFY_API_TOKEN", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(user_id_str):
+        return os.getenv("APIFY_API_TOKEN", "").strip() or None
     return None
 
 
@@ -649,9 +656,16 @@ def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
 def get_user_gemini_key(user_id_str: str) -> Optional[str]:
     """Returns user personal Gemini API key if present."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     if user_id_str in users:
-        return users[user_id_str].get("gemini_api_key", "").strip() or None
+        val = users[user_id_str].get("gemini_api_key", "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{user_id_str}_GEMINI_API_KEY", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(user_id_str):
+        return os.getenv("GEMINI_API_KEY", "").strip() or None
     return None
 
 
