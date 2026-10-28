@@ -73,6 +73,9 @@ def extract_clean_shortcode(val: Optional[str]) -> str:
     m_yt = re.search(r"youtu\.be/([A-Za-z0-9_-]{5,})", cleaned, re.IGNORECASE)
     if m_yt:
         return m_yt.group(1).strip("`'\"\t\r\n ")
+    m_uid = re.search(r"^manual_\d+_(.+)$", cleaned, re.IGNORECASE)
+    if m_uid:
+        return m_uid.group(1).strip("`'\"\t\r\n ")
     sc_clean = cleaned.replace("manual_", "").strip("`'\"\t\r\n ")
     if re.fullmatch(r"[A-Za-z0-9_-]{5,}", sc_clean):
         return sc_clean

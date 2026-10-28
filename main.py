@@ -2542,7 +2542,9 @@ def run_master_pipeline(
                 )
                 if clean_fid or raw_fid:
                     sc = v_entry.get("shortcode") or "vault_clip"
-                    clip_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", f"manual_{sc}")
+                    uid_tag = f"{requestor_chat_id}_" if requestor_chat_id else ""
+                    folder_stem = f"manual_{uid_tag}{sc}"
+                    clip_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", folder_stem)
                     os.makedirs(clip_dir, exist_ok=True)
                     hydrated_path = vault_indexer.hydrate_raw_video_from_vault(url, dest_dir=clip_dir, check_clean_first=True)
                     if hydrated_path and os.path.exists(hydrated_path) and os.path.getsize(hydrated_path) > 1024:
@@ -2556,6 +2558,12 @@ def run_master_pipeline(
                             except Exception:
                                 pass
                         target_clip_dirs = [clip_dir]
+                        if requestor_chat_id:
+                            try:
+                                with open(os.path.join(clip_dir, "metadata.json"), "w", encoding="utf-8") as _mf:
+                                    json.dump({"chat_id": str(requestor_chat_id), "user_id": str(requestor_chat_id)}, _mf)
+                            except Exception:
+                                pass
                         # Also retrieve the already-extracted audio from Telegram Vault
                         try:
                             vault_indexer.hydrate_extracted_audio_from_vault(url, dest_dir=clip_dir)
