@@ -324,8 +324,8 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
             from Gemini_Modules.platform_seo_generator import sanitize_raw_handles_out
             
             indexer = TelegramVaultIndexer()
-            stagger_min = int(os.getenv("PUBLISH_STAGGER_MIN_SECONDS", "180"))
-            stagger_max = int(os.getenv("PUBLISH_STAGGER_MAX_SECONDS", "360"))
+            stagger_min = int(os.getenv("PUBLISH_STAGGER_MIN_SECONDS", "60"))
+            stagger_max = int(os.getenv("PUBLISH_STAGGER_MAX_SECONDS", "120"))
 
             for idx, r_file in enumerate(rendered_reels):
                 if clips_published_this_session >= target_publish_quota:

@@ -2464,6 +2464,18 @@ async def handle_telegram_incoming_msg(update, context):
         # Every user text input (URL, account handle, natural language prompt)
         # routes directly through the Gemini Autonomous Director without needing /agent.
         logger.info(f"🤖 [UNIVERSAL AGENT] Routing user text directly to Gemini Director: '{text[:80]}'")
+        # Notify user if a scheduled batch is actively running (shared resource awareness)
+        if len(ACTIVE_PIPELINE_JOBS) > 0:
+            try:
+                await msg.reply_text(
+                    "⚙️ **[BATCH IN PROGRESS]**\n\n"
+                    "An auto-scrape & edit cycle is currently running in the background.\n"
+                    "Your request has been received and will process normally — "
+                    "there may be a short delay on shared API quota.\n\n"
+                    "💡 Add your own API keys (`/setgemini`, `/setapify`) for dedicated speed."
+                )
+            except Exception as _e_busy:
+                logger.debug(f"Notice sending busy state tip: {_e_busy}")
         await _dispatch_agent_goal(update, text)
         return
 
@@ -3148,7 +3160,13 @@ def run_scheduled_pipeline_loop():
             target_user_runs = get_scheduled_users_for_slot(next_slot)
             for target_chat_run in target_user_runs:
                 logger.info(f"🚀 [SCHEDULER] Processing scheduled slot {next_slot} for user: {target_chat_run or 'System/Admin'}")
-                rendered = _cjm.run_best_available(chat_id=target_chat_run, max_accounts=2)
+                _sched_job_id = f"scheduler_{target_chat_run}_{int(time.time())}"
+                ACTIVE_PIPELINE_JOBS.add(_sched_job_id)
+                try:
+                    # CRITICAL FIX: run in thread pool — never block the Telegram event loop
+                    rendered = await asyncio.to_thread(_cjm.run_best_available, target_chat_run, 2)
+                finally:
+                    ACTIVE_PIPELINE_JOBS.discard(_sched_job_id)
                 if rendered:
                     logger.info(f"✅ [SCHEDULER] Inline batch done for {target_chat_run or 'System'}: {len(rendered)} reel(s) rendered.")
         except Exception as e:
@@ -3192,7 +3210,13 @@ async def _async_static_scheduler_task(bot_app=None):
             for target_chat_run in target_user_runs:
                 logger.info(f"🚀 [ASYNC SCHEDULER] Running scheduled cycle for user: {target_chat_run or 'System/Admin'}")
                 # run_best_available: Docker container if enabled, else inline batch
-                rendered = _cjm.run_best_available(chat_id=target_chat_run, max_accounts=2)
+                _sched_job_id = f"scheduler_{target_chat_run}_{int(time.time())}"
+                ACTIVE_PIPELINE_JOBS.add(_sched_job_id)
+                try:
+                    # CRITICAL FIX: run in thread pool — never block the Telegram event loop
+                    rendered = await asyncio.to_thread(_cjm.run_best_available, target_chat_run, 2)
+                finally:
+                    ACTIVE_PIPELINE_JOBS.discard(_sched_job_id)
                 # Docker mode returns [] immediately (async); delivery only for inline results
                 if bot_app and rendered:
                     for r_file in rendered:
