@@ -82,7 +82,8 @@ class AudioPoolManager:
 
     def __init__(self, base_dir: Optional[str] = None):
         if base_dir is None or base_dir == "Original_audio":
-            base_dir = os.path.join(_REPO_ROOT, "Original_audio")
+            _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            base_dir = os.path.join(_repo, "Original_audio")
         self.base_dir = os.path.abspath(base_dir)
         self.active_dir = os.path.join(self.base_dir, "active")
         self.cooldown_dir = os.path.join(self.base_dir, "cooldown")
@@ -224,7 +225,7 @@ class AudioPoolManager:
           - social metadata: caption, hashtags, taggedUsers, likesCount, videoViewCount, timestamp, ownerUsername
         """
         try:
-            repo_root = _REPO_ROOT
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             downloads_dir = os.path.join(repo_root, "downloads")
             if not os.path.exists(downloads_dir):
                 return
@@ -285,18 +286,6 @@ class AudioPoolManager:
                                 speech_dict = json.load(f)
                         except Exception:
                             pass
-
-                    coords_dict = {}
-                    try:
-                        for fn in os.listdir(folder_path):
-                            if fn.endswith(".coords.json"):
-                                c_path = os.path.join(folder_path, fn)
-                                with open(c_path, "r", encoding="utf-8") as cf:
-                                    coords_dict = json.load(cf)
-                                if coords_dict.get("watermark_boxes"):
-                                    break
-                    except Exception:
-                        pass
 
                     from Telegram_Storage_Modules.telegram_vault_indexer import canonicalize_social_url, extract_clean_shortcode
 
@@ -398,18 +387,6 @@ class AudioPoolManager:
                     if "usage_count" not in audio_data:
                         audio_data["usage_count"] = usage_count_val
 
-                    watermark_boxes_val = (
-                        coords_dict.get("watermark_boxes")
-                        or existing.get("visual_data", {}).get("watermark_boxes")
-                        or existing.get("watermark_boxes")
-                        or []
-                    )
-                    opencv_vectors_val = {}
-                    if watermark_boxes_val and isinstance(watermark_boxes_val, list):
-                        box0 = watermark_boxes_val[0]
-                        coords0 = box0.get("coordinates") if isinstance(box0.get("coordinates"), dict) else box0
-                        opencv_vectors_val = box0.get("opencv_vectors") or coords0.get("opencv_vectors") or {}
-
                     visual_data = existing.get("visual_data") or {
                         "gemini_visual_output": gemini_visual_intel,
                         "gemini_watermark_output": existing.get("gemini_watermark_output", {}),
@@ -418,10 +395,6 @@ class AudioPoolManager:
                     }
                     if gemini_visual_intel:
                         visual_data["gemini_visual_output"] = gemini_visual_intel
-                    if watermark_boxes_val:
-                        visual_data["watermark_boxes"] = watermark_boxes_val
-                    if opencv_vectors_val:
-                        visual_data["opencv_vectors"] = opencv_vectors_val
 
                     # Build updated v3 entry
                     updated_entry = {
@@ -440,15 +413,9 @@ class AudioPoolManager:
                         "file_size": file_size or existing.get("file_size", 0),
                         "sha256": existing.get("sha256", ""),
                         "selected_audio": existing.get("selected_audio"),
-                        "is_source_extract": True,
-                        "is_unusable_bgm": True,
-                        "is_curated_bgm": False,
-                        "is_curated_library": False,
                         "media_file_ids": media_file_ids,
                         "audio_data": audio_data,
                         "visual_data": visual_data,
-                        "watermark_boxes": watermark_boxes_val or existing.get("watermark_boxes", []),
-                        "opencv_vectors": opencv_vectors_val or existing.get("opencv_vectors", {}),
                         "creator_behavior_model": cbm_intel,
                         "video_editing_plan": existing.get("video_editing_plan", {}),
                         "pipeline_execution_trajectory": existing.get("pipeline_execution_trajectory", {}),
@@ -575,20 +542,8 @@ class AudioPoolManager:
             if res:
                 doc_id = extract_file_id(res)
                 if doc_id:
-                    indexer = TelegramVaultIndexer()
-                    # ── CIRCUIT BREAKER: Never let empty/wiped local pool clobber a valid cloud backup! ──
-                    existing_fid = indexer.vault_index.get("pool_metadata_file_id")
-                    local_files = self.metadata.get("files", {})
-                    valid_local_tracks = [k for k, v in local_files.items() if k != "social_media_id" and isinstance(v, dict)]
-                    if not valid_local_tracks and existing_fid and existing_fid != doc_id:
-                        logger.warning(
-                            "🛡️ [VAULT CIRCUIT BREAKER] Local pool has 0 valid tracks! "
-                            "Preserving existing vault pointer %s and refusing empty overwrite.",
-                            existing_fid[:15]
-                        )
-                        return
-
                     AudioPoolManager._last_vault_sync_time = now
+                    indexer = TelegramVaultIndexer()
                     indexer.vault_index["pool_metadata_file_id"] = doc_id
                     indexer.vault_index["metadata_pool_file_id"] = doc_id
                     indexer._save_local_index()
@@ -795,12 +750,8 @@ class AudioPoolManager:
 
                 meta = self._get_file_metadata(filename)
                 if not meta:
-                    stem = os.path.splitext(filename)[0]
-                    is_sc = len(stem) in (10, 11, 12) and bool(re.match(r"^[A-Za-z0-9_-]+$", stem))
-                    is_curated = not (
-                        filename.lower().startswith(("bgm_", "vault_bgm_", "extracted_", "sess_", "video", "manual_"))
-                        or is_sc
-                    )
+                    logger.info(f"[POOL_SYNC] Registering unstubbed active audio in metadata: {filename}")
+                    is_curated = not filename.lower().startswith(("bgm_", "vault_bgm_", "extracted_", "sess_"))
                     self._set_file_metadata(filename, {
                         "usage_count": 0,
                         "last_used":   0,
@@ -808,7 +759,6 @@ class AudioPoolManager:
                         "energy":      0.5,
                         "is_curated_library": is_curated,
                         "is_source_extract": not is_curated,
-                        "is_unusable_bgm": not is_curated,
                         "created_at":  time.time(),
                         "beat_data_path": None,
                         "drop_times":  [],

@@ -261,22 +261,12 @@ def _clean_json(text: str) -> str:
     except json.JSONDecodeError:
         pass
 
-    # Try json_repair if available
+    # Optional last resort: pip install json_repair --break-system-packages
     try:
         from json_repair import repair_json
         repaired = repair_json(text)
-        if repaired:
-            json.loads(repaired)  # verify before trusting it
-            return repaired
-    except Exception:
-        pass
-
-    # Pure-Python repair for unescaped newlines inside strings
-    try:
-        sanitized = re.sub(r"[\r\n]+", " ", text)
-        sanitized = re.sub(r",\s*([\]}])", r"\1", sanitized)
-        json.loads(sanitized)
-        return sanitized
+        json.loads(repaired)  # verify before trusting it
+        return repaired
     except Exception:
         pass
 
@@ -564,8 +554,6 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
             }
 
         loop = asyncio.new_event_loop()
-        # Suppress benign aiohttp / SSL transport socket-close notices during teardown
-        loop.set_exception_handler(lambda _loop, _ctx: None)
         try:
             asyncio.set_event_loop(loop)
             res = loop.run_until_complete(asyncio.wait_for(_async_recognize(), timeout=4.0))
@@ -577,14 +565,14 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
         finally:
             try:
                 # Cancel pending tasks to prevent unclosed client/connector warnings
-                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                pending = asyncio.all_tasks(loop)
                 for task in pending:
                     task.cancel()
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                # Grace period for aiohttp / SSL transport shutdown
+                # Grace period for aiohttp / SSL transport shutdown to prevent Bad file descriptor
                 loop.run_until_complete(loop.shutdown_asyncgens())
-                loop.run_until_complete(asyncio.sleep(0.1))
+                loop.run_until_complete(asyncio.sleep(0.25))
             except Exception:
                 pass
             finally:
@@ -592,10 +580,7 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
                     asyncio.set_event_loop(None)
                 except Exception:
                     pass
-                try:
-                    loop.close()
-                except Exception:
-                    pass
+                loop.close()
     except Exception as e:
         logger.debug(f"[LYRIC_ALIGNER] Shazam audio recognition notice: {e}")
     return {}
@@ -604,15 +589,11 @@ def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
 def _build_shazam_context(track_info: Dict[str, Any]) -> str:
     if not track_info or not track_info.get("title"):
         return "\n\n### AUDIO TRACK IDENTIFICATION (SHAZAM FINGERPRINT): Unknown / Unindexed\n"
-    # Escape quotes in track metadata so Gemini doesn't emit unescaped quotes in JSON
-    t_title = str(track_info.get("title", "")).replace('"', '\\"')
-    t_artist = str(track_info.get("artist", "")).replace('"', '\\"')
-    t_genre = str(track_info.get("genre", "")).replace('"', '\\"')
     return (
         f"\n\n### AUDIO TRACK IDENTIFICATION (SHAZAM AUDIO FINGERPRINT):\n"
-        f"  - Track Title: '{t_title}'\n"
-        f"  - Artist: '{t_artist}'\n"
-        f"  - Primary Genre: '{t_genre}'\n"
+        f"  - Track Title: '{track_info.get('title')}'\n"
+        f"  - Artist: '{track_info.get('artist')}'\n"
+        f"  - Primary Genre: '{track_info.get('genre')}'\n"
         "USE THIS KNOWN SONG IDENTIFICATION to ensure 100% exact lyric words in `transcript` and `lyrics[].text`. "
         "Correct any misheard ASR words (e.g. Whisper mistranslating song lyrics to English phonetics) using the official lyrics of this song!\n"
     )
@@ -1449,32 +1430,6 @@ def select_best_audio_for_clip(
             return True
         return False
 
-    def _is_source_extract_or_unusable(fname, meta):
-        if not isinstance(meta, dict):
-            return False
-        if meta.get("is_unusable_bgm") or meta.get("is_source_extract"):
-            if not (meta.get("is_curated_bgm") or meta.get("is_curated_library")):
-                return True
-        return False
-
-    def _is_sibling_harvested_clip(fname, meta):
-        # Prevent any audio extracted from concurrently downloaded clips in downloads/ from being picked as BGM
-        try:
-            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            downloads_dir = os.path.join(repo_root, "downloads")
-            if os.path.isdir(downloads_dir):
-                f_lower = fname.lower()
-                for sibling_folder in os.listdir(downloads_dir):
-                    if not sibling_folder or sibling_folder.startswith("."):
-                        continue
-                    sib_clean = sibling_folder.replace("manual_", "").lower().strip()
-                    if sib_clean and (sib_clean in f_lower or f_lower.startswith(f"bgm_{sib_clean}")):
-                        if not (meta.get("is_curated_bgm") or meta.get("is_curated_library")):
-                            return True
-        except Exception:
-            pass
-        return False
-
     # Filter candidate tracks
     all_candidates = [
         fname for fname, meta in pool_files.items()
@@ -1484,27 +1439,14 @@ def select_best_audio_for_clip(
         and not _is_too_short(fname, meta)
         and not _is_disqualified_by_size_or_blacklist(fname, meta)
         and not _is_self_extracted(fname, meta)
-        and not _is_source_extract_or_unusable(fname, meta)
-        and not _is_sibling_harvested_clip(fname, meta)
         and fname.lower().endswith((".mp3", ".wav", ".m4a"))
     ]
 
     if not all_candidates:
         clean_sc = (clip_id or os.path.basename(clip_folder or "")).replace("manual_", "").strip() or "clip"
-        retrieved_audio = None
-        # 1. First check if clip_folder already has video_extracted.wav or clean_sc.wav locally
-        if clip_folder and os.path.isdir(clip_folder):
-            for candidate_local in ["video_extracted.wav", f"{clean_sc}.wav", "audio.wav"]:
-                cl_path = os.path.join(clip_folder, candidate_local)
-                if os.path.isfile(cl_path) and os.path.getsize(cl_path) > 1024:
-                    retrieved_audio = cl_path
-                    break
-
-        # 2. Fall back to Telegram Vault hydration if not on disk
         from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
         vault = TelegramVaultIndexer()
-        if not retrieved_audio:
-            retrieved_audio = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_folder)
+        retrieved_audio = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_folder)
         if not retrieved_audio and clip_id:
             retrieved_audio = vault.hydrate_extracted_audio_from_vault(clip_id, dest_dir=clip_folder)
 
@@ -1513,11 +1455,11 @@ def select_best_audio_for_clip(
             if _is_bl(audio_filename=track_name, audio_shortcode=clean_sc):
                 logger.warning(f"🚫 [BGM Selector] Vault extracted audio '{track_name}' is blacklisted — refusing fallback.")
             else:
-                logger.info(f"🎙️ [BGM Selector] Preserving clip's own original audio track: {retrieved_audio}")
+                logger.info(f"🎙️ [BGM Selector] Retrieved clip's own extracted audio from Telegram Vault: {retrieved_audio}")
                 return {
                     "selected_audio_track": track_name,
                     "alignment_score": 0.90,
-                    "reasoning": f"Preserved clip's own continuous audio track ({track_name}).",
+                    "reasoning": f"Retrieved clip's own continuous audio track ({track_name}) from Telegram Vault.",
                     "physical_path": retrieved_audio,
                 }
         logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index and vault has no audio.")
