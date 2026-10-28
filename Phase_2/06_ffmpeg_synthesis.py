@@ -162,8 +162,13 @@ def synthesize_editing_plan(
             )
 
     extra_inputs = {}
+    clean_uid = None
     if requestor_chat_id is not None and str(requestor_chat_id).strip():
         clean_uid = str(requestor_chat_id).strip()
+    if not clean_uid and forensic_context:
+        clean_uid = str(forensic_context.get("requestor_chat_id") or forensic_context.get("user_id") or "").strip() or None
+
+    if clean_uid:
         extra_inputs["requestor_chat_id"] = clean_uid
         extra_inputs["user_id"] = clean_uid
         try:
@@ -171,6 +176,10 @@ def synthesize_editing_plan(
             extra_inputs["brand_text"] = get_user_branding(clean_uid)
         except Exception as _b_err:
             logger.debug(f"User branding lookup notice: {_b_err}")
+            extra_inputs["brand_text"] = ""
+    else:
+        # Strictly no user context -> no branding watermark
+        extra_inputs["brand_text"] = ""
 
     if user_edit_directive:
         extra_inputs["user_edit_directive"] = user_edit_directive

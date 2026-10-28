@@ -716,7 +716,7 @@ def get_user_branding(user_id_str: Optional[Union[str, int]] = None) -> str:
     - If user_id_str is None (headless CLI / background daemon runner), defaults to root BRAND_WATERMARK_TEXT.
     """
     if user_id_str is None or str(user_id_str).strip() == "":
-        return os.getenv("BRAND_WATERMARK_TEXT", "").strip().strip('"').strip("'")
+        return ""
 
     users = load_all_users()
     clean_uid = str(user_id_str).strip()

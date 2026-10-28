@@ -963,16 +963,9 @@ class FFmpegCommandGenerator:
                 brand_text = get_user_branding(uid) or None
             except Exception:
                 brand_text = None
-        elif dt_op and dt_op.get("text"):
-            brand_text = str(dt_op.get("text")).strip() or None
         else:
-            # Fallback to env ONLY if no specific user context is attached (e.g. headless CLI runner)
-            env_brand = (
-                os.getenv("BRAND_WATERMARK_TEXT", "").strip()
-                or os.getenv("WATERMARK_TEXT", "").strip()
-                or os.getenv("BRAND_NAME", "").strip()
-            )
-            brand_text = env_brand or None
+            # Strictly NO fallback to .env when no user brand is set
+            brand_text = None
 
         # Check if input video has an audio stream AND whether we explicitly preserve original audio
         preserve_orig = bool(is_preserve_input)
@@ -1164,6 +1157,26 @@ class FFmpegCommandGenerator:
                                 break
                         except Exception:
                             pass
+
+                # If still not found from local sidecar files, query pool_metadata.json by shortcode
+                if not watermark_boxes:
+                    try:
+                        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer, extract_clean_shortcode
+                        tvi = TelegramVaultIndexer()
+                        p_dir = os.path.basename(os.path.dirname(str(input_path)))
+                        sc_guess = extract_clean_shortcode(p_dir) or p_dir.replace("manual_", "").replace("auto_", "").strip()
+                        entry = tvi.find_entry_by_shortcode(sc_guess) or tvi.find_entry_by_shortcode(p_dir)
+                        if entry:
+                            recovered_wm = (
+                                entry.get("visual_data", {}).get("watermark_boxes")
+                                or entry.get("watermark_boxes")
+                                or []
+                            )
+                            if recovered_wm:
+                                watermark_boxes = recovered_wm
+                                logger.info(f"📍 [SYNTHESIS WATERMARK RECOVERY] Recovered {len(watermark_boxes)} coordinate box(es) directly from pool_metadata.json for '{sc_guess}'!")
+                    except Exception as _rve:
+                        logger.debug("Notice recovering watermark boxes from vault indexer: %s", _rve)
 
             if watermark_boxes:
                 box0 = watermark_boxes[0]
@@ -2316,20 +2329,22 @@ class GeminiFFmpegEngine:
                         else:
                             boxcolor = "black@0.35"
 
-                res = self.cmd_generator.build_drawtext_command(
-                    current_input, step_output,
-                    text=op.get("text") or os.getenv("BRAND_WATERMARK_TEXT", "AMTCE"),
-                    fontsize=fontsize or int(os.getenv("BRAND_WATERMARK_SIZE", "36")),
-                    fontcolor=op.get("fontcolor", "white@0.8"),
-                    position=op.get("position") or os.getenv("BRAND_WATERMARK_POSITION", "bottom_center"),
-                    x=target_x,
-                    y=target_y,
-                    enable_box=op.get("enable_box", True),
-                    boxcolor=boxcolor or "black@0.4",
-                    fontfile=op.get("fontfile"),
-                    encoding_cfg=step_encoding
-                )
-                command_steps.append(res)
+                text_val = (op.get("text") or "").strip()
+                if text_val:
+                    res = self.cmd_generator.build_drawtext_command(
+                        current_input, step_output,
+                        text=text_val,
+                        fontsize=fontsize or int(os.getenv("BRAND_WATERMARK_SIZE", "36")),
+                        fontcolor=op.get("fontcolor", "white@0.8"),
+                        position=op.get("position") or os.getenv("BRAND_WATERMARK_POSITION", "bottom_center"),
+                        x=target_x,
+                        y=target_y,
+                        enable_box=op.get("enable_box", True),
+                        boxcolor=boxcolor or "black@0.4",
+                        fontfile=op.get("fontfile"),
+                        encoding_cfg=step_encoding
+                    )
+                    command_steps.append(res)
             elif op_type == "concat":
                 raw_inputs = op.get("inputs")
                 if isinstance(raw_inputs, str):
@@ -2768,16 +2783,11 @@ class GeminiFFmpegEngine:
             uid = str(extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")).strip()
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import get_user_branding
-                resolved_brand_text = get_user_branding(uid)
+                resolved_brand_text = get_user_branding(uid) or ""
             except Exception:
                 resolved_brand_text = ""
         else:
-            # Fallback to env ONLY if no specific user context is attached (e.g. headless CLI runner)
-            resolved_brand_text = (
-                os.getenv("BRAND_WATERMARK_TEXT", "").strip()
-                or os.getenv("WATERMARK_TEXT", "").strip()
-                or os.getenv("BRAND_NAME", "").strip()
-            )
+            resolved_brand_text = ""
 
         if resolved_brand_text:
             has_brand_op = any(
@@ -2799,7 +2809,7 @@ class GeminiFFmpegEngine:
             # User has no branding configured: sanitize plan to prevent stale or hallucinated watermarks
             gemini_plan_json["operations"] = [
                 op for op in gemini_plan_json.get("operations", [])
-                if op.get("operation_type") not in ("brand_watermark", "text_watermark")
+                if op.get("operation_type") not in ("brand_watermark", "text_watermark", "drawtext")
             ]
 
         candidates: List[Tuple[float, Dict[str, Any], Dict[str, Any]]] = []
@@ -3032,11 +3042,7 @@ class GeminiFFmpegEngine:
             except Exception:
                 brand_text = None
         else:
-            brand_text = (
-                os.getenv("BRAND_WATERMARK_TEXT", "").strip()
-                or os.getenv("WATERMARK_TEXT", "").strip()
-                or os.getenv("BRAND_NAME", "").strip()
-            ) or None
+            brand_text = None
         encoding_cfg  = gemini_json.get("global_encoding")
 
         _single_pass_ok = False

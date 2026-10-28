@@ -120,6 +120,27 @@ def run_phase2_pipeline(
             working_video_path = video_path
             watermark_boxes = []
 
+            # Multi-user isolation: resolve the owning user_id for this clip
+            clip_owner_id = requestor_chat_id
+            if not clip_owner_id:
+                meta_path = os.path.join(clip_dir, "metadata.json")
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as _mf:
+                            _mdata = json.load(_mf)
+                        clip_owner_id = _mdata.get("user_id") or _mdata.get("chat_id")
+                    except Exception:
+                        pass
+                if not clip_owner_id:
+                    try:
+                        from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
+                        _sm = TelegramSessionManager()
+                        _sess = _sm.get_session(folder_name) or _sm.get_session(shortcode_stem)
+                        if _sess:
+                            clip_owner_id = _sess.get("requestor_chat_id")
+                    except Exception:
+                        pass
+
             # Check if user explicitly requested inpainting in directive (typo-tolerant)
             try:
                 from Watermark_and_Inpainting.watermark_directive_helper import is_inpaint_directive, extract_watermark_keywords
@@ -214,6 +235,23 @@ def run_phase2_pipeline(
                             logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(watermark_boxes)} inpaint coordinate box(es) from sidecar.")
                     except Exception as _ce:
                         logger.warning(f"⚠️ [WATERMARK ALIGNMENT] Failed to load coords sidecar: {_ce}")
+
+                # If sidecar is missing or empty, recover coordinates directly from pool_metadata.json
+                if not watermark_boxes:
+                    try:
+                        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                        _v_idx = TelegramVaultIndexer()
+                        _pe = _v_idx.find_entry_by_shortcode(folder_name)
+                        if _pe:
+                            watermark_boxes = (
+                                _pe.get("visual_data", {}).get("watermark_boxes")
+                                or _pe.get("watermark_boxes")
+                                or []
+                            )
+                            if watermark_boxes:
+                                logger.info(f"📍 [WATERMARK ALIGNMENT] Recovered {len(watermark_boxes)} inpaint coordinate box(es) directly from pool_metadata.json!")
+                    except Exception as _pme:
+                        logger.debug(f"Notice recovering watermark boxes from pool_metadata: {_pme}")
             else:
                 # 3. Detect and Inpaint Watermarks Upfront (Compulsory on fresh inputs OR when requested via directive)
                 try:
@@ -262,14 +300,15 @@ def run_phase2_pipeline(
                             except Exception as _ce:
                                 logger.debug(f"Coords sidecar read notice: {_ce}")
 
-                        # Upload clean inpainted source to Telegram Vault ONLY if watermarks were actually detected and cleaned
+                        # Upload clean inpainted source and coordinates/vectors to Telegram Vault
                         if watermark_boxes:
                             try:
                                 from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
                                 vault_idx = TelegramVaultIndexer()
                                 clean_fid = vault_idx.update_inpainted_clean_source_in_vault(
                                     clean_video_path=clean_raw_path,
-                                    clip_folder_name=folder_name
+                                    clip_folder_name=folder_name,
+                                    watermark_boxes=watermark_boxes
                                 )
                                 if clean_fid:
                                     logger.info(f"☁️ [CLEAN VAULT UPLOAD] Uploaded clean video to vault (file_id: {clean_fid[:15]}...)")
@@ -432,7 +471,7 @@ def run_phase2_pipeline(
                 micro_shots=micro_shots,
                 target_duration=15.0,
                 user_edit_directive=user_edit_directive,
-                requestor_chat_id=requestor_chat_id,
+                requestor_chat_id=clip_owner_id,
             )
             if synthesis_res is None:
                 synthesis_res = {"status": "failed", "error": "synthesize_editing_plan returned None"}

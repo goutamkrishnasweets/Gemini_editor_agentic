@@ -1148,6 +1148,37 @@ class TelegramVaultIndexer:
             f"auto_clean_{shortcode}.mp4",
             "video_inpainted_clean.mp4",
         ]
+        def _reconstruct_coords_if_needed(target_video_path: str):
+            if not target_video_path or not os.path.exists(target_video_path):
+                return
+            sidecar_path = target_video_path + ".coords.json"
+            if not os.path.exists(sidecar_path):
+                wm_boxes = None
+                if entry:
+                    wm_boxes = entry.get("visual_data", {}).get("watermark_boxes") or entry.get("watermark_boxes")
+                if not wm_boxes and sess:
+                    wm_boxes = (
+                        sess.get("visual_data", {}).get("watermark_boxes") if isinstance(sess.get("visual_data"), dict) else None
+                    ) or sess.get("watermark_boxes")
+                if wm_boxes:
+                    try:
+                        v_w = 1080
+                        v_h = 1920
+                        if isinstance(wm_boxes, list) and wm_boxes and isinstance(wm_boxes[0], dict):
+                            v_w = int(wm_boxes[0].get("video_width") or 1080)
+                            v_h = int(wm_boxes[0].get("video_height") or 1920)
+                        sidecar_payload = {
+                            "watermark_boxes": wm_boxes,
+                            "input_video": target_video_path,
+                            "video_width": v_w,
+                            "video_height": v_h
+                        }
+                        with open(sidecar_path, "w", encoding="utf-8") as _scf:
+                            json.dump(sidecar_payload, _scf)
+                        logger.info(f"📍 [VAULT CLEAN HYDRATE] Reconstructed coords sidecar ({len(wm_boxes)} box(es)) beside {os.path.basename(target_video_path)}")
+                    except Exception as _rce:
+                        logger.debug("Coords reconstruction notice: %s", _rce)
+
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
                 for c_fn in clean_candidates:
@@ -1156,6 +1187,7 @@ class TelegramVaultIndexer:
                     c_clean = os.path.join(c_dir, c_fn)
                     if os.path.exists(c_clean) and os.path.getsize(c_clean) > 1024:
                         logger.info(f"⚡ [VAULT CLEAN HYDRATE] Local clean video found -> {c_clean}")
+                        _reconstruct_coords_if_needed(c_clean)
                         return c_clean
 
         # Check TelegramSessionManager for clean video path (NEVER use video_path which points to master reels)
@@ -1174,6 +1206,7 @@ class TelegramVaultIndexer:
                         if "_master.mp4" in bname or "processed shorts" in sp.lower():
                             continue
                         if ("clean" in bname or "inpainted" in bname) and os.path.exists(sp) and os.path.getsize(sp) > 1024:
+                            _reconstruct_coords_if_needed(sp)
                             return sp
                     break
         except Exception:
@@ -1207,6 +1240,9 @@ class TelegramVaultIndexer:
                             shutil.copyfile(clean_path, legacy_path)
                         except Exception:
                             pass
+                    _reconstruct_coords_if_needed(clean_path)
+                    if os.path.exists(legacy_path) and legacy_path != clean_path:
+                        _reconstruct_coords_if_needed(legacy_path)
                     logger.info(f"✅ [VAULT CLEAN HYDRATE] Clean video recovered successfully -> {clean_path}")
                     return clean_path
 
@@ -1971,75 +2007,116 @@ class TelegramVaultIndexer:
             "clip_entry": clip_entry,
         }
 
-    def update_inpainted_clean_source_in_vault(self, clean_video_path: str, clip_folder_name: str) -> Optional[str]:
-        """Uploads clean video_inpainted_clean.mp4 to Telegram Storage Group and updates wm_clean_file_id in pool_metadata.json."""
+    def update_inpainted_clean_source_in_vault(
+        self,
+        clean_video_path: str,
+        clip_folder_name: str,
+        watermark_boxes: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[str]:
+        """
+        Uploads clean video_inpainted_clean.mp4 to Telegram Storage Group and
+        persistently saves wm_clean_file_id along with detected watermark coordinates
+        and OpenCV vector math into pool_metadata.json.
+        """
         if not clean_video_path or not os.path.exists(clean_video_path):
             return None
 
+        # Resolve watermark boxes and OpenCV vector math from parameter or sidecar files
+        if not watermark_boxes:
+            candidate_sidecars = [
+                clean_video_path + ".coords.json",
+                os.path.join(os.path.dirname(clean_video_path), "video_inpainted_clean.mp4.coords.json"),
+                os.path.join(os.path.dirname(clean_video_path), "video.mp4.coords.json"),
+            ]
+            for c_sc in candidate_sidecars:
+                if os.path.isfile(c_sc):
+                    try:
+                        with open(c_sc, "r", encoding="utf-8") as _scf:
+                            _sc_data = json.load(_scf)
+                        watermark_boxes = _sc_data.get("watermark_boxes") or []
+                        if watermark_boxes:
+                            break
+                    except Exception:
+                        pass
+
+        clean_sc = clip_folder_name.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_", "").replace("auto_", "").rstrip(".mp4")
+
         storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        if not storage_group_id or not bot_token:
-            return None
 
-        try:
-            is_auto = "auto" in clip_folder_name.lower()
-            clean_sc = clip_folder_name.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_", "").replace("auto_", "").rstrip(".mp4")
-            prefix = "auto_clean_" if is_auto else "manual_clean_"
-            clean_display_name = f"{prefix}{clean_sc}.mp4"
-            caption = f"🎬 [CLEAN INPAINTED SOURCE] `{clean_display_name}`\n🆔 `{clip_folder_name}`"
+        clean_file_id = None
+        if storage_group_id and bot_token:
+            try:
+                is_auto = "auto" in clip_folder_name.lower()
+                prefix = "auto_clean_" if is_auto else "manual_clean_"
+                clean_display_name = f"{prefix}{clean_sc}.mp4"
+                caption = f"🎬 [CLEAN INPAINTED SOURCE] `{clean_display_name}`\n🆔 `{clip_folder_name}`"
 
-            upload_res = _send_telegram_file_sync(
-                "sendVideo",
-                storage_group_id,
-                "video",
-                clean_video_path,
-                caption=caption,
-                custom_filename=clean_display_name
-            )
-            if not upload_res or not isinstance(upload_res, dict) or not upload_res.get("ok"):
                 upload_res = _send_telegram_file_sync(
-                    "sendDocument",
+                    "sendVideo",
                     storage_group_id,
-                    "document",
+                    "video",
                     clean_video_path,
                     caption=caption,
                     custom_filename=clean_display_name
                 )
+                if not upload_res or not isinstance(upload_res, dict) or not upload_res.get("ok"):
+                    upload_res = _send_telegram_file_sync(
+                        "sendDocument",
+                        storage_group_id,
+                        "document",
+                        clean_video_path,
+                        caption=caption,
+                        custom_filename=clean_display_name
+                    )
 
-            clean_file_id = None
-            if upload_res and isinstance(upload_res, dict) and upload_res.get("ok"):
-                res_doc = upload_res.get("result", {})
-                clean_file_id = res_doc.get("video", {}).get("file_id") or res_doc.get("document", {}).get("file_id")
+                if upload_res and isinstance(upload_res, dict) and upload_res.get("ok"):
+                    res_doc = upload_res.get("result", {})
+                    clean_file_id = res_doc.get("video", {}).get("file_id") or res_doc.get("document", {}).get("file_id")
+            except Exception as _e:
+                logger.warning("⚠️ Could not upload clean video in Telegram vault: %s", _e)
 
-            if clean_file_id:
-                try:
-                    from Audio_Modules.audio_pool_manager import AudioPoolManager
-                    pm = AudioPoolManager()
-                    clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
-                    top_clips = pm.metadata.setdefault("clips", {})
-                    for pool_dict in [clips, top_clips]:
-                        for url_key, entry in pool_dict.items():
-                            if not isinstance(entry, dict):
-                                continue
-                            entry_sc = str(entry.get("shortcode", "")).strip().lower()
-                            if (
-                                clip_folder_name.lower() in url_key.lower() or
-                                clean_sc.lower() in url_key.lower() or
-                                (clean_sc and entry_sc == clean_sc.lower())
-                            ):
-                                m_ids = entry.setdefault("media_file_ids", {})
-                                m_ids["wm_clean_file_id"] = clean_file_id
-                                entry["wm_clean_file_id"] = clean_file_id
-                    pm._save_metadata(sync_to_vault=True)
-                    logger.info(f"✅ [VAULT CLEAN INDEX] Saved wm_clean_file_id to pool_metadata.json: {clean_file_id[:15]}...")
-                except Exception as _pe:
-                    logger.debug("Notice updating clean_file_id in pool_metadata: %s", _pe)
+        # Persist clean_file_id (if obtained) AND watermark coordinates & vector math in pool_metadata.json
+        try:
+            from Audio_Modules.audio_pool_manager import AudioPoolManager
+            pm = AudioPoolManager()
+            clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
+            top_clips = pm.metadata.setdefault("clips", {})
+            updated_any = False
+            for pool_dict in [clips, top_clips]:
+                for url_key, entry in pool_dict.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_sc = str(entry.get("shortcode", "")).strip().lower()
+                    if (
+                        clip_folder_name.lower() in url_key.lower() or
+                        clean_sc.lower() in url_key.lower() or
+                        (clean_sc and entry_sc == clean_sc.lower())
+                    ):
+                        if clean_file_id:
+                            m_ids = entry.setdefault("media_file_ids", {})
+                            m_ids["wm_clean_file_id"] = clean_file_id
+                            entry["wm_clean_file_id"] = clean_file_id
+                        if watermark_boxes:
+                            v_data = entry.setdefault("visual_data", {})
+                            v_data["watermark_boxes"] = watermark_boxes
+                            entry["watermark_boxes"] = watermark_boxes
+                            if isinstance(watermark_boxes, list) and watermark_boxes:
+                                box0 = watermark_boxes[0]
+                                coords0 = box0.get("coordinates") if isinstance(box0.get("coordinates"), dict) else box0
+                                op_vecs = box0.get("opencv_vectors") or coords0.get("opencv_vectors")
+                                if op_vecs:
+                                    v_data["opencv_vectors"] = op_vecs
+                                    entry["opencv_vectors"] = op_vecs
+                        updated_any = True
 
-                return clean_file_id
-        except Exception as _e:
-            logger.warning("⚠️ Could not upload/update clean video in Telegram vault: %s", _e)
+            if updated_any:
+                pm._save_metadata(sync_to_vault=bool(clean_file_id))
+                logger.info(f"✅ [VAULT CLEAN INDEX] Saved wm_clean_file_id ({str(clean_file_id)[:15]}) and {len(watermark_boxes or [])} watermark box(es) with OpenCV vector math to pool_metadata.json.")
+        except Exception as _pe:
+            logger.debug("Notice updating clean metadata in pool_metadata: %s", _pe)
 
-        return None
+        return clean_file_id
 
     def sync_visual_pool_metadata(self, clip_id: str, clip_data: Dict[str, Any]) -> bool:
         """Visual intelligence is merged directly into pool_metadata.json."""

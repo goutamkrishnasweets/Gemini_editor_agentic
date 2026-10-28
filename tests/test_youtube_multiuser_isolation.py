@@ -548,14 +548,14 @@ def test_branding_multiuser_isolation(tmp_path, monkeypatch):
         set_user_branding("100", "CustomAdminBrand")
         assert get_user_branding("100") == "CustomAdminBrand"
 
-        # 6. Headless CLI / daemon run (no user_id)
-        assert get_user_branding(None) == "AdminRootBrand"
+        # 6. Anonymous / unassigned run (no user_id) MUST return empty string (zero leak)
+        assert get_user_branding(None) == ""
 
 
 def test_ffmpeg_synthesis_branding_isolation(tmp_path, monkeypatch):
     """
     Verifies build_single_pass_filtergraph does NOT inject watermark
-    when a non-admin user has no branding configured.
+    when a non-admin user has no branding configured or extra_inputs is None.
     """
     from Gemini_Modules.gemini_ffmpeg_synthesis import FFmpegCommandGenerator
     monkeypatch.setenv("TELEGRAM_ADMIN_ID", "100")
@@ -593,6 +593,17 @@ def test_ffmpeg_synthesis_branding_isolation(tmp_path, monkeypatch):
     # MUST contain PersonalUserBrand
     assert "PersonalUserBrand" in cmd_str_with_brand
     assert "AdminRootBrand" not in cmd_str_with_brand
+
+    # 3. Anonymous / unassigned clip (no extra_inputs): MUST NOT contain drawtext or AdminRootBrand!
+    plan_anon = gen.build_single_pass_filtergraph(
+        input_path=fake_video,
+        output_path=fake_out,
+        extra_inputs=None,
+        gemini_operations=[]
+    )
+    cmd_str_anon = " ".join(plan_anon["cmd_list"])
+    assert "AdminRootBrand" not in cmd_str_anon
+    assert "drawtext" not in cmd_str_anon
 
 
 
