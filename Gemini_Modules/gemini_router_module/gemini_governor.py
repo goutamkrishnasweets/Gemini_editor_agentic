@@ -541,6 +541,13 @@ class GeminiGovernor:
                         "last_success_at": 0,
                         "warmup_calls": 0
                     }
+            if models:
+                valid_set = set(models)
+                for existing_m, state in list(self.model_states.items()):
+                    if existing_m not in valid_set:
+                        state["status"] = "BANNED"
+                        state["ban_remaining_seconds"] = 31536000
+                        logger.warning(f"🚫 [GOVERNOR] Model '{existing_m}' is not in active API models list — permanently banned.")
 
 
 
@@ -721,7 +728,12 @@ class GeminiGovernor:
             state = self.model_states.get(model_name)
 
             if not state:
-
+                if hasattr(self, "TASK_MODEL_RATINGS") and self.TASK_MODEL_RATINGS:
+                    known = set()
+                    for t_models in self.TASK_MODEL_RATINGS.values():
+                        known.update(t_models.keys())
+                    if known and model_name not in known:
+                        return False
                 return True
 
 
@@ -828,6 +840,15 @@ class GeminiGovernor:
                 state["ban_remaining_seconds"] = 90
 
                 logger.warning(f"🔥 Model {model_name} isolated for 90s due to Server Error.")
+
+                # If 504 Gateway Timeout or Deadline Exceeded on unverified model, trigger model refresh
+                if "504" in str(error_message) or "deadline" in str(error_message).lower():
+                    if refresh_gemini_models_cache:
+                        try:
+                            refresh_gemini_models_cache(force=True)
+                            self._initialize_models()
+                        except Exception as ref_err:
+                            logger.warning(f"Failed to auto-refresh model cache: {ref_err}")
 
             elif error_type in ("404", "403", "400", "not_found", "model_deprecated", "permission_denied", "client_error"):
                 err_msg_lower = str(error_message).lower()
@@ -1380,7 +1401,8 @@ class GeminiGovernor:
         session_id: Optional[str] = None,
 
         api_key: Optional[str] = None,
-
+        scratch_retry_done: bool = False,
+        first_live_model: Optional[str] = None,
     ):
 
         """
@@ -1583,6 +1605,7 @@ class GeminiGovernor:
         cooldown_cycles = 0
         tried_models = set()
         last_error = "Unknown"
+        # first_live_model and scratch_retry_done tracked across generate() cycles
 
         # Dynamic model exhaustion calculation based on task type
         valid_models = self.get_valid_models_for_task(task_type)
@@ -1607,6 +1630,9 @@ class GeminiGovernor:
 
             if not current_model and attempts < MAX_ATTEMPTS:
                 current_model = self.get_available_model(task_type, session_id=session_id, exclude_models=tried_models)
+
+            if current_model and first_live_model is None:
+                first_live_model = current_model
 
             if not current_model or attempts >= MAX_ATTEMPTS:
                 with self.state_lock:
@@ -1725,12 +1751,16 @@ class GeminiGovernor:
                 if not effective_key:
                     raise ValueError("GEMINI_API_KEY not set — add it to your .env file or user profile")
 
+                # Calculate per-call fast-fail timeout to preserve global deadline across rotations
+                call_deadline_remaining = max(15, int(self.REQUEST_DEADLINE - (time.time() - start_time)))
+                call_timeout_sec = min(45, call_deadline_remaining)
+
                 # Dual SDK support
                 if hasattr(genai, "Client"):
                     # Modern google.genai SDK
                     client = genai.Client(
                         api_key=effective_key,
-                        http_options=types.HttpOptions(timeout=300_000) if (types and hasattr(types, "HttpOptions")) else None
+                        http_options=types.HttpOptions(timeout=call_timeout_sec * 1000) if (types and hasattr(types, "HttpOptions")) else None
                     )
                     config_params = {}
                     if gen_config:
@@ -1784,7 +1814,7 @@ class GeminiGovernor:
                         data=req_data,
                         headers={"Content-Type": "application/json", "User-Agent": "AMTCE-Governor/1.0"}
                     )
-                    with urllib.request.urlopen(req, timeout=300) as resp:
+                    with urllib.request.urlopen(req, timeout=call_timeout_sec) as resp:
                         res_json = json.loads(resp.read().decode("utf-8"))
                         
                     class _RESTCandidate:
@@ -2049,15 +2079,46 @@ class GeminiGovernor:
 
         result = self._call_ollama(final_fallback_prompt)
 
-       
-
         if result:
-
             self.cache[cache_key] = result
-
             return result
 
-       
+        # [VANGUARD RESTART FROM SCRATCH]
+        # If Ollama is unavailable or failed, refresh live API models and restart from scratch with primary live model
+        if not scratch_retry_done:
+            logger.info("🔄 [VANGUARD] Ollama unavailable or failed. Triggering list_models refresh and restarting from scratch with primary live model...")
+            if refresh_gemini_models_cache:
+                try:
+                    refresh_gemini_models_cache(force=True)
+                    self._initialize_models()
+                except Exception as _r_err:
+                    logger.warning(f"Failed to refresh models on Ollama fallback: {_r_err}")
+
+            valid_models = self.get_valid_models_for_task(task_type)
+            with self.state_lock:
+                for vm in valid_models:
+                    if vm in self.model_states:
+                        self.model_states[vm]["status"] = "ACTIVE"
+                        self.model_states[vm]["ban_remaining_seconds"] = 0
+
+            # Target the first live model used, or top valid model from refreshed list
+            restart_model = first_live_model if (first_live_model and first_live_model in valid_models) else (valid_models[0] if valid_models else None)
+            logger.info(f"🚀 [VANGUARD RESTART] Restarting from scratch with primary live model: '{restart_model}' (valid candidates: {len(valid_models)})")
+
+            return self.generate(
+                task_type=task_type,
+                prompt=prompt,
+                metadata=metadata,
+                module_name=module_name,
+                gen_config=gen_config,
+                safety_settings=safety_settings,
+                existing_confidence=existing_confidence,
+                model_name=restart_model,
+                session_id=session_id,
+                api_key=api_key,
+                scratch_retry_done=True,
+                first_live_model=first_live_model
+            )
 
         # [mkpv-fix] Final Silent Fallback: Prevent error leaks in public captions/scripts
         # Note: 'creative', 'watermark', 'vision' expect JSON and must return None so callers trigger structured defaults cleanly
