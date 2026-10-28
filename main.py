@@ -3163,8 +3163,7 @@ def run_scheduled_pipeline_loop():
                 _sched_job_id = f"scheduler_{target_chat_run}_{int(time.time())}"
                 ACTIVE_PIPELINE_JOBS.add(_sched_job_id)
                 try:
-                    # CRITICAL FIX: run in thread pool — never block the Telegram event loop
-                    rendered = await asyncio.to_thread(_cjm.run_best_available, target_chat_run, 2)
+                    rendered = _cjm.run_best_available(chat_id=target_chat_run, max_accounts=2)
                 finally:
                     ACTIVE_PIPELINE_JOBS.discard(_sched_job_id)
                 if rendered:
