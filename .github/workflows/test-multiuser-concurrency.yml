@@ -85,7 +85,13 @@ jobs:
           USE_DOCKER_CONTAINERS: "1"
           MAX_CONCURRENT_JOBS: "2"
           CONTAINER_IMAGE: "gemini-editor:latest"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
+          mkdir -p Credentials
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> Credentials/.env
+          fi
           echo "🚀 Simulating 5 users triggering concurrently on GitHub Actions runner..."
           python - << 'EOF'
           import os, sys, time, threading
