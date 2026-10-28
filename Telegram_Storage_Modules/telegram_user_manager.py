@@ -13,7 +13,7 @@ import secrets
 import logging
 import hashlib
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 logger = logging.getLogger("telegram_user_manager")
 
@@ -707,15 +707,45 @@ def format_user_credentials_summary(user_id_str: str) -> str:
     return "\n".join(lines)
 
 
-def get_user_branding(user_id_str: str) -> str:
-    """Returns user personal brand watermark text, or defaults to BRAND_WATERMARK_TEXT from env."""
+def get_user_branding(user_id_str: Optional[Union[str, int]] = None) -> str:
+    """
+    Returns personal brand watermark text isolated by user_id/chat_id:
+    - If user has configured 'brand_watermark', returns their personal brand.
+    - If user is an Admin and has not set a custom brand, defaults to root BRAND_WATERMARK_TEXT.
+    - If user is a Non-Admin and has not set a brand, returns empty string ("") — NEVER leaks admin branding!
+    - If user_id_str is None (headless CLI / background daemon runner), defaults to root BRAND_WATERMARK_TEXT.
+    """
+    if user_id_str is None or str(user_id_str).strip() == "":
+        return os.getenv("BRAND_WATERMARK_TEXT", "").strip().strip('"').strip("'")
+
     users = load_all_users()
-    user_id_str = str(user_id_str)
-    if user_id_str in users:
-        brand = users[user_id_str].get("brand_watermark", "").strip()
+    clean_uid = str(user_id_str).strip()
+
+    # 1. Look up user record by key or chat_id/user_id attribute
+    u_rec = users.get(clean_uid)
+    if not u_rec:
+        for _uid_key, rec in users.items():
+            if str(rec.get("chat_id", "")) == clean_uid or str(rec.get("user_id", "")) == clean_uid:
+                u_rec = rec
+                break
+
+    # 2. Check if user set personal brand in users JSON
+    if u_rec:
+        brand = (u_rec.get("brand_watermark") or "").strip()
         if brand:
             return brand
-    return os.getenv("BRAND_WATERMARK_TEXT", "fitsbydisha").strip('"').strip("'")
+
+    # 3. Check user-prefixed environment variable (e.g. USER_12345_BRAND_WATERMARK_TEXT)
+    env_user_brand = os.getenv(f"USER_{clean_uid}_BRAND_WATERMARK_TEXT", "").strip()
+    if env_user_brand:
+        return env_user_brand
+
+    # 4. Strict isolation: Only admins inherit the root BRAND_WATERMARK_TEXT from .env / GitHub Secrets
+    if _is_admin_user(clean_uid):
+        return os.getenv("BRAND_WATERMARK_TEXT", "").strip().strip('"').strip("'")
+
+    # Non-admin without personal branding gets NO watermark (zero branding leak)
+    return ""
 
 
 def set_user_nickname(user_id_str: str, nickname_text: str) -> Tuple[bool, str]:

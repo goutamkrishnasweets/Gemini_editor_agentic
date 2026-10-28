@@ -234,7 +234,9 @@ class TelegramVaultIndexer:
     inside TELEGRAM_STORAGE_GROUP_ID.
     """
 
-    def __init__(self, index_file: str = MASTER_INDEX_FILE):
+    def __init__(self, index_file: Optional[str] = None):
+        if not index_file:
+            index_file = os.path.join(DATA_DIR, "master_vault_index.json")
         self.index_file = index_file
         os.makedirs(os.path.dirname(self.index_file), exist_ok=True)
         self.vault_index = self._load_local_index()
@@ -359,13 +361,20 @@ class TelegramVaultIndexer:
                             except Exception:
                                 pass
 
-            # Step 3: Download pool_metadata.json (backward compatible key check)
+            # Step 3: Download pool_metadata.json directly to disk BEFORE AudioPoolManager is initialized
             pool_file_id = self.vault_index.get("pool_metadata_file_id") or self.vault_index.get("metadata_pool_file_id")
+            pm_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
+            os.makedirs(os.path.dirname(pm_path), exist_ok=True)
             if pool_file_id:
-                from Audio_Modules.audio_pool_manager import AudioPoolManager
-                pm = AudioPoolManager()
-                results["pool_metadata"] = self.download_vault_file_by_id(pool_file_id, pm.meta_path)
-                results["metadata_pool"] = results["pool_metadata"]  # Alias for backward compatibility
+                dl_ok = self.download_vault_file_by_id(pool_file_id, pm_path)
+                results["pool_metadata"] = dl_ok
+                results["metadata_pool"] = dl_ok
+                if dl_ok:
+                    logger.info("📦 [VAULT HYDRATE SUCCESS] Restored pool_metadata.json from Telegram Storage Group (file_id: %s)", pool_file_id[:15])
+                else:
+                    logger.warning("⚠️ [VAULT HYDRATE] Failed to download pool_metadata.json via file_id: %s", pool_file_id[:15])
+            else:
+                logger.info("ℹ️ [VAULT HYDRATE] No pool_metadata_file_id found in master_vault_index.json.")
 
             # Step 4: Download source_accounts.json (Auto Input Source Accounts)
             sa_file_id = self.vault_index.get("auto_input_source_account_file_id") or self.vault_index.get("source_accounts_file_id")
@@ -1902,7 +1911,7 @@ class TelegramVaultIndexer:
                 social_dict.pop(existing_key, None)
             social_dict[target_key] = target_entry
 
-            # 2. Register extracted audio into candidate audio pool
+            # 2. Register extracted audio into metadata with strict source extract flags
             if extracted_audio_file_id and shortcode_val:
                 audio_track_name = f"{shortcode_val}.wav"
                 files_dict = pm.metadata.setdefault("files", {})
@@ -1913,6 +1922,10 @@ class TelegramVaultIndexer:
                 track_entry["file_id"] = extracted_audio_file_id
                 track_entry["telegram_file_id"] = extracted_audio_file_id
                 track_entry["filename"] = audio_track_name
+                track_entry["is_source_extract"] = True
+                track_entry["is_unusable_bgm"] = True
+                track_entry["is_curated_bgm"] = False
+                track_entry["is_curated_library"] = False
                 if audio_math:
                     track_entry["bpm"] = float(audio_math.get("tempo_bpm", 120.0) or 120.0)
                     track_entry["energy"] = float(audio_math.get("avg_energy", 0.7) or 0.7)
@@ -1920,6 +1933,10 @@ class TelegramVaultIndexer:
                     track_entry["vibe"] = audio_math.get("vibe", "energetic")
                 track_entry.setdefault("usage_count", 0)
                 track_entry.setdefault("last_used", 0.0)
+
+            clip_entry["is_source_extract"] = True
+            clip_entry["is_unusable_bgm"] = True
+            clip_entry["is_curated_bgm"] = False
 
             csm = pm.metadata.setdefault("clip_source_math", {})
             csm[target_key] = clip_entry
@@ -2156,6 +2173,10 @@ class TelegramVaultIndexer:
             if user_id:
                 entry["user_id"] = user_id
 
+            entry["is_source_extract"] = True
+            entry["is_unusable_bgm"] = True
+            entry["is_curated_bgm"] = False
+
             if audio_file_id and sc_val:
                 audio_track_name = f"{sc_val}.wav"
                 files_dict = pm.metadata.setdefault("files", {})
@@ -2166,6 +2187,10 @@ class TelegramVaultIndexer:
                 track_entry["file_id"] = audio_file_id
                 track_entry["telegram_file_id"] = audio_file_id
                 track_entry["filename"] = audio_track_name
+                track_entry["is_source_extract"] = True
+                track_entry["is_unusable_bgm"] = True
+                track_entry["is_curated_bgm"] = False
+                track_entry["is_curated_library"] = False
                 if beat_math:
                     track_entry["bpm"] = float(beat_math.get("tempo_bpm", 120.0) or 120.0)
                     track_entry["energy"] = float(beat_math.get("avg_energy", 0.7) or 0.7)

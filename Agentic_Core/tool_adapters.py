@@ -10,7 +10,7 @@ import os
 import sys
 import logging
 import traceback
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 logger = logging.getLogger("AgenticCore.ToolAdapters")
 
@@ -138,7 +138,8 @@ def tool_ingest_source(
 def tool_render_edit(
     clip_dir: str,
     edit_directive: str = "",
-    skip_existing: bool = False
+    skip_existing: bool = False,
+    requestor_chat_id: Optional[Union[int, str]] = None,
 ) -> Dict[str, Any]:
     """
     Executes Phase 2 master editing pipeline on a single clip directory:
@@ -188,7 +189,8 @@ def tool_render_edit(
             target_dirs=[clip_dir_abs],
             user_edit_directive=edit_directive if edit_directive else None,
             skip_existing=skip_existing,
-            limit=1
+            limit=1,
+            requestor_chat_id=requestor_chat_id,
         )
 
         rendered = res.get("rendered_files", [])
@@ -557,7 +559,8 @@ def tool_reedit_session(
             target_dirs=[clip_dir],
             user_edit_directive=edit_directive if edit_directive else None,
             skip_existing=False,
-            limit=1
+            limit=1,
+            requestor_chat_id=req_chat,
         )
 
         rendered = p2_res.get("rendered_files", [])

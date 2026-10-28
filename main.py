@@ -1793,17 +1793,20 @@ async def _wizard_socials_step(msg, chat_id: int, text: str, is_document: bool =
         # Branding name
         brand = text.strip()
         data["watermark_brand"] = brand
-        env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
         try:
-            lines_env = open(env_path).readlines() if os.path.exists(env_path) else []
-            existing = {l.split("=")[0]: l for l in lines_env if "=" in l}
-            existing["WATERMARK_TEXT"] = f'WATERMARK_TEXT="{brand}"\n'
-            existing["BRAND_WATERMARK_TEXT"] = f'BRAND_WATERMARK_TEXT="{brand}"\n'
-            existing["OVERFLOW_PUBLISH"] = f'OVERFLOW_PUBLISH="{str(data.get("overflow_publish", False)).lower()}"\n'
-            with open(env_path, "w") as f:
-                f.writelines(existing.values())
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_branding, is_admin_user
+            set_user_branding(str(chat_id), brand)
+            if is_admin_user(str(chat_id)):
+                env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
+                lines_env = open(env_path).readlines() if os.path.exists(env_path) else []
+                existing = {l.split("=")[0]: l for l in lines_env if "=" in l}
+                existing["WATERMARK_TEXT"] = f'WATERMARK_TEXT="{brand}"\n'
+                existing["BRAND_WATERMARK_TEXT"] = f'BRAND_WATERMARK_TEXT="{brand}"\n'
+                existing["OVERFLOW_PUBLISH"] = f'OVERFLOW_PUBLISH="{str(data.get("overflow_publish", False)).lower()}"\n'
+                with open(env_path, "w") as f:
+                    f.writelines(existing.values())
         except Exception as _e:
-            logger.error(f"Failed to write socials settings to .env: {_e}")
+            logger.error(f"Failed to write socials settings: {_e}")
         _wizard_sessions.pop(chat_id, None)
         await msg.reply_text(
             f"🎉 **Socials Setup Complete!**\n\n"
@@ -2833,7 +2836,8 @@ def run_master_pipeline(
             target_dirs=target_clip_dirs,
             on_rendered_callback=_on_clip_rendered,
             user_edit_directive=user_edit_directive,
-            excluded_audio=excluded_audio
+            excluded_audio=excluded_audio,
+            requestor_chat_id=requestor_chat_id
         )
         rendered_master_reels = phase2_res.get("rendered_files", [])
         logger.info(f"🎬 [PHASE 2 & 3 COMPLETE] {len(rendered_master_reels)} master reel(s) ready.")
@@ -2858,6 +2862,16 @@ def run_master_pipeline(
                 mark_clip_inactive(cname)
         except Exception:
             pass
+
+        # Force flush and pin any pending vault backups before runner shutdown
+        try:
+            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            from Audio_Modules.audio_pool_manager import AudioPoolManager
+            AudioPoolManager()._sync_to_telegram_vault(force=True)
+            TelegramVaultIndexer().upload_and_pin_vault_index_sync(force=True)
+            logger.info("📌 [VAULT SHUTDOWN FLUSH] Successfully flushed & pinned vault index and pool metadata to Telegram.")
+        except Exception as _fl_err:
+            logger.debug("Notice on shutdown vault flush: %s", _fl_err)
 
     if not rendered_master_reels and requestor_chat_id and (url or input_path):
         try:

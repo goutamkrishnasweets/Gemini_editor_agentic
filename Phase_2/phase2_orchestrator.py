@@ -47,6 +47,7 @@ def run_phase2_pipeline(
     event_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None,
     user_edit_directive: Optional[str] = None,
     excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
+    requestor_chat_id: Optional[Union[int, str]] = None,
 ) -> Dict[str, Any]:
     """
     Executes Phase 2 Pipeline through indexed steps 01 -> 07.
@@ -431,6 +432,7 @@ def run_phase2_pipeline(
                 micro_shots=micro_shots,
                 target_duration=15.0,
                 user_edit_directive=user_edit_directive,
+                requestor_chat_id=requestor_chat_id,
             )
             if synthesis_res is None:
                 synthesis_res = {"status": "failed", "error": "synthesize_editing_plan returned None"}

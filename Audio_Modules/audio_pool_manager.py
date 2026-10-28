@@ -413,6 +413,10 @@ class AudioPoolManager:
                         "file_size": file_size or existing.get("file_size", 0),
                         "sha256": existing.get("sha256", ""),
                         "selected_audio": existing.get("selected_audio"),
+                        "is_source_extract": True,
+                        "is_unusable_bgm": True,
+                        "is_curated_bgm": False,
+                        "is_curated_library": False,
                         "media_file_ids": media_file_ids,
                         "audio_data": audio_data,
                         "visual_data": visual_data,
@@ -542,8 +546,20 @@ class AudioPoolManager:
             if res:
                 doc_id = extract_file_id(res)
                 if doc_id:
-                    AudioPoolManager._last_vault_sync_time = now
                     indexer = TelegramVaultIndexer()
+                    # ── CIRCUIT BREAKER: Never let empty/wiped local pool clobber a valid cloud backup! ──
+                    existing_fid = indexer.vault_index.get("pool_metadata_file_id")
+                    local_files = self.metadata.get("files", {})
+                    valid_local_tracks = [k for k, v in local_files.items() if k != "social_media_id" and isinstance(v, dict)]
+                    if not valid_local_tracks and existing_fid and existing_fid != doc_id:
+                        logger.warning(
+                            "🛡️ [VAULT CIRCUIT BREAKER] Local pool has 0 valid tracks! "
+                            "Preserving existing vault pointer %s and refusing empty overwrite.",
+                            existing_fid[:15]
+                        )
+                        return
+
+                    AudioPoolManager._last_vault_sync_time = now
                     indexer.vault_index["pool_metadata_file_id"] = doc_id
                     indexer.vault_index["metadata_pool_file_id"] = doc_id
                     indexer._save_local_index()
@@ -750,8 +766,12 @@ class AudioPoolManager:
 
                 meta = self._get_file_metadata(filename)
                 if not meta:
-                    logger.info(f"[POOL_SYNC] Registering unstubbed active audio in metadata: {filename}")
-                    is_curated = not filename.lower().startswith(("bgm_", "vault_bgm_", "extracted_", "sess_"))
+                    stem = os.path.splitext(filename)[0]
+                    is_sc = len(stem) in (10, 11, 12) and bool(re.match(r"^[A-Za-z0-9_-]+$", stem))
+                    is_curated = not (
+                        filename.lower().startswith(("bgm_", "vault_bgm_", "extracted_", "sess_", "video", "manual_"))
+                        or is_sc
+                    )
                     self._set_file_metadata(filename, {
                         "usage_count": 0,
                         "last_used":   0,
@@ -759,6 +779,7 @@ class AudioPoolManager:
                         "energy":      0.5,
                         "is_curated_library": is_curated,
                         "is_source_extract": not is_curated,
+                        "is_unusable_bgm": not is_curated,
                         "created_at":  time.time(),
                         "beat_data_path": None,
                         "drop_times":  [],

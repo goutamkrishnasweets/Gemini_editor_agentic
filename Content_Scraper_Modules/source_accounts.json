@@ -1,6 +1,8 @@
 {
   "platform": "instagram",
-  "source_accounts": [],
+  "source_accounts": [
+    "filmygyan"
+  ],
   "account_added_timestamps": {},
   "account_last_scraped": {},
   "account_last_scraped_iso": {},

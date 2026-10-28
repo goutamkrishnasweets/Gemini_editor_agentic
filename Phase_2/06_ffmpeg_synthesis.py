@@ -15,7 +15,7 @@ import os
 import sys
 import logging
 import subprocess
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 
 logger = logging.getLogger("Phase2.Step06")
 
@@ -51,6 +51,7 @@ def _run_music_driven_fallback(
     micro_shots: Optional[List[Dict[str, Any]]] = None,
     bpm: float = 120.0,
     target_duration: float = 15.0,
+    extra_inputs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Offline DSP fallback using FFmpegCommandGenerator single-pass synthesis when Gemini Call 3 API is unavailable.
@@ -59,12 +60,13 @@ def _run_music_driven_fallback(
     try:
         from Gemini_Modules.gemini_ffmpeg_synthesis import FFmpegCommandGenerator
         gen = FFmpegCommandGenerator()
-        extra_inputs = {"micro_shots": micro_shots or []}
+        synth_inputs = dict(extra_inputs) if extra_inputs else {}
+        synth_inputs.setdefault("micro_shots", micro_shots or [])
         fallback_plan = gen.build_single_pass_filtergraph(
             input_path=video_path,
             output_path=output_path,
             bgm_path=selected_bgm_path,
-            extra_inputs=extra_inputs,
+            extra_inputs=synth_inputs,
             gemini_operations=[]
         )
         cmd = fallback_plan["cmd_list"]
@@ -90,6 +92,7 @@ def synthesize_editing_plan(
     target_duration: float = 15.0,
     user_edit_directive: Optional[str] = None,
     intent_vector: Optional[Dict[str, Any]] = None,
+    requestor_chat_id: Optional[Union[int, str]] = None,
 ) -> Dict[str, Any]:
     """
     Executes Gemini Call 3 to synthesize FFmpeg filtergraph plan.
@@ -159,6 +162,16 @@ def synthesize_editing_plan(
             )
 
     extra_inputs = {}
+    if requestor_chat_id is not None and str(requestor_chat_id).strip():
+        clean_uid = str(requestor_chat_id).strip()
+        extra_inputs["requestor_chat_id"] = clean_uid
+        extra_inputs["user_id"] = clean_uid
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_branding
+            extra_inputs["brand_text"] = get_user_branding(clean_uid)
+        except Exception as _b_err:
+            logger.debug(f"User branding lookup notice: {_b_err}")
+
     if user_edit_directive:
         extra_inputs["user_edit_directive"] = user_edit_directive
     if micro_shots:
@@ -227,6 +240,7 @@ def synthesize_editing_plan(
                 micro_shots=micro_shots,
                 bpm=bpm,
                 target_duration=target_duration,
+                extra_inputs=extra_inputs,
             )
         else:
             logger.error(f"❌ [STEP 06 FAILED] Gemini Call 3 exception (non-API error): {gemini_err}")

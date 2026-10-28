@@ -511,4 +511,89 @@ def test_get_scheduled_users_for_slot(tmp_path, monkeypatch):
     assert users_10 == ["400"]
 
 
+def test_branding_multiuser_isolation(tmp_path, monkeypatch):
+    """
+    Verifies that admin branding never leaks to non-admin users,
+    and each user only receives their own branding or none if not configured.
+    """
+    from Telegram_Storage_Modules.telegram_user_manager import (
+        set_user_branding,
+        get_user_branding,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("Telegram_Storage_Modules.telegram_user_manager.USERS_JSON_PATH", str(tmp_path / "data" / "telegram_users.json"))
+    monkeypatch.setenv("TELEGRAM_ADMIN_ID", "100")
+    monkeypatch.setenv("BRAND_WATERMARK_TEXT", "AdminRootBrand")
+
+    with patch("Telegram_Storage_Modules.telegram_user_manager.sync_user_secret_to_github"), \
+         patch("Telegram_Storage_Modules.telegram_user_manager.sync_users_json_to_telegram_vault"):
+
+        # 1. Non-admin user 200 has NOT set branding
+        # MUST return empty string, NEVER leaking "AdminRootBrand"
+        assert get_user_branding("200") == ""
+
+        # 2. Non-admin user 200 sets custom branding
+        set_user_branding("200", "User200Brand")
+        assert get_user_branding("200") == "User200Brand"
+
+        # 3. Non-admin user 300 has NOT set branding
+        # MUST return empty string, NEVER leaking "AdminRootBrand" or "User200Brand"
+        assert get_user_branding("300") == ""
+
+        # 4. Admin user 100 has not set personal brand in json -> falls back to root BRAND_WATERMARK_TEXT
+        assert get_user_branding("100") == "AdminRootBrand"
+
+        # 5. Admin user 100 sets personal brand
+        set_user_branding("100", "CustomAdminBrand")
+        assert get_user_branding("100") == "CustomAdminBrand"
+
+        # 6. Headless CLI / daemon run (no user_id)
+        assert get_user_branding(None) == "AdminRootBrand"
+
+
+def test_ffmpeg_synthesis_branding_isolation(tmp_path, monkeypatch):
+    """
+    Verifies build_single_pass_filtergraph does NOT inject watermark
+    when a non-admin user has no branding configured.
+    """
+    from Gemini_Modules.gemini_ffmpeg_synthesis import FFmpegCommandGenerator
+    monkeypatch.setenv("TELEGRAM_ADMIN_ID", "100")
+    monkeypatch.setenv("BRAND_WATERMARK_TEXT", "AdminRootBrand")
+
+    fake_video = str(tmp_path / "video.mp4")
+    with open(fake_video, "w") as f:
+        f.write("fake video data")
+    fake_out = str(tmp_path / "master.mp4")
+
+    gen = FFmpegCommandGenerator()
+
+    # 1. Non-admin user 200 with NO branding in extra_inputs
+    extra_no_brand = {"requestor_chat_id": "200", "brand_text": ""}
+    plan_no_brand = gen.build_single_pass_filtergraph(
+        input_path=fake_video,
+        output_path=fake_out,
+        extra_inputs=extra_no_brand,
+        gemini_operations=[]
+    )
+    cmd_str_no_brand = " ".join(plan_no_brand["cmd_list"])
+    # MUST NOT contain drawtext or AdminRootBrand!
+    assert "AdminRootBrand" not in cmd_str_no_brand
+    assert "drawtext" not in cmd_str_no_brand
+
+    # 2. Non-admin user 200 with personal branding in extra_inputs
+    extra_with_brand = {"requestor_chat_id": "200", "brand_text": "PersonalUserBrand"}
+    plan_with_brand = gen.build_single_pass_filtergraph(
+        input_path=fake_video,
+        output_path=fake_out,
+        extra_inputs=extra_with_brand,
+        gemini_operations=[]
+    )
+    cmd_str_with_brand = " ".join(plan_with_brand["cmd_list"])
+    # MUST contain PersonalUserBrand
+    assert "PersonalUserBrand" in cmd_str_with_brand
+    assert "AdminRootBrand" not in cmd_str_with_brand
+
+
+
 

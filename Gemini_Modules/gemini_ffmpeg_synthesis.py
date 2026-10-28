@@ -952,16 +952,26 @@ class FFmpegCommandGenerator:
 
         # NOTE: DO NOT re-raise video_volume when no BGM — that caused sticky audio.
 
-        env_brand = (
-            os.getenv("BRAND_WATERMARK_TEXT", "").strip()
-            or os.getenv("WATERMARK_TEXT", "").strip()
-            or os.getenv("BRAND_NAME", "").strip()
-        )
-        if env_brand:
-            brand_text = env_brand
+        # Multi-user brand isolation: prioritize extra_inputs["brand_text"]
+        brand_text = None
+        if extra_inputs and "brand_text" in extra_inputs:
+            brand_text = (extra_inputs.get("brand_text") or "").strip() or None
+        elif extra_inputs and (extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")):
+            uid = str(extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")).strip()
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import get_user_branding
+                brand_text = get_user_branding(uid) or None
+            except Exception:
+                brand_text = None
         elif dt_op and dt_op.get("text"):
-            brand_text = dt_op.get("text")
-        elif not brand_text:
+            brand_text = str(dt_op.get("text")).strip() or None
+        else:
+            # Fallback to env ONLY if no specific user context is attached (e.g. headless CLI runner)
+            env_brand = (
+                os.getenv("BRAND_WATERMARK_TEXT", "").strip()
+                or os.getenv("WATERMARK_TEXT", "").strip()
+                or os.getenv("BRAND_NAME", "").strip()
+            )
             brand_text = env_brand or None
 
         # Check if input video has an audio stream AND whether we explicitly preserve original audio
@@ -2750,28 +2760,47 @@ class GeminiFFmpegEngine:
                     "video_volume": v_vol
                 })
 
-        # Automatically inject Brand Watermark drawtext step if BRAND_WATERMARK_TEXT / WATERMARK_TEXT is configured
-        env_brand_text = (
-            os.getenv("BRAND_WATERMARK_TEXT", "").strip()
-            or os.getenv("WATERMARK_TEXT", "").strip()
-            or os.getenv("BRAND_NAME", "").strip()
-        )
-        if env_brand_text:
+        # Multi-user brand isolation: Automatically inject Brand Watermark drawtext step ONLY if configured for this user
+        resolved_brand_text = None
+        if extra_inputs and "brand_text" in extra_inputs:
+            resolved_brand_text = (extra_inputs.get("brand_text") or "").strip()
+        elif extra_inputs and (extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")):
+            uid = str(extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")).strip()
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import get_user_branding
+                resolved_brand_text = get_user_branding(uid)
+            except Exception:
+                resolved_brand_text = ""
+        else:
+            # Fallback to env ONLY if no specific user context is attached (e.g. headless CLI runner)
+            resolved_brand_text = (
+                os.getenv("BRAND_WATERMARK_TEXT", "").strip()
+                or os.getenv("WATERMARK_TEXT", "").strip()
+                or os.getenv("BRAND_NAME", "").strip()
+            )
+
+        if resolved_brand_text:
             has_brand_op = any(
                 op.get("operation_type") in ("drawtext", "brand_watermark", "text_watermark")
                 for op in gemini_plan_json.get("operations", [])
             )
             if not has_brand_op:
-                logger.info(f"🏷️ Auto-injecting brand watermark drawtext step for: '{env_brand_text}'")
+                logger.info(f"🏷️ Auto-injecting brand watermark drawtext step for: '{resolved_brand_text}'")
                 gemini_plan_json.setdefault("operations", []).append({
                     "operation_type": "drawtext",
-                    "text": env_brand_text,
+                    "text": resolved_brand_text,
                     "position": os.getenv("BRAND_WATERMARK_POSITION", "bottom_center"),
                     "fontsize": int(os.getenv("BRAND_WATERMARK_SIZE", "36")),
                     "fontcolor": "white@0.85",
                     "enable_box": True,
                     "boxcolor": "black@0.4"
                 })
+        else:
+            # User has no branding configured: sanitize plan to prevent stale or hallucinated watermarks
+            gemini_plan_json["operations"] = [
+                op for op in gemini_plan_json.get("operations", [])
+                if op.get("operation_type") not in ("brand_watermark", "text_watermark")
+            ]
 
         candidates: List[Tuple[float, Dict[str, Any], Dict[str, Any]]] = []
 
@@ -2992,11 +3021,22 @@ class GeminiFFmpegEngine:
             else:
                 logger.info("🔇 [AUDIO DIRECTIVE] No BGM path or extracted audio found — source clip will be silenced (video_volume=0.00).")
 
-        brand_text    = (
-            os.getenv("BRAND_WATERMARK_TEXT", "").strip()
-            or os.getenv("WATERMARK_TEXT", "").strip()
-            or os.getenv("BRAND_NAME", "").strip()
-        )
+        brand_text = None
+        if extra_inputs and "brand_text" in extra_inputs:
+            brand_text = (extra_inputs.get("brand_text") or "").strip() or None
+        elif extra_inputs and (extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")):
+            uid = str(extra_inputs.get("requestor_chat_id") or extra_inputs.get("user_id")).strip()
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import get_user_branding
+                brand_text = get_user_branding(uid) or None
+            except Exception:
+                brand_text = None
+        else:
+            brand_text = (
+                os.getenv("BRAND_WATERMARK_TEXT", "").strip()
+                or os.getenv("WATERMARK_TEXT", "").strip()
+                or os.getenv("BRAND_NAME", "").strip()
+            ) or None
         encoding_cfg  = gemini_json.get("global_encoding")
 
         _single_pass_ok = False
