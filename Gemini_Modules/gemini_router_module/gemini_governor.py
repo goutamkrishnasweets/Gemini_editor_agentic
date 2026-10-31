@@ -987,8 +987,8 @@ class GeminiGovernor:
                 if name in exclude_set:
                     continue
 
-                # 🛡️ 1.5 Filter (Blocked by default unless GEMINI_ALLOW_1_5 is explicitly set)
-                block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "1").lower() in ("1", "true", "yes") or os.getenv("GEMINI_ALLOW_1_5", "0").lower() not in ("1", "true", "yes")
+                # 🛡️ 1.5 Filter (Allowed by default to support multi-model quota rotation)
+                block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "0").lower() in ("1", "true", "yes")
                 if block_1_5 and "1.5" in name:
                     continue
 
@@ -1179,7 +1179,7 @@ class GeminiGovernor:
         with self.state_lock:
             boosts = getattr(self, "TASK_MODEL_RATINGS", {})
             task_boost = boosts.get(task_type, {})
-            block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "1").lower() in ("1", "true", "yes") or os.getenv("GEMINI_ALLOW_1_5", "0").lower() not in ("1", "true", "yes")
+            block_1_5 = os.getenv("GEMINI_BLOCK_1_5", "0").lower() in ("1", "true", "yes")
             non_gen_kws = (
                 "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                 "text-001", "tts", "preview-tts", "customtools", "transcribe",
@@ -1652,17 +1652,19 @@ class GeminiGovernor:
                     )
                     break
 
-                if cooldown_cycles < 2:
+                max_cooldown_passes = 4 if task_type in ("watermark", "vision", "reasoning", "master") else 2
+                if cooldown_cycles < max_cooldown_passes:
                     cooldown_cycles += 1
+                    cooldown_sec = 60  # 60s matches standard Google GenAI 1-minute RPM reset window
                     logger.warning(
                         f"⏳ [ALL MODELS QUOTA HIT] All candidate models in quarantine for '{task_type}'.\n"
-                        f"   😴 Entering 90s master cooldown to guarantee full rolling RPM/TPM reset across models... (Pass {cooldown_cycles}/2)\n"
+                        f"   😴 Entering {cooldown_sec}s master cooldown to guarantee full rolling RPM/TPM reset across models... (Pass {cooldown_cycles}/{max_cooldown_passes})\n"
                         f"   💡 TIP: If you want to continue immediately, update GEMINI_API_KEY in Credentials/.env"
                     )
                     # Interruptible sleep in 1s slices to detect live API key updates in .env
                     initial_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
                     key_updated = False
-                    for _ in range(90):
+                    for _ in range(cooldown_sec):
                         time.sleep(1.0)
                         try:
                             from dotenv import dotenv_values
@@ -1692,17 +1694,20 @@ class GeminiGovernor:
                                 s["429_count"] = 0
                         else:
                             self._tick_ban_timers_unlocked()
-                            for m in recoverable_models:
-                                if self.model_states.get(m, {}).get("ban_remaining_seconds", 0) <= 0:
-                                    self.model_states[m]["status"] = "ACTIVE"
-                                    self.model_states[m]["ban_remaining_seconds"] = 0
+                            # 60s cooldown guarantees that the 1-minute rolling RPM quota has reset.
+                            # Restore all models that were banned due to 429 quota!
+                            for m, s in self.model_states.items():
+                                if s.get("status") == "BANNED" and s.get("ban_remaining_seconds", 0) <= 95:
+                                    s["status"] = "ACTIVE"
+                                    s["ban_remaining_seconds"] = 0
+                                    s["429_count"] = 0
 
                     tried_models.clear()
                     attempts = 0  # Reset attempt counter so the new rotation pass executes fully
                     continue
                 else:
                     logger.error(
-                        f"🛑 [VANGUARD] Maximum 90s cooldown passes (2) exceeded for '{task_type}'. Exiting to local fallback.\n"
+                        f"🛑 [VANGUARD] Maximum cooldown passes ({max_cooldown_passes}) exceeded for '{task_type}'. Exiting to local fallback.\n"
                         f"💡 Please update GEMINI_API_KEY in Credentials/.env"
                     )
                     break
@@ -1959,7 +1964,7 @@ class GeminiGovernor:
 
                 # ── 429 CIRCUIT BREAKER (TRUE ROTATION) ───────────────────────
 
-                if "429" in err_msg or "quota" in err_msg or "resource_exhausted" in err_msg:
+                if any(sig in err_msg for sig in ("429", "quota", "resource_exhausted", "resourceexhausted", "rate limit", "ratelimit")):
 
                     logger.warning(f"⚠️ [VANGUARD] Quota hit on {current_model}. Banning and rotating to next model...")
 
