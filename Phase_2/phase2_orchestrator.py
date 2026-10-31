@@ -106,6 +106,14 @@ def run_phase2_pipeline(
         logger.info(f"\n🚀 [PHASE 2 CLIP {idx}/{len(targets)}] Ingesting folder: {folder_name}")
         tmp_dir = tempfile.mkdtemp(prefix="phase2_frames_")
 
+        # ── RESET GEMINI GOVERNOR BUDGET FOR THIS VIDEO SESSION ───────────────────
+        try:
+            from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
+            if gemini_router and hasattr(gemini_router, "begin_video_session"):
+                gemini_router.begin_video_session(folder_name, 30.0)
+        except Exception as _bg_err:
+            logger.debug(f"Governor session reset note: {_bg_err}")
+
         try:
             # ─────────────────────────────────────────────────────────────────
             # STEP 2A: UPFRONT WATERMARK DETECTION & INPAINTING
@@ -223,8 +231,31 @@ def run_phase2_pipeline(
                 except Exception as _vi_err:
                     logger.debug(f"[UPFRONT INPAINTING] Vault clean check notice: {_vi_err}")
 
+            # 2. Check if clean video is authentic or a poisoned "copied_from_raw" placeholder
+            is_fake_clean_cache = False
+            if os.path.exists(clean_raw_path):
+                coords_sidecar = clean_raw_path + ".coords.json"
+                if os.path.exists(coords_sidecar):
+                    try:
+                        with open(coords_sidecar, "r", encoding="utf-8") as _csf:
+                            _cdata = json.load(_csf)
+                        if _cdata.get("copied_from_raw") and (_cdata.get("detection_failed") or not _cdata.get("is_clean", True) or _cdata.get("verified_by") in ("none", None, "unverified")):
+                            is_fake_clean_cache = True
+                            logger.warning(f"🚫 [WATERMARK CACHE INVALIDATED] '{os.path.basename(clean_raw_path)}' was copied from raw due to detection failure/unverified state. Invalidating cache.")
+                    except Exception as _ce:
+                        logger.debug(f"Coords inspection error: {_ce}")
+
+            if is_fake_clean_cache:
+                try:
+                    if os.path.exists(clean_raw_path):
+                        os.remove(clean_raw_path)
+                    if os.path.exists(clean_raw_path + ".coords.json"):
+                        os.remove(clean_raw_path + ".coords.json")
+                except Exception:
+                    pass
+
             # 2. If clean video already exists, reuse it and load sidecar coordinates
-            if not is_inpaint_requested and os.path.exists(clean_raw_path) and os.path.getsize(clean_raw_path) > 1024 and os.path.abspath(clean_raw_path) != os.path.abspath(target_output):
+            if not is_inpaint_requested and not is_fake_clean_cache and os.path.exists(clean_raw_path) and os.path.getsize(clean_raw_path) > 1024 and os.path.abspath(clean_raw_path) != os.path.abspath(target_output):
                 working_video_path = clean_raw_path
                 logger.info(f"⚡ [UPFRONT INPAINTING CACHE] Reusing clean inpainted raw video: {os.path.basename(working_video_path)}")
                 coords_sidecar = clean_raw_path + ".coords.json"
@@ -275,13 +306,15 @@ def run_phase2_pipeline(
                     if items:
                         watermark_boxes = items
                         logger.info(f"💎 [STEP 02 WATERMARK DETECTED] Found {len(items)} watermark bounding box vector(s).")
+                    elif items == []:
+                        logger.info(f"✨ [STEP 02 WATERMARK CHECK] Video verified clean by AI. Proceeding with original footage.")
                     else:
-                        logger.info(f"✨ [STEP 02 WATERMARK CHECK] No watermark detected in video. Proceeding with original footage.")
+                        logger.warning(f"⚠️ [STEP 02 WATERMARK CHECK] AI detection unavailable/unverified. Handing off to watermark remover fallback...")
 
                     inpainted_path, _ = run_watermark_removal(
                         input_path=video_path,
                         output_path=clean_raw_path,
-                        predetected_watermarks=items if items else None,
+                        predetected_watermarks=items if items is not None else None,
                         keywords=detect_kw,
                         retry_level=1
                     )

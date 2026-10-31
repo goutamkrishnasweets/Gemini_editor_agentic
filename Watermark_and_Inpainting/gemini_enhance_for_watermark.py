@@ -94,6 +94,52 @@ def clean_json_response(text: str) -> str:
         return text.strip()
 
 
+def _try_opencv_fallback(frames: List[np.ndarray], force_width: int = None, force_height: int = None):
+    """
+    Zero-Quota Fallback: Scans frames using OpenCV corner heuristics if Gemini is offline,
+    budget-exhausted, or throws an error.
+    """
+    try:
+        if not frames:
+            return None
+        h_img, w_img = frames[0].shape[:2]
+        use_w = force_width if force_width else w_img
+        use_h = force_height if force_height else h_img
+        from Watermark_and_Inpainting.hybrid_watermark import detect_corner_watermarks_opencv
+        opencv_boxes = detect_corner_watermarks_opencv(frames, use_w, use_h)
+        if opencv_boxes:
+            logger.info(f"🛡️ [OPENCV CORNER FALLBACK] Recovered {len(opencv_boxes)} watermark box(es) via corner heuristics.")
+            formatted = []
+            for b in opencv_boxes:
+                eff_x = max(0, b['x'] - 12)
+                eff_y = max(0, b['y'] - 8)
+                eff_w = min(use_w - eff_x, b['w'] + 24)
+                eff_h = min(use_h - eff_y, b['h'] + 16)
+                formatted.append({
+                    'x': b['x'], 'y': b['y'], 'w': b['w'], 'h': b['h'],
+                    'video_width': use_w, 'video_height': use_h,
+                    'type': 'OPENCV_CORNER_FALLBACK',
+                    'semantic_type': 'corner_watermark',
+                    'semantic_anchor': 'corner',
+                    'semantic_hint': 'static_corner_logo',
+                    'semantic_vectors': {
+                        "opacity_level": 0.8,
+                        "color_polarity": "white_text_dark_glow",
+                        "background_texture": "flat_smooth",
+                        "motion_trajectory": "static"
+                    },
+                    'opencv_vectors': {
+                        'roi_expanded': [eff_x, eff_y, eff_w, eff_h],
+                        'inpaint_radius': 4,
+                        'inpaint_method': 'telea'
+                    }
+                })
+            return formatted
+    except Exception as _fe:
+        logger.warning(f"⚠️ OpenCV corner fallback failed: {_fe}")
+    return None
+
+
 def detect_watermark(
     frames: List[np.ndarray],
     keywords: str = None,
@@ -121,7 +167,10 @@ def detect_watermark(
     """
     # Check if Gemini is available
     if not HAS_GEMINI or gemini_router is None:
-        logger.warning("⚠️ Gemini router not available. Cannot perform watermark detection.")
+        logger.warning("⚠️ Gemini router not available. Checking OpenCV corner fallback...")
+        fb = _try_opencv_fallback(frames, force_width, force_height)
+        if fb:
+            return fb, None
         return None, None
     
     # Ensure genai is configured
@@ -434,7 +483,10 @@ If no human visible in the video, set coverage = 100 and is_nsfw = false.
         )
         
         if not res_txt or len(res_txt.strip()) < 2:
-            logger.warning(f"⚠️ Gemini returned empty or too short response: '{res_txt}'")
+            logger.warning(f"⚠️ Gemini returned empty or too short response: '{res_txt}'. Checking OpenCV corner fallback...")
+            fb = _try_opencv_fallback(frames, force_width, force_height)
+            if fb:
+                return fb, None
             return None, None
 
         cleaned_txt = clean_json_response(res_txt)
@@ -444,6 +496,9 @@ If no human visible in the video, set coverage = 100 and is_nsfw = false.
             logger.error(f"❌ JSON Decode Error: {jde}")
             logger.error(f"   └─ Cleaned Text (first 100 chars): {cleaned_txt[:100]}...")
             logger.info(f"   └─ Raw Response (first 200 chars): {res_txt[:200]}...")
+            fb = _try_opencv_fallback(frames, force_width, force_height)
+            if fb:
+                return fb, None
             return None, None
 
         # ── Parse Part B: best_frame + clothing coverage / fashion vs NSFW ──────────
@@ -563,7 +618,10 @@ If no human visible in the video, set coverage = 100 and is_nsfw = false.
 
         return results, frame_and_niche_info
     except Exception as e:
-        logger.warning(f"⚠️ Gemini Forensic Sweep failed: {e}")
+        logger.warning(f"⚠️ Gemini Forensic Sweep failed: {e}. Checking OpenCV corner fallback...")
+        fb = _try_opencv_fallback(frames, force_width, force_height)
+        if fb:
+            return fb, None
         return None, None
 
 

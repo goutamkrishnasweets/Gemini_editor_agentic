@@ -83,6 +83,88 @@ def load_detected_niche(video_path: str) -> str:
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+def detect_corner_watermarks_opencv(frames, width, height):
+    """
+    Zero-Quota Fallback: Scans the 4 standard corner zones across sampled frames for
+    persistent static high-frequency edge/text clusters (watermarks/logos).
+    Validates face safety using FaceProtector so human faces are strictly protected.
+    """
+    if not frames or width < 100 or height < 100:
+        return []
+
+    corner_zones = [
+        (0.72, 0.58, 0.96, 0.98, "bottom_right"),
+        (0.72, 0.02, 0.96, 0.42, "bottom_left"),
+        (0.04, 0.58, 0.28, 0.98, "top_right"),
+        (0.04, 0.02, 0.28, 0.42, "top_left"),
+    ]
+
+    ref_frame = frames[len(frames) // 2]
+    detected = []
+
+    for y1_p, x1_p, y2_p, x2_p, label in corner_zones:
+        zx = int(x1_p * width)
+        zy = int(y1_p * height)
+        zw = int((x2_p - x1_p) * width)
+        zh = int((y2_p - y1_p) * height)
+
+        edge_rois = []
+        for f in frames:
+            if f is None or f.size == 0:
+                continue
+            h_f, w_f = f.shape[:2]
+            f_scaled = cv2.resize(f, (width, height)) if (h_f != height or w_f != width) else f
+            roi = f_scaled[zy:zy+zh, zx:zx+zw]
+            if roi.size == 0:
+                continue
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 40, 110)
+            edge_rois.append(edges)
+
+        if len(edge_rois) < 2:
+            continue
+
+        stacked = np.stack(edge_rois, axis=0)
+        edge_count = np.sum(stacked > 0, axis=0)
+        static_mask = (edge_count >= max(2, len(edge_rois) // 2)).astype(np.uint8) * 255
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        dilated = cv2.dilate(static_mask, kernel, iterations=2)
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        valid_contours = [c for c in contours if cv2.contourArea(c) > 60]
+        if not valid_contours:
+            continue
+
+        all_pts = np.vstack(valid_contours)
+        bx, by, bw, bh = cv2.boundingRect(all_pts)
+
+        if bw < 15 or bh < 10 or bw > zw * 0.95 or bh > zh * 0.95:
+            continue
+
+        pad_x = 10
+        pad_y = 6
+        final_x = max(0, zx + bx - pad_x)
+        final_y = max(0, zy + by - pad_y)
+        final_w = min(width - final_x, bw + 2 * pad_x)
+        final_h = min(height - final_y, bh + 2 * pad_y)
+
+        cand_box = {
+            'x': final_x, 'y': final_y, 'w': final_w, 'h': final_h,
+            'video_width': width, 'video_height': height
+        }
+
+        is_safe, reason = FaceProtector.is_safe_region(ref_frame, cand_box)
+        if not is_safe:
+            logger.info(f"🛡️ [OPENCV CORNER GUARD] Skipping candidate in {label} ({reason}) to protect face.")
+            continue
+
+        logger.info(f"💎 [OPENCV CORNER DETECTED] Found static watermark in {label}: x={final_x}, y={final_y}, w={final_w}, h={final_h}")
+        detected.append(cand_box)
+
+    return detected
+
+
 class HybridWatermarkDetector:
     def __init__(self):
         self.session_blacklist = {}
@@ -314,37 +396,72 @@ class HybridWatermarkDetector:
                     logger.warning(f"⚠️ [TITLE OVERRIDE] Sidecar re-write failed: {_se}")
             logger.info(f"🎯 Niche for this video: {detected_niche}")
 
-            # 3a. FAIL-SAFE: Quota or Error -> CLEAN
+            # 3a. ZERO-QUOTA FALLBACK: If Gemini returned None (Quota/Rate Limit/Timeout), engage OpenCV Corner Heuristic
             if detected_boxes is None:
-                logger.warning("⚠️ Gemini returned None (Quota/Error). Skipping (STRICT MODE).")
-                return json.dumps({
-                    "watermarks": [],
-                    "count": 0,
-                    "status": "CLEAN",
-                    "context": {"removal_success": False, "reason": "Gemini Quota/Error",
-                                "detected_niche": detected_niche}
-                }, indent=2)
+                logger.warning("⚠️ Gemini returned None (Quota/Error/Budget). Engaging OpenCV Corner Heuristic fallback...")
+                opencv_fallback = detect_corner_watermarks_opencv(frames_to_check, w_img, h_img)
+                if opencv_fallback:
+                    logger.info(f"🛡️ [OPENCV FALLBACK SUCCESS] Recovered {len(opencv_fallback)} watermark box(es) via corner heuristics.")
+                    detected_boxes = opencv_fallback
+                else:
+                    logger.warning("⚠️ OpenCV Corner Heuristic found no static marks. Marking as UNVERIFIED_EMPTY (NOT clean).")
+                    return json.dumps({
+                        "watermarks": [],
+                        "count": 0,
+                        "status": "UNVERIFIED_EMPTY",
+                        "context": {
+                            "removal_success": False,
+                            "reason": "Gemini Quota/Error, OpenCV Heuristic Found No Corner Mark",
+                            "is_clean": False,
+                            "detection_failed": True,
+                            "detected_niche": detected_niche
+                        }
+                    }, indent=2)
 
-            # 3b. CLEAN STATE — Trust Gemini Completely
+            # 3b. CLEAN STATE — Trust Gemini Completely if it actually ran and found 0
             if not detected_boxes:
                 logger.info("✅ Gemini reported CLEAN. Video is watermark-free.")
                 return json.dumps({
                     "watermarks": [],
                     "count": 0,
                     "status": "CLEAN",
-                    "context": {"removal_success": True, "verified_by": "gemini_only", "detected_niche": detected_niche}
+                    "context": {"removal_success": True, "verified_by": "gemini_only", "is_clean": True, "detected_niche": detected_niche}
                 }, indent=2)
 
 
         except Exception as e:
-            logger.error(f"❌ Gemini Detection Exception: {e}")
-            return json.dumps({
-                "watermarks": [],
-                "count": 0,
-                "status": "CLEAN",
-                "context": {"removal_success": False, "reason": f"Exception: {e}",
-                            "detected_niche": detected_niche}
-            }, indent=2)
+            logger.error(f"❌ Gemini Detection Exception: {e}. Engaging OpenCV Corner Heuristic fallback...")
+            try:
+                opencv_fallback = detect_corner_watermarks_opencv(frames_to_check, w_img, h_img)
+                if opencv_fallback:
+                    logger.info(f"🛡️ [OPENCV FALLBACK SUCCESS] Recovered {len(opencv_fallback)} watermark box(es) after Gemini exception.")
+                    detected_boxes = opencv_fallback
+                else:
+                    return json.dumps({
+                        "watermarks": [],
+                        "count": 0,
+                        "status": "UNVERIFIED_EMPTY",
+                        "context": {
+                            "removal_success": False,
+                            "reason": f"Exception: {e}",
+                            "is_clean": False,
+                            "detection_failed": True,
+                            "detected_niche": detected_niche
+                        }
+                    }, indent=2)
+            except Exception as _e2:
+                return json.dumps({
+                    "watermarks": [],
+                    "count": 0,
+                    "status": "UNVERIFIED_EMPTY",
+                    "context": {
+                        "removal_success": False,
+                        "reason": f"Exception: {e} | OpenCV error: {_e2}",
+                        "is_clean": False,
+                        "detection_failed": True,
+                        "detected_niche": detected_niche
+                    }
+                }, indent=2)
 
         # 4. Process & Validate Detected Boxes
         # ── DEDUPLICATION: Merge same-watermark detections from multiple frames ──────

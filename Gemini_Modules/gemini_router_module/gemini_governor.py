@@ -1512,11 +1512,14 @@ class GeminiGovernor:
 
 
 
-            # Escalation bypass: If third-party models failed, Gemini MUST "got their back"
+            # Escalation & Critical Vision Tasks bypass:
+            # Watermark detection (priority 1) and escalated fallbacks must NEVER be starved by budget
+            if is_escalated or task_type == "watermark" or task_priority <= 1:
 
-            if is_escalated:
-
-                logger.info(f"🛡️ [VANGUARD] 'God-Mode' Fallback activated for '{task_type}'. Bypassing tight budget.")
+                if is_escalated:
+                    logger.info(f"🛡️ [VANGUARD] 'God-Mode' Fallback activated for '{task_type}'. Bypassing tight budget.")
+                else:
+                    logger.info(f"🛡️ [BUDGET PRIORITY] Critical task '{task_type}' (priority {task_priority}) granted mandatory budget execution.")
 
             else:
 

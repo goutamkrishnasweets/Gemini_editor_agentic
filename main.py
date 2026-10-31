@@ -2742,9 +2742,31 @@ def run_master_pipeline(
                                     except Exception:
                                         continue
 
-                        # Master reels (_master.mp4) rendered via Phase 2 single pass are already clean
-                        if "_master.mp4" in os.path.basename(active_reel_path):
+                        # Verify if clean cache or upfront inpainting was actually verified, or unverified/failed
+                        _coords_indicates_uncleaned = False
+                        _possible_coords_paths = [
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", f"{real_cid}_clean.mp4.coords.json"),
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", real_cid, f"{real_cid}_clean.mp4.coords.json"),
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", real_cid, "video.mp4.coords.json"),
+                            active_reel_path + ".coords.json",
+                        ]
+                        for _cp in _possible_coords_paths:
+                            if os.path.exists(_cp):
+                                try:
+                                    with open(_cp, "r", encoding="utf-8") as _cf:
+                                        _c_data = json.load(_cf)
+                                    if _c_data.get("detection_failed") or not _c_data.get("is_clean", True) or _c_data.get("verified_by") in ("none", None, "unverified"):
+                                        _coords_indicates_uncleaned = True
+                                        logger.warning(f"⚠️ [PHASE 2.1] Coords sidecar at {_cp} marks source as unverified/detection failed. Cannot skip post-render watermark gate.")
+                                        break
+                                except Exception:
+                                    pass
+
+                        # Master reels (_master.mp4) rendered via Phase 2 single pass are clean only if verified
+                        if "_master.mp4" in os.path.basename(active_reel_path) and not _coords_indicates_uncleaned:
                             _inpainted_upfront = True
+                        elif _coords_indicates_uncleaned:
+                            _inpainted_upfront = False
 
                         if _inpainted_upfront:
                             logger.info(f"⏭️ [PHASE 2.1] Skipping post-render watermark inpainting for {os.path.basename(active_reel_path)} (0 Gemini calls).")

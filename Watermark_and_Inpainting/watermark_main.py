@@ -78,26 +78,57 @@ def run_watermark_removal(
     log(f"📦 Output: {os.path.basename(output_path)}")
 
     # Step 1: AI Detection
-    if predetected_watermarks:
+    detection_verified_clean = False
+    detection_failed = False
+
+    if predetected_watermarks is not None:
         log(f"💎 Step 1: Reusing {len(predetected_watermarks)} pre-detected watermark bounding box(es) (duplicate detection skipped).")
         watermarks = predetected_watermarks
+        if len(watermarks) == 0:
+            detection_verified_clean = True
+            detection_failed = False
     else:
         log("🔭 Step 1: Initiating AI Forensic Detection...")
         detector = HybridWatermarkDetector()
         detection_res_json = detector.process_video(input_path, keywords=keywords, retry_level=retry_level)
-        detection_data = json.loads(detection_res_json)
+        try:
+            detection_data = json.loads(detection_res_json)
+        except Exception:
+            detection_data = {}
         watermarks = detection_data.get("watermarks", [])
         log(f"✅ Detection finished. Found {len(watermarks)} watermarks.")
 
+        status = detection_data.get("status", "")
+        ctx = detection_data.get("context", {}) if isinstance(detection_data.get("context"), dict) else {}
+        if status in ("ERROR", "UNVERIFIED_EMPTY") or ctx.get("detection_failed", False) or not ctx.get("is_clean", True):
+            detection_verified_clean = False
+            detection_failed = True
+        else:
+            detection_verified_clean = (len(watermarks) == 0)
+            detection_failed = False
+
     if not watermarks:
-        log("⏹️ No watermarks detected. Copying source to destination...")
+        if detection_verified_clean:
+            log("⏹️ No watermarks detected (verified clean). Copying source to destination...")
+        else:
+            log("⚠️ [ZERO-QUOTA / UNVERIFIED] Watermark detection could not verify clean status. Copying source as unverified fallback...")
+
         shutil.copy2(input_path, output_path)
         try:
             with open(f"{output_path}.coords.json", "w", encoding="utf-8") as _scf:
-                json.dump({"watermark_boxes": [], "is_clean": True, "copied_from_raw": True}, _scf)
+                json.dump({
+                    "watermark_boxes": [],
+                    "is_clean": detection_verified_clean,
+                    "copied_from_raw": True,
+                    "detection_failed": detection_failed,
+                    "verified_by": "gemini_only" if detection_verified_clean else "none"
+                }, _scf)
         except Exception:
             pass
-        log("✅ PROCESS COMPLETE: Video was already clean.")
+        if detection_verified_clean:
+            log("✅ PROCESS COMPLETE: Video was already clean.")
+        else:
+            log("⚠️ PROCESS COMPLETE: Video copied from raw (UNVERIFIED — not marked as clean).")
         return output_path, "\n".join(log_lines)
 
     # Probe raw input video dimensions for downstream aspect-ratio scaling & brand overlay alignment
