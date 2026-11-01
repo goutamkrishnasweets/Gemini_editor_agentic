@@ -1,5 +1,5 @@
 # Publishing_Modules package init
-# Make.com Multi-Platform Publishing Gateway & PublishQueue
+# Multi-Platform Publishing Gateway (YouTube, Meta, Make.com, Telegram)
 
 from .make_publisher import (
     publish_to_make,
@@ -11,7 +11,24 @@ from .make_publisher import (
 from .media_publisher_main import (
     run_phase4_publishing,
     run_phase4_publishing_async,
+    publish_to_youtube,
+    publish_to_meta,
+    publish_to_instagram,
     publish_to_telegram,
+    _resolve_user_credentials,
+)
+from .meta_uploader import (
+    AsyncMetaUploader,
+    get_meta_graph_version,
+    set_meta_graph_version,
+    get_graph_api_url,
+    DEFAULT_META_GRAPH_VERSION,
+)
+from .uploader import (
+    upload_to_youtube,
+    get_youtube_api_version,
+    set_youtube_api_version,
+    DEFAULT_YOUTUBE_API_VERSION,
 )
 
 __all__ = [
@@ -22,5 +39,18 @@ __all__ = [
     "PublishQueue",
     "run_phase4_publishing",
     "run_phase4_publishing_async",
+    "publish_to_youtube",
+    "publish_to_meta",
+    "publish_to_instagram",
     "publish_to_telegram",
+    "_resolve_user_credentials",
+    "AsyncMetaUploader",
+    "get_meta_graph_version",
+    "set_meta_graph_version",
+    "get_graph_api_url",
+    "DEFAULT_META_GRAPH_VERSION",
+    "upload_to_youtube",
+    "get_youtube_api_version",
+    "set_youtube_api_version",
+    "DEFAULT_YOUTUBE_API_VERSION",
 ]

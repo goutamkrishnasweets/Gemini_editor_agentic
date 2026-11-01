@@ -1,9 +1,11 @@
 """
-media_publisher_main.py — Phase 4 Multi-Platform Publishing Orchestrator (Make.com & Telegram)
+media_publisher_main.py — Phase 4 Multi-Platform Publishing Orchestrator
 ================================================================================
 Orchestrates multi-platform broadcasting for approved master video reels:
-  1. Social Channels (YouTube Shorts, Instagram Reels, Facebook) via Make.com Webhook
-  2. Telegram Channel / Public Group (via Telegram Bot API)
+  1. YouTube Shorts (via uploader.py using dynamic YOUTUBE_API_VERSION)
+  2. Instagram Reels & Facebook Pages (via meta_uploader.py using dynamic META_GRAPH_VERSION)
+  3. Make.com Webhook Pipeline (optional secondary broadcast if MAKE_WEBHOOK_URL is set)
+  4. Telegram Channel / Public Group (via Telegram Bot API)
 
 Called directly after a user approves a reel title or taps 'Post Immediately' in Telegram.
 """
@@ -22,6 +24,9 @@ logger = logging.getLogger("media_publisher_main")
 logger.setLevel(logging.INFO)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.basename(_REPO_ROOT) == "simpler update":
+    _REPO_ROOT = os.path.dirname(_REPO_ROOT)
+
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -31,6 +36,219 @@ try:
     load_dotenv(os.path.join(_REPO_ROOT, "Credentials", ".env"), override=False)
 except ImportError:
     pass
+
+
+def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Resolves per-user social media credentials from telegram_users.json first,
+    then USER_<id>_* environment variables, then root .env (admin fallback only).
+
+    For non-admin users: NEVER falls back to admin root .env credentials.
+    For admin users: falls back to root .env only if no personal record found.
+    """
+    cred_file = os.getenv("CLIENT_SECRET_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "client_secret.json"))
+    if not os.path.exists(cred_file):
+        fallback_cred = os.path.join(_REPO_ROOT, "Credentials", "client_secret.json")
+        if os.path.exists(fallback_cred):
+            cred_file = fallback_cred
+
+    token_file = os.getenv("YOUTUBE_TOKEN_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "token.json"))
+    if not os.path.exists(token_file):
+        fallback_token = os.path.join(_REPO_ROOT, "Credentials", "token.json")
+        if os.path.exists(fallback_token):
+            token_file = fallback_token
+
+    has_yt = os.path.exists(cred_file) or os.path.exists(token_file) or bool(os.getenv("YOUTUBE_TOKEN_JSON"))
+
+    # No user_id: use root admin credentials
+    if not user_id:
+        return {
+            "meta_token": os.getenv("IG_BUSINESS_TOKEN") or os.getenv("META_PAGE_TOKEN"),
+            "meta_id": os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("IG_BUSINESS_ID") or os.getenv("META_PAGE_ID"),
+            "meta_page_id": os.getenv("META_PAGE_ID"),
+            "meta_page_token": os.getenv("META_PAGE_TOKEN"),
+            "yt_token": token_file if has_yt else None,
+            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN"),
+            "is_admin": True
+        }
+
+    try:
+        from Telegram_Storage_Modules.telegram_user_manager import load_all_users, _is_admin_user
+        users = load_all_users()
+        u_rec = users.get(str(user_id), {})
+        is_admin = _is_admin_user(str(user_id)) if user_id else True
+        user_id_clean = str(user_id).strip() if user_id else ""
+
+        def _pick(json_key, env_suffixes, root_env_key=None):
+            """Resolve credential: user record -> USER_<id>_ENV -> root_env (admin only)."""
+            val = (u_rec.get(json_key) or "").strip()
+            if val:
+                return val
+            if isinstance(env_suffixes, str):
+                env_suffixes = [env_suffixes]
+            if user_id_clean:
+                for suffix in env_suffixes:
+                    prefixed = os.getenv(f"USER_{user_id_clean}_{suffix}", "").strip()
+                    if prefixed:
+                        return prefixed
+            if is_admin and root_env_key:
+                return (os.getenv(root_env_key) or "").strip() or None
+            return None
+
+        meta_tok = _pick("ig_business_token", ["IG_BUSINESS_TOKEN", "META_PAGE_TOKEN", "META_TOKEN"], "IG_BUSINESS_TOKEN")
+        if not meta_tok and is_admin:
+            meta_tok = (os.getenv("META_PAGE_TOKEN") or os.getenv("META_TOKEN") or "").strip() or None
+
+        meta_id = _pick("ig_business_id", ["IG_BUSINESS_ID", "IG_BUSINESS_ACCOUNT_ID", "META_PAGE_ID"], "IG_BUSINESS_ID")
+        if not meta_id and is_admin:
+            meta_id = (os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("META_PAGE_ID") or "").strip() or None
+
+        meta_page_id = _pick("meta_page_id", ["META_PAGE_ID", "IG_BUSINESS_ID"], "META_PAGE_ID")
+        meta_page_tok = _pick("meta_page_token", ["META_PAGE_TOKEN", "IG_BUSINESS_TOKEN", "META_TOKEN"], "META_PAGE_TOKEN")
+
+        yt_tok_json = (u_rec.get("youtube_token_json") or "").strip() or None
+        if not yt_tok_json and user_id_clean:
+            for y_suf in ["TOKEN_JSON", "YOUTUBE_TOKEN_JSON"]:
+                v = os.getenv(f"USER_{user_id_clean}_{y_suf}", "").strip()
+                if v:
+                    yt_tok_json = v
+                    break
+        if not yt_tok_json and is_admin:
+            yt_tok_json = os.getenv("TOKEN_JSON", "").strip() or os.getenv("YOUTUBE_TOKEN_JSON", "").strip() or None
+
+        yt_tok = yt_tok_json if yt_tok_json else (token_file if (has_yt and is_admin) else None)
+
+        tt_tok = _pick("tiktok_access_token", ["TIKTOK_ACCESS_TOKEN", "TIKTOK_TOKEN"], "TIKTOK_ACCESS_TOKEN")
+        tg_pub_group = _pick("telegram_public_group_id", ["TELEGRAM_PUBLIC_GROUP_ID"], "TELEGRAM_PUBLIC_GROUP_ID")
+
+        return {
+            "meta_token": meta_tok,
+            "meta_id": meta_id,
+            "meta_page_id": meta_page_id,
+            "meta_page_token": meta_page_tok,
+            "yt_token": yt_tok,
+            "yt_token_json": yt_tok_json,  # raw JSON string for in-memory auth
+            "tiktok_token": tt_tok,
+            "tg_pub_group": tg_pub_group,
+            "is_admin": is_admin
+        }
+    except Exception as ex:
+        logger.warning("[CREDENTIAL RESOLVE] Error for user %s: %s. Returning empty credentials.", user_id, ex)
+        return {
+            "meta_token": None,
+            "meta_id": None,
+            "meta_page_id": None,
+            "meta_page_token": None,
+            "yt_token": None,
+            "yt_token_json": None,
+            "tiktok_token": None,
+            "tg_pub_group": None,
+            "is_admin": False
+        }
+
+
+def publish_to_youtube(
+    video_path: str,
+    title: str,
+    description: str = "",
+    tags: str = "",
+    niche: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Uploads video reel to YouTube Shorts via YouTube Data API (dynamic version)."""
+    logger.info("🎬 [PUBLISHER 1/4] Uploading to YouTube Shorts (user_id=%s)...", user_id or "admin")
+    try:
+        user_creds = _resolve_user_credentials(user_id)
+        if user_id and not user_creds.get("is_admin") and not user_creds.get("yt_token"):
+            logger.warning("YouTube API credentials missing for non-admin User %s. Skipping YouTube upload.", user_id)
+            return {"status": "skipped", "message": "Personal YouTube credentials not configured for non-admin user"}
+
+        from Publishing_Modules.uploader import _upload_sync
+        video_id = _upload_sync(
+            file_path=video_path,
+            title=title,
+            description=description or f"{title}\n\n#shorts #viral #trending",
+            hashtags=tags or "#shorts #viral #trending",
+            privacy="public",
+            niche=niche,
+            user_yt_token_json=user_creds.get("yt_token_json"),
+            user_id=user_id,
+        )
+        if video_id:
+            logger.info("✅ [YOUTUBE SUCCESS] Video ID: %s", video_id)
+            clean_url = video_id if str(video_id).startswith("http") else f"https://youtu.be/{video_id}"
+            return {"status": "success", "video_id": video_id, "url": clean_url}
+        else:
+            logger.warning("YouTube upload completed without returning Video ID.")
+            return {"status": "failed", "message": "No video ID returned (possible rate limit or lock)"}
+    except Exception as e:
+        logger.error("❌ [YOUTUBE ERROR] %s", e)
+        return {"status": "failed", "error": str(e)}
+
+
+async def publish_to_meta(
+    video_path: str,
+    caption: str,
+    niche: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Uploads video reel to Instagram & Facebook via Meta Graph API using dynamic META_GRAPH_VERSION."""
+    logger.info("📸 [PUBLISHER 2/4] Uploading to Meta Instagram & Facebook (user_id=%s)...", user_id or "admin")
+    try:
+        from Publishing_Modules.meta_uploader import AsyncMetaUploader
+        user_creds = _resolve_user_credentials(user_id)
+        token = user_creds.get("meta_token")
+        ig_user_id = user_creds.get("meta_id")
+
+        if user_id and not user_creds.get("is_admin") and (not token or not ig_user_id):
+            logger.warning("Meta credentials missing for non-admin User %s. Skipping Meta upload.", user_id)
+            return {
+                "instagram": {"status": "skipped", "message": "Personal Instagram credentials not configured for user"},
+                "facebook": {"status": "skipped", "message": "Personal Facebook credentials not configured for user"}
+            }
+
+        if token or ig_user_id:
+            meta_config_override = {
+                "IG_BUSINESS_ID": ig_user_id or "",
+                "IG_BUSINESS_TOKEN": token or "",
+                "META_PAGE_ID": user_creds.get("meta_page_id") or "",
+                "META_PAGE_TOKEN": user_creds.get("meta_page_token") or token or "",
+            }
+            logger.info("[META CRED] Using user-resolved config: IG_ID=%s", (ig_user_id or "")[:8] + "...")
+        else:
+            meta_config_override = None
+
+        uploader = AsyncMetaUploader()
+        res = await uploader.upload_to_meta(
+            video_path=video_path,
+            caption=caption,
+            upload_type="Reels",
+            niche=niche or "General_Fallback",
+            meta_config_override=meta_config_override
+        )
+        return res
+    except Exception as e:
+        logger.error("❌ [META ERROR] %s", e)
+        return {"instagram": {"status": "failed", "error": str(e)}, "facebook": {"status": "failed", "error": str(e)}}
+
+
+async def publish_to_instagram(
+    video_path: str,
+    caption: str,
+    niche: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Uploads video reel to Instagram via Meta Graph API."""
+    meta_res = await publish_to_meta(video_path, caption, niche, user_id=user_id)
+    ig_result = meta_res.get("instagram", {})
+    if ig_result.get("status") == "success":
+        media_id = ig_result.get("id")
+        link = ig_result.get("link") or (f"https://www.instagram.com/p/{media_id}/" if media_id else "Uploaded successfully")
+        logger.info("✅ [INSTAGRAM SUCCESS] Media ID: %s, Link: %s", media_id, link)
+        return {"status": "success", "media_id": media_id, "link": link, "url": link}
+    else:
+        logger.warning("⚠️ Instagram upload failed or skipped: %s", ig_result.get("status"))
+        return ig_result
 
 
 # ── Telegram Channel Broadcasting ─────────────────────────────────────────────
@@ -92,7 +310,11 @@ async def run_phase4_publishing_async(
     seo_data: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Asynchronous multi-platform publishing orchestrator via Make.com & Telegram.
+    Asynchronous master multi-platform publishing orchestrator:
+      1. YouTube Shorts (via uploader.py)
+      2. Meta Instagram Reels & Facebook (via meta_uploader.py)
+      3. Make.com Webhook Pipeline (if MAKE_WEBHOOK_URL is set)
+      4. Telegram Channel / Group (via Bot API)
     """
     logger.info("==================================================================")
     logger.info("🚀 [PHASE 4 MEDIA PUBLISHER] Starting Multi-Platform Broadcast")
@@ -112,7 +334,60 @@ async def run_phase4_publishing_async(
 
     platforms_payload = (seo_data.get("platforms", {}) if isinstance(seo_data, dict) else {}) or {}
 
-    # 1. Make.com Universal Social Dispatch (Instagram Reels, YouTube Shorts, Stories, Feed)
+    # 1. YouTube Shorts (Direct Python Data API)
+    yt_payload = platforms_payload.get("youtube", {})
+    yt_title = yt_payload.get("title") or title
+    yt_desc = yt_payload.get("description") or description or f"{title}\n\n{tags}"
+    yt_tags = " ".join(yt_payload.get("hashtags", [])) if yt_payload.get("hashtags") else tags
+
+    try:
+        yt_res = await asyncio.to_thread(
+            publish_to_youtube,
+            video_path=video_path,
+            title=yt_title,
+            description=yt_desc,
+            tags=yt_tags,
+            niche=niche,
+            user_id=user_id
+        )
+        if yt_res.get("status") != "skipped":
+            results["platforms"]["youtube"] = yt_res
+    except Exception as e:
+        logger.error("❌ YouTube publish error: %s", e)
+        results["platforms"]["youtube"] = {"status": "failed", "error": str(e)}
+
+    # 2. Meta (Instagram Reels & Facebook Pages)
+    ig_payload = platforms_payload.get("instagram", {})
+    ig_caption = ig_payload.get("caption") or description or f"{title}\n\n{tags}"
+    if ig_payload.get("hashtags") and not any(h in ig_caption for h in ig_payload.get("hashtags", [])):
+        ig_caption += "\n\n" + " ".join(ig_payload.get("hashtags", []))
+
+    try:
+        meta_res = await publish_to_meta(
+            video_path=video_path,
+            caption=ig_caption,
+            niche=niche,
+            user_id=user_id
+        )
+        ig_result = meta_res.get("instagram", {})
+        if ig_result.get("status") == "success":
+            media_id = ig_result.get("id")
+            link = ig_result.get("link") or (f"https://www.instagram.com/p/{media_id}/" if media_id else "Uploaded successfully")
+            results["platforms"]["instagram"] = {"status": "success", "media_id": media_id, "link": link, "url": link}
+        elif ig_result.get("status") not in ("skipped", None):
+            results["platforms"]["instagram"] = {"status": "failed", "response": ig_result}
+
+        fb_result = meta_res.get("facebook", {})
+        if fb_result.get("status") == "success":
+            fb_link = fb_result.get("link") or fb_result.get("url") or "Uploaded successfully"
+            results["platforms"]["facebook"] = {"status": "success", "link": fb_link, "url": fb_link}
+        elif fb_result.get("status") not in ("skipped", "disabled/skipped", None):
+            results["platforms"]["facebook"] = {"status": "failed", "response": fb_result}
+    except Exception as e:
+        logger.error("❌ Meta publish error: %s", e)
+        results["platforms"]["instagram"] = {"status": "failed", "error": str(e)}
+
+    # 3. Make.com Universal Social Dispatch (Optional Webhook Broadcast)
     if is_make_configured():
         logger.info("📡 Dispatching universal social broadcasting to Make.com Webhook...")
         make_res = publish_to_make(
@@ -137,13 +412,8 @@ async def run_phase4_publishing_async(
                 "status": "failed",
                 "error": make_res.get("error", "Unknown Make.com error")
             }
-    else:
-        results["platforms"]["make"] = {
-            "status": "skipped",
-            "error": "MAKE_WEBHOOK_URL is not configured. Run /setmakewebhookurl or add to GitHub Secrets."
-        }
 
-    # 2. Telegram Channel Broadcasting
+    # 4. Telegram Channel Broadcasting
     tg_payload = platforms_payload.get("telegram", {})
     tg_desc = tg_payload.get("description")
     tg_title = tg_payload.get("title") or title
@@ -229,5 +499,9 @@ def run_phase4_publishing(
 __all__ = [
     "run_phase4_publishing",
     "run_phase4_publishing_async",
+    "publish_to_youtube",
+    "publish_to_meta",
+    "publish_to_instagram",
     "publish_to_telegram",
+    "_resolve_user_credentials",
 ]

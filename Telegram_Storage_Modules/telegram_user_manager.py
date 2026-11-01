@@ -13,7 +13,7 @@ import secrets
 import logging
 import hashlib
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, Any
 
 logger = logging.getLogger("telegram_user_manager")
 
@@ -84,6 +84,14 @@ def load_all_users() -> Dict[str, Dict]:
                             u_rec["auto_scrape_limit"] = int(val)
                         except (ValueError, TypeError):
                             pass
+
+    # Hydrate system-level configuration if present
+    sys_cfg = users.get("__system_config__", {})
+    if isinstance(sys_cfg, dict):
+        if sys_cfg.get("META_GRAPH_VERSION") and not os.getenv("META_GRAPH_VERSION"):
+            os.environ["META_GRAPH_VERSION"] = sys_cfg["META_GRAPH_VERSION"]
+        if sys_cfg.get("YOUTUBE_API_VERSION") and not os.getenv("YOUTUBE_API_VERSION"):
+            os.environ["YOUTUBE_API_VERSION"] = sys_cfg["YOUTUBE_API_VERSION"]
 
     return users
 
@@ -750,8 +758,18 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
         f"🌐 **Make.com Webhook URL:** `{_chk('make_webhook_url', 'MAKE_WEBHOOK_URL')}`",
         "   👉 Command: `/setmakewebhookurl https://hook.eu2.make.com/...`\n",
-        "💡 *Tip: Personal keys bypass queues and rate limits! Run `/autosetup` for the 6-step wizard or `/myconfig` anytime.*"
     ]
+    if is_admin:
+        meta_ver = get_meta_graph_api_version()
+        yt_ver = get_youtube_api_version()
+        lines.extend([
+            "👑 **Admin API Endpoints (Configurable via Chat or Secrets):**",
+            f"⚡ **Meta Graph API Version:** `{meta_ver}`",
+            "   👉 Command: `/updatemetaendpoints <version>` (e.g. `/updatemetaendpoints v21.0` or `/updatemetaendpoints auto`)\n",
+            f"🎬 **YouTube API Version:** `{yt_ver}`",
+            "   👉 Command: `/updateyoutubeendpoints <version>` (e.g. `/updateyoutubeendpoints v3`)\n"
+        ])
+    lines.append("💡 *Tip: Personal keys bypass queues and rate limits! Run `/autosetup` for the 6-step wizard or `/myconfig` anytime.*")
     return "\n".join(lines)
 
 
@@ -908,3 +926,192 @@ def logout_user(user_id_str: str) -> bool:
         save_all_users(users)
         return True
     return False
+
+
+# ── Dynamic API Endpoint Versioning & Admin Controls ─────────────────────────
+
+def _persist_env_var_to_disk(key: str, value: str) -> bool:
+    """Updates or appends a key=value pair to .env and Credentials/.env files if they exist."""
+    success = False
+    for rel_path in [".env", os.path.join("Credentials", ".env")]:
+        full_path = os.path.join(_REPO_ROOT, rel_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                pattern = rf"^{re.escape(key)}\s*=.*$"
+                if re.search(pattern, content, flags=re.MULTILINE):
+                    new_content = re.sub(pattern, f"{key}={value}", content, flags=re.MULTILINE)
+                else:
+                    new_content = content.rstrip() + f"\n{key}={value}\n"
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                logger.info("💾 [TELEGRAM USER MANAGER] Persisted %s=%s in %s", key, value, rel_path)
+                success = True
+            except Exception as e:
+                logger.warning("Could not persist %s in %s: %s", key, rel_path, e)
+    return success
+
+
+def get_meta_graph_api_version() -> str:
+    """Returns the currently active Meta Graph API version."""
+    try:
+        from Publishing_Modules.meta_uploader import get_meta_graph_version
+        return get_meta_graph_version()
+    except Exception:
+        return os.getenv("META_GRAPH_VERSION", "v21.0")
+
+
+def update_meta_graph_api_version(version: str, admin_user_id: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Updates the Meta Graph API version:
+      1. Normalizes formatting (e.g. '21.0' -> 'v21.0').
+      2. Updates in-memory environment variable & meta_uploader module.
+      3. Persists to data/telegram_users.json under __system_config__.
+      4. Persists to .env and Credentials/.env.
+      5. Syncs to GitHub Secrets as META_GRAPH_VERSION via PAT if available.
+    """
+    clean_ver = version.strip()
+    if not clean_ver:
+        return False, "Version string cannot be empty."
+    if not clean_ver.startswith("v") and clean_ver and clean_ver[0].isdigit():
+        clean_ver = f"v{clean_ver}"
+
+    # 1. Update in-memory runtime
+    os.environ["META_GRAPH_VERSION"] = clean_ver
+    try:
+        from Publishing_Modules.meta_uploader import set_meta_graph_version
+        set_meta_graph_version(clean_ver)
+    except Exception as _e:
+        logger.debug("meta_uploader update notice: %s", _e)
+
+    # 2. Persist in telegram_users.json
+    try:
+        users = load_all_users()
+        sys_cfg = users.setdefault("__system_config__", {})
+        sys_cfg["META_GRAPH_VERSION"] = clean_ver
+        save_all_users(users)
+    except Exception as _e:
+        logger.warning("Could not save to users json: %s", _e)
+
+    # 3. Persist to local .env files
+    _persist_env_var_to_disk("META_GRAPH_VERSION", clean_ver)
+
+    # 4. Sync to GitHub Secrets
+    try:
+        from Utilities.github_secret_updater import sync_custom_secret_to_github
+        gh_ok = sync_custom_secret_to_github("META_GRAPH_VERSION", clean_ver)
+        if gh_ok:
+            logger.info("🔑 [TELEGRAM USER MANAGER] Synced META_GRAPH_VERSION to GitHub Secrets.")
+    except Exception as _ge:
+        logger.warning("GitHub Secret sync notice for META_GRAPH_VERSION: %s", _ge)
+
+    return True, f"Meta Graph API version successfully updated to: {clean_ver}"
+
+
+def get_youtube_api_version() -> str:
+    """Returns the currently active YouTube Data API version."""
+    try:
+        from Publishing_Modules.uploader import get_youtube_api_version as _get_yt_ver
+        return _get_yt_ver()
+    except Exception:
+        return os.getenv("YOUTUBE_API_VERSION", "v3")
+
+
+def update_youtube_api_version(version: str, admin_user_id: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Updates the YouTube Data API version:
+      1. Normalizes formatting (e.g. '3' -> 'v3').
+      2. Updates in-memory runtime & uploader module.
+      3. Persists to data/telegram_users.json under __system_config__.
+      4. Persists to .env and Credentials/.env.
+      5. Syncs to GitHub Secrets as YOUTUBE_API_VERSION via PAT if available.
+    """
+    clean_ver = version.strip()
+    if not clean_ver:
+        return False, "Version string cannot be empty."
+    if not clean_ver.startswith("v") and clean_ver and clean_ver[0].isdigit():
+        clean_ver = f"v{clean_ver}"
+
+    # 1. Update in-memory runtime
+    os.environ["YOUTUBE_API_VERSION"] = clean_ver
+    try:
+        from Publishing_Modules.uploader import set_youtube_api_version as _set_yt_ver
+        _set_yt_ver(clean_ver)
+    except Exception as _e:
+        logger.debug("uploader update notice: %s", _e)
+
+    # 2. Persist in telegram_users.json
+    try:
+        users = load_all_users()
+        sys_cfg = users.setdefault("__system_config__", {})
+        sys_cfg["YOUTUBE_API_VERSION"] = clean_ver
+        save_all_users(users)
+    except Exception as _e:
+        logger.warning("Could not save to users json: %s", _e)
+
+    # 3. Persist to local .env files
+    _persist_env_var_to_disk("YOUTUBE_API_VERSION", clean_ver)
+
+    # 4. Sync to GitHub Secrets
+    try:
+        from Utilities.github_secret_updater import sync_custom_secret_to_github
+        gh_ok = sync_custom_secret_to_github("YOUTUBE_API_VERSION", clean_ver)
+        if gh_ok:
+            logger.info("🔑 [TELEGRAM USER MANAGER] Synced YOUTUBE_API_VERSION to GitHub Secrets.")
+    except Exception as _ge:
+        logger.warning("GitHub Secret sync notice for YOUTUBE_API_VERSION: %s", _ge)
+
+    return True, f"YouTube Data API version successfully updated to: {clean_ver}"
+
+
+def query_gemini_recommended_endpoint_version(platform: str) -> Dict[str, Any]:
+    """
+    Uses Gemini API to discover the latest official stable API version
+    for Meta Graph API or YouTube Data API.
+    """
+    platform_clean = platform.strip().lower()
+    api_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+
+    defaults = {
+        "meta": {"version": "v21.0", "notes": "Meta Graph API v21.0 (Current official stable cycle)"},
+        "youtube": {"version": "v3", "notes": "YouTube Data API v3 (Standard official video publishing endpoint)"}
+    }
+    fallback = defaults.get(platform_clean, {"version": "v21.0", "notes": "Default fallback endpoint"})
+
+    if not api_key:
+        return fallback
+
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+
+        prompt = (
+            f"What is the current latest active, stable version of the {platform.title()} API for video publishing / uploads?\n"
+            f"If platform is 'meta', return the latest Facebook/Instagram Graph API version (e.g. 'v21.0' or 'v22.0').\n"
+            f"If platform is 'youtube', return the YouTube Data API version (e.g. 'v3').\n"
+            f"Respond ONLY with a JSON object in this format:\n"
+            f'{{"version": "vXX.X", "notes": "Brief 1-sentence release status"}}\n'
+            f"Do not include markdown code fences or any other text."
+        )
+
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        resp = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+        text = (resp.text or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        data = json.loads(text)
+        ver = data.get("version", "").strip()
+        if ver:
+            if not ver.startswith("v") and ver and ver[0].isdigit():
+                ver = f"v{ver}"
+            return {"version": ver, "notes": data.get("notes", "")}
+    except Exception as e:
+        logger.warning("⚠️ [GEMINI VERSION CHECK] Could not query Gemini for %s: %s", platform, e)
+
+    return fallback
+

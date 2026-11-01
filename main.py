@@ -3653,6 +3653,154 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Make.com Webhook URL: {_e}")
 
+        async def _cmd_updatemetaendpoints(update, context):
+            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            from Telegram_Storage_Modules.telegram_user_manager import (
+                is_admin_user,
+                get_meta_graph_api_version,
+                update_meta_graph_api_version,
+                query_gemini_recommended_endpoint_version,
+            )
+            if not is_admin_user(uid):
+                logger.warning(f"🛡️ [SECURITY GUARD] Unauthorized attempt to /updatemetaendpoints by User {uid}")
+                await update.message.reply_text("⛔ **Access Denied:** Only administrators can view or update platform API endpoints.")
+                return
+
+            args_text = " ".join(context.args).strip() if context.args else ""
+            current_ver = get_meta_graph_api_version()
+
+            if not args_text:
+                status_msg = await update.message.reply_text(
+                    f"⚡ **Meta Graph API Version Manager**\n\n"
+                    f"• **Current Active Version:** `{current_ver}`\n"
+                    f"• **Endpoint Base:** `https://graph.facebook.com/{current_ver}`\n\n"
+                    f"🔍 *Checking Gemini for latest official Graph API release...*"
+                )
+                gemini_res = await asyncio.to_thread(query_gemini_recommended_endpoint_version, "meta")
+                rec_ver = gemini_res.get("version")
+                notes = gemini_res.get("notes", "")
+
+                reply_text = (
+                    f"⚡ **Meta Graph API Version Manager**\n\n"
+                    f"• **Current Active Version:** `{current_ver}`\n"
+                    f"• **Endpoint Base:** `https://graph.facebook.com/{current_ver}`\n\n"
+                )
+                if rec_ver:
+                    reply_text += (
+                        f"🤖 **Gemini Analysis:** `{rec_ver}`\n"
+                        f"📝 *Details:* {notes}\n\n"
+                    )
+                    if rec_ver != current_ver:
+                        reply_text += f"👉 To apply, run: `/updatemetaendpoints {rec_ver}`\n\n"
+                reply_text += (
+                    "💡 **Update Commands:**\n"
+                    "• Set manually: `/updatemetaendpoints v21.0`\n"
+                    "• Auto-sync latest: `/updatemetaendpoints auto`\n\n"
+                    "*(Updates in-memory runtime, .env, and GitHub Secrets `META_GRAPH_VERSION`)*"
+                )
+                await status_msg.edit_text(reply_text)
+                return
+
+            if args_text.lower() == "auto":
+                status_msg = await update.message.reply_text("🔍 *Querying Gemini for latest stable Meta Graph API version...*")
+                gemini_res = await asyncio.to_thread(query_gemini_recommended_endpoint_version, "meta")
+                target_ver = gemini_res.get("version") or "v21.0"
+                ok, msg = update_meta_graph_api_version(target_ver, admin_user_id=uid)
+                if ok:
+                    await status_msg.edit_text(
+                        f"✅ **Meta Graph API Version Auto-Updated!**\n\n"
+                        f"• **Active Version:** `{target_ver}`\n"
+                        f"• **Endpoint Base:** `https://graph.facebook.com/{target_ver}`\n"
+                        f"• **Persistence:** In-Memory + `.env` + GitHub Secret `META_GRAPH_VERSION`\n\n"
+                        f"📝 *Details:* {gemini_res.get('notes', 'Updated to latest stable release.')}"
+                    )
+                else:
+                    await status_msg.edit_text(f"⚠️ Failed to auto-update Meta endpoint: {msg}")
+                return
+
+            ok, msg = update_meta_graph_api_version(args_text, admin_user_id=uid)
+            if ok:
+                new_ver = get_meta_graph_api_version()
+                await update.message.reply_text(
+                    f"✅ **Meta Graph API Version Updated!**\n\n"
+                    f"• **New Version:** `{new_ver}`\n"
+                    f"• **Endpoint Base:** `https://graph.facebook.com/{new_ver}`\n"
+                    f"• **Persistence:** In-Memory + `.env` + GitHub Secret `META_GRAPH_VERSION`\n\n"
+                    f"All Instagram Reels and Facebook Page publishing will now target `{new_ver}`."
+                )
+            else:
+                await update.message.reply_text(f"⚠️ Error updating Meta endpoint: {msg}")
+
+        async def _cmd_updateyoutubeendpoints(update, context):
+            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            from Telegram_Storage_Modules.telegram_user_manager import (
+                is_admin_user,
+                get_youtube_api_version,
+                update_youtube_api_version,
+                query_gemini_recommended_endpoint_version,
+            )
+            if not is_admin_user(uid):
+                logger.warning(f"🛡️ [SECURITY GUARD] Unauthorized attempt to /updateyoutubeendpoints by User {uid}")
+                await update.message.reply_text("⛔ **Access Denied:** Only administrators can view or update platform API endpoints.")
+                return
+
+            args_text = " ".join(context.args).strip() if context.args else ""
+            current_ver = get_youtube_api_version()
+
+            if not args_text:
+                status_msg = await update.message.reply_text(
+                    f"🎬 **YouTube Data API Version Manager**\n\n"
+                    f"• **Current Active Version:** `{current_ver}`\n"
+                    f"• **Discovery Service:** `build('youtube', '{current_ver}', ...)`\n\n"
+                    f"🔍 *Checking Gemini for latest YouTube API release...*"
+                )
+                gemini_res = await asyncio.to_thread(query_gemini_recommended_endpoint_version, "youtube")
+                rec_ver = gemini_res.get("version") or "v3"
+                notes = gemini_res.get("notes", "")
+
+                reply_text = (
+                    f"🎬 **YouTube Data API Version Manager**\n\n"
+                    f"• **Current Active Version:** `{current_ver}`\n"
+                    f"• **Discovery Service:** `build('youtube', '{current_ver}', ...)`\n\n"
+                    f"🤖 **Gemini Analysis:** `{rec_ver}`\n"
+                    f"📝 *Details:* {notes}\n\n"
+                    "💡 **Update Commands:**\n"
+                    "• Set manually: `/updateyoutubeendpoints v3`\n"
+                    "• Auto-sync latest: `/updateyoutubeendpoints auto`\n\n"
+                    "*(Updates in-memory runtime, .env, and GitHub Secrets `YOUTUBE_API_VERSION`)*"
+                )
+                await status_msg.edit_text(reply_text)
+                return
+
+            if args_text.lower() == "auto":
+                status_msg = await update.message.reply_text("🔍 *Querying Gemini for latest YouTube Data API version...*")
+                gemini_res = await asyncio.to_thread(query_gemini_recommended_endpoint_version, "youtube")
+                target_ver = gemini_res.get("version") or "v3"
+                ok, msg = update_youtube_api_version(target_ver, admin_user_id=uid)
+                if ok:
+                    await status_msg.edit_text(
+                        f"✅ **YouTube Data API Version Auto-Updated!**\n\n"
+                        f"• **Active Version:** `{target_ver}`\n"
+                        f"• **Discovery Service:** `build('youtube', '{target_ver}', ...)`\n"
+                        f"• **Persistence:** In-Memory + `.env` + GitHub Secret `YOUTUBE_API_VERSION`"
+                    )
+                else:
+                    await status_msg.edit_text(f"⚠️ Failed to auto-update YouTube endpoint: {msg}")
+                return
+
+            ok, msg = update_youtube_api_version(args_text, admin_user_id=uid)
+            if ok:
+                new_ver = get_youtube_api_version()
+                await update.message.reply_text(
+                    f"✅ **YouTube Data API Version Updated!**\n\n"
+                    f"• **New Version:** `{new_ver}`\n"
+                    f"• **Discovery Service:** `build('youtube', '{new_ver}', ...)`\n"
+                    f"• **Persistence:** In-Memory + `.env` + GitHub Secret `YOUTUBE_API_VERSION`\n\n"
+                    f"All YouTube Shorts uploads will now build service with `{new_ver}`."
+                )
+            else:
+                await update.message.reply_text(f"⚠️ Error updating YouTube endpoint: {msg}")
+
         async def _cmd_setautoscraplimit(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             if not args_text:
@@ -3776,6 +3924,10 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setmakewebhookurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("setmakewebhook", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makewebhook", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("updatemetaendpoints", _cmd_updatemetaendpoints))
+        app.add_handler(CommandHandler("setmetaversion", _cmd_updatemetaendpoints))
+        app.add_handler(CommandHandler("updateyoutubeendpoints", _cmd_updateyoutubeendpoints))
+        app.add_handler(CommandHandler("setyoutubeversion", _cmd_updateyoutubeendpoints))
         app.add_handler(CommandHandler("myconfig", _cmd_myconfig))
         app.add_handler(CommandHandler("reject", _cmd_reject))
         app.add_handler(CommandHandler("rejet", _cmd_reject))
