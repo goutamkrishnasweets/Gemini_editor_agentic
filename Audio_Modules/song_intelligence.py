@@ -315,3 +315,4 @@ def enrich_audio_with_song_intelligence(wav_path: str, clip_dir: Optional[str] =
         logger.debug(f"[SONG INTEL] Notice syncing to pool_metadata: {_pme}")
 
     return result
+

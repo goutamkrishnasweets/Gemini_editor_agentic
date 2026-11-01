@@ -53,12 +53,53 @@ def is_make_configured() -> bool:
 
 # ── Public URL Resolution via Telegram Vault ──────────────────────────────────
 
+def _upload_fallback_tmpfiles(local_path: str) -> Optional[str]:
+    """Fallback public uploader if file exceeds Telegram Bot API 20MB download limit."""
+    try:
+        import mimetypes
+        import uuid
+
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+        filename = os.path.basename(local_path)
+        mime = mimetypes.guess_type(local_path)[0] or "video/mp4"
+
+        with open(local_path, "rb") as f:
+            file_bytes = f.read()
+
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode("utf-8") + file_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://tmpfiles.org/api/v1/upload",
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "MakePublisher/1.0"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if res.get("status") == "success" and res.get("data", {}).get("url"):
+                raw_url = res["data"]["url"]
+                dl_url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                logger.info("🌐 [MakePublisher] Resolved public fallback URL via tmpfiles: %s", dl_url)
+                return dl_url
+    except Exception as e:
+        logger.debug(f"[MakePublisher] Fallback upload notice: {e}")
+    return None
+
+
 def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
     """
     Ensures media is accessible via a public HTTP(S) URL for Make.com / Meta.
     If already a URL, returns as-is.
     If a local file, obtains its Telegram Bot API direct download link:
       https://api.telegram.org/file/bot{TOKEN}/{file_path}
+    Falls back to direct temporary hosting if file exceeds 20MB.
     """
     if not local_path_or_url:
         return None
@@ -70,47 +111,61 @@ def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
         logger.warning(f"⚠️ [MakePublisher] File does not exist locally: {local_path_or_url}")
         return None
 
+    file_size_mb = os.path.getsize(local_path_or_url) / (1024 * 1024)
+
+    # Telegram Bot API getFile has a hard 20MB file download limit
+    if file_size_mb > 20.0:
+        logger.info(f"📦 [MakePublisher] File is {file_size_mb:.1f}MB (>20MB Telegram limit). Using direct public uploader...")
+        fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
+        if fallback_url:
+            return fallback_url
+
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     storage_chat_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID", "").strip()
 
-    if not bot_token or not storage_chat_id:
-        logger.warning("⚠️ [MakePublisher] TELEGRAM_BOT_TOKEN or TELEGRAM_STORAGE_GROUP_ID missing. Cannot resolve public URL.")
-        return None
+    clean_token = bot_token[3:] if bot_token.startswith("bot") else bot_token
+
+    if not clean_token or not storage_chat_id:
+        logger.warning("⚠️ [MakePublisher] TELEGRAM_BOT_TOKEN or TELEGRAM_STORAGE_GROUP_ID missing. Cannot resolve public URL via Telegram.")
+        return _upload_fallback_tmpfiles(local_path_or_url)
 
     try:
         # Step 1: Upload to Telegram Storage Group to get file_id
-        import urllib.request
-        from Telegram_Storage_Modules.telegram_http import send_document
+        from Telegram_Storage_Modules.telegram_http import send_document, extract_file_id
 
-        doc_res = send_document(storage_chat_id, local_path_or_url, caption="📦 Media for Make.com Dispatch")
+        doc_res = send_document(
+            local_path=local_path_or_url,
+            chat_id=storage_chat_id,
+            caption="📦 Media for Make.com Dispatch"
+        )
         file_id = None
-        if doc_res and doc_res.get("ok"):
-            res_obj = doc_res.get("result", {})
-            file_id = (
-                res_obj.get("document", {}).get("file_id") or
-                res_obj.get("video", {}).get("file_id") or
-                res_obj.get("photo", [{}])[-1].get("file_id")
-            )
+        if doc_res and isinstance(doc_res, dict):
+            file_id = extract_file_id(doc_res)
+            if not file_id:
+                res_obj = doc_res.get("result", {})
+                file_id = extract_file_id(res_obj)
 
         if not file_id:
-            logger.warning("⚠️ [MakePublisher] Failed to upload media to Telegram for public URL resolution.")
-            return None
+            logger.warning("⚠️ [MakePublisher] Failed to upload media to Telegram for public URL resolution. Trying fallback...")
+            return _upload_fallback_tmpfiles(local_path_or_url)
 
         # Step 2: Get direct file_path from Telegram Bot API
-        get_file_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
+        get_file_url = f"https://api.telegram.org/bot{clean_token}/getFile?file_id={file_id}"
         req = urllib.request.Request(get_file_url, headers={"User-Agent": "MakePublisher/1.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         if data.get("ok") and data.get("result", {}).get("file_path"):
             remote_file_path = data["result"]["file_path"]
-            public_url = f"https://api.telegram.org/file/bot{bot_token}/{remote_file_path}"
+            public_url = f"https://api.telegram.org/file/bot{clean_token}/{remote_file_path}"
             logger.info("🌐 [MakePublisher] Resolved public media URL: %s", public_url[:40] + "...")
             return public_url
+        else:
+            logger.warning("⚠️ [MakePublisher] Telegram getFile did not return a file_path. Trying fallback...")
+            return _upload_fallback_tmpfiles(local_path_or_url)
     except Exception as e:
-        logger.warning(f"⚠️ [MakePublisher] Public URL resolution error: {e}")
-
-    return None
+        logger.warning(f"⚠️ [MakePublisher] Public URL resolution error: {e}. Trying fallback...")
+        return _upload_fallback_tmpfiles(local_path_or_url)
 
 
 # ── Payload Builder ────────────────────────────────────────────────────────────
