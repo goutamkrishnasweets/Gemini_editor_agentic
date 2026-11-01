@@ -716,13 +716,12 @@ async def handle_telegram_callback(update, context):
         back_kbd = build_back_button_keyboard()
         await query.edit_message_text(
             text=(
-                "📸 **Instagram / Meta Setup — Step 2: Send Credentials**\n\n"
-                "Send all 4 Meta credentials in **one message** using this exact format:\n\n"
-                "`/metagraphapi PAGE_ID=your_page_id PAGE_TOKEN=EAAMxxx IG_ID=your_ig_business_id IG_TOKEN=EAAMxxx`\n\n"
-                "📌 **Where to find these:**\n"
-                "• Meta Business Suite → Settings → Page Access Tokens\n"
-                "• Instagram Graph API → Business Account ID\n\n"
-                "⏱️ This session will accept your credentials for **5 minutes**."
+                "📸 **Instagram / Meta 1-Click Setup**\n\n"
+                "Connect your Instagram & Facebook page with 1 click using:\n"
+                "`/connectmeta`\n\n"
+                "*(Or if you already have manual tokens, set them individually:*\n"
+                "• `/instagramtoken <token>`\n"
+                "• `/instagramid <id>`)*"
             ),
             reply_markup=back_kbd
         )
@@ -2211,30 +2210,6 @@ async def handle_telegram_incoming_msg(update, context):
             if await _wizard_auto_setup_step(msg, chat_id, text_in, bot=context.bot):
                 return
         elif active_wizard == "add_socials":
-            sess = _wizard_sessions.get(chat_id, {})
-            if sess.get("step") == 2 and sess.get("platform") == "instagram" and text_in.startswith("/metagraphapi "):
-                raw = text_in.replace("/metagraphapi ", "").strip()
-                env_vars = {}
-                for part in raw.split():
-                    if "=" in part:
-                        k, v = part.split("=", 1)
-                        env_vars[k.strip()] = v.strip()
-                env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
-                try:
-                    lines_env = open(env_path).readlines() if os.path.exists(env_path) else []
-                    existing = {l.split("=")[0]: l for l in lines_env if "=" in l}
-                    for k, v in env_vars.items():
-                        existing[k] = f'{k}="{v}"\n'
-                    with open(env_path, "w") as f:
-                        f.writelines(existing.values())
-                except Exception as _e:
-                    logger.error(f"metagraphapi wizard: {_e}")
-                saved = ", ".join([f"`{k}`" for k in env_vars])
-                await msg.reply_text(f"✅ **Meta credentials saved**: {saved}")
-                _wizard_sessions[chat_id]["step"] = 3
-                if await _wizard_socials_step(msg, chat_id, ""):
-                    return
-                return
             if await _wizard_socials_step(msg, chat_id, text_in, is_doc):
                 return
         elif active_wizard == "credentials":
@@ -3777,10 +3752,6 @@ def start_telegram_bot_service():
         async def _cmd_connectmeta(update, context):
             uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
             from Telegram_Storage_Modules.telegram_user_manager import is_admin_user, _persist_env_var_to_disk
-            if not is_admin_user(uid):
-                logger.warning(f"🛡️ [SECURITY GUARD] Unauthorized attempt to /connectmeta by User {uid}")
-                await update.message.reply_text("⛔ **Access Denied:** Only administrators can configure platform credentials.")
-                return
 
             from Publishing_Modules.meta_uploader import (
                 build_meta_oauth_url,
@@ -3798,9 +3769,14 @@ def start_telegram_bot_service():
                 app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
 
                 if not app_id or not app_secret:
-                    await update.message.reply_text(
-                        "⚠️ **App ID or Secret Missing:** Please run `/connectmeta <APP_ID> <APP_SECRET>` first."
-                    )
+                    if is_admin_user(uid):
+                        await update.message.reply_text(
+                            "⚠️ **App ID or Secret Missing:** Please run `/setmetaapp <APP_ID> <APP_SECRET>` first."
+                        )
+                    else:
+                        await update.message.reply_text(
+                            "⚠️ **Meta Connection Not Ready:** Platform administrator has not configured the Meta Developer App yet."
+                        )
                     return
 
                 status_msg = await update.message.reply_text("⏳ *Exchanging code & discovering your Facebook Pages and Instagram accounts...*")
@@ -3820,8 +3796,8 @@ def start_telegram_bot_service():
                     await status_msg.edit_text(
                         f"🎉 **Meta & Instagram Connected Successfully!**\n\n"
                         f"{details}\n\n"
-                        f"✅ **Page ID & Token:** Auto-saved\n"
-                        f"✅ **IG Business ID & Token:** Auto-saved\n"
+                        f"✅ **Page ID & Token:** Auto-saved to your profile\n"
+                        f"✅ **IG Business ID & Token:** Auto-saved to your profile\n"
                         f"✅ **GitHub Secrets:** Synced\n\n"
                         f"*(Ready for 1-click publishing!)*"
                     )
@@ -3829,8 +3805,14 @@ def start_telegram_bot_service():
                     await status_msg.edit_text(f"❌ **Connection Failed:** {res.get('error')}")
                 return
 
-            # Case 2: User supplied App ID and App Secret (e.g. /connectmeta 123456 abcdef...)
+            # Case 2: Admin supplied App ID and App Secret (e.g. /connectmeta 123456 abcdef...)
             if len(parts) >= 2:
+                if not is_admin_user(uid):
+                    await update.message.reply_text(
+                        "⛔ **Access Denied:** Only platform administrators can configure the Meta Developer App ID and Secret."
+                    )
+                    return
+
                 app_id = parts[0].strip()
                 app_secret = parts[1].strip()
                 from Telegram_Storage_Modules.telegram_user_manager import set_user_meta_app
@@ -3864,20 +3846,32 @@ def start_telegram_bot_service():
 
                 await update.message.reply_text(
                     f"⚡ **Meta 1-Click Authorization Link**\n\n"
-                    f"• **App ID:** `{stored_id}`\n\n"
                     f"Tap below to approve publishing permissions with 1 click, then send the code back:\n"
                     f"`/connectmeta code YOUR_CODE`",
                     reply_markup=kbd
                 )
             else:
-                await update.message.reply_text(
-                    "📌 **Meta 1-Click Connect Setup**\n\n"
-                    "Connect your Facebook Page & Instagram Business account without manual Graph API clicking:\n\n"
-                    "👉 **Usage:**\n"
-                    "`/connectmeta <APP_ID> <APP_SECRET>`\n"
-                    "*(Or `/setmetaapp <APP_ID> <APP_SECRET>`)*\n\n"
-                    "*(Or run `python scripts/auth_meta.py` on your machine for zero-copy automatic browser auth!)*"
-                )
+                if is_admin_user(uid):
+                    await update.message.reply_text(
+                        "📌 **Meta 1-Click Connect Setup (Admin)**\n\n"
+                        "To enable 1-click Instagram/Facebook connection, configure your Meta Developer App:\n\n"
+                        "👉 **Option 1 (Fast - Single Command):**\n"
+                        "`/setmetaapp <APP_ID> <APP_SECRET>`\n"
+                        "*(Or `/connectmeta <APP_ID> <APP_SECRET>`)*\n\n"
+                        "👉 **Option 2 (Semantic - Step-by-Step):**\n"
+                        "• `/setmetaappid <APP_ID>`\n"
+                        "• `/setmetaappsecret <APP_SECRET>`\n\n"
+                        "*(Or run `python scripts/auth_meta.py` on your machine for zero-copy automatic browser auth!)*"
+                    )
+                else:
+                    await update.message.reply_text(
+                        "⚠️ **Meta 1-Click Connection Not Ready**\n\n"
+                        "The platform administrator has not configured the Meta Developer App yet.\n"
+                        "Please ask the admin to run `/setmetaapp`.\n\n"
+                        "💡 *You can still configure manual tokens if you have them:*\n"
+                        "• `/instagramtoken <YOUR_TOKEN>`\n"
+                        "• `/instagramid <YOUR_BUSINESS_ID>`"
+                    )
 
         async def _cmd_setmetaapp(update, context):
             uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
@@ -4089,7 +4083,6 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("cancel", _cmd_cancel))
         app.add_handler(CommandHandler("back", _cmd_cancel))
         app.add_handler(CommandHandler("setstoragechat", handle_telegram_incoming_msg))
-        app.add_handler(CommandHandler("metagraphapi", handle_telegram_incoming_msg))
 
         async def _cmd_unknown(update, context):
             if update.message:
