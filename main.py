@@ -3648,8 +3648,6 @@ def start_telegram_bot_service():
                         f"All approved reels will now automatically broadcast to your Make.com scenario.\n"
                         f"Synced to your profile and GitHub Secrets as `MAKE_WEBHOOK_URL`."
                     )
-                else:
-                    await update.message.reply_text("⚠️ Invalid URL. Please provide a valid HTTP/HTTPS Make.com webhook URL.")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Make.com Webhook URL: {_e}")
 
@@ -3671,51 +3669,26 @@ def start_telegram_bot_service():
 
             if not args_text:
                 status_msg = await update.message.reply_text(
-                    f"⚡ **Meta Graph API Version Manager**\n\n"
+                    f"🌐 **Meta Graph API Version Manager**\n\n"
                     f"• **Current Active Version:** `{current_ver}`\n"
                     f"• **Endpoint Base:** `https://graph.facebook.com/{current_ver}`\n\n"
-                    f"🔍 *Checking Gemini for latest official Graph API release...*"
+                    f"🔍 *Checking Gemini for latest Meta Graph API release...*"
                 )
                 gemini_res = await asyncio.to_thread(query_gemini_recommended_endpoint_version, "meta")
-                rec_ver = gemini_res.get("version")
+                rec_ver = gemini_res.get("version") or "v21.0"
                 notes = gemini_res.get("notes", "")
 
                 reply_text = (
-                    f"⚡ **Meta Graph API Version Manager**\n\n"
+                    f"🌐 **Meta Graph API Version Manager**\n\n"
                     f"• **Current Active Version:** `{current_ver}`\n"
                     f"• **Endpoint Base:** `https://graph.facebook.com/{current_ver}`\n\n"
-                )
-                if rec_ver:
-                    reply_text += (
-                        f"🤖 **Gemini Analysis:** `{rec_ver}`\n"
-                        f"📝 *Details:* {notes}\n\n"
-                    )
-                    if rec_ver != current_ver:
-                        reply_text += f"👉 To apply, run: `/updatemetaendpoints {rec_ver}`\n\n"
-                reply_text += (
+                    f"🤖 **Gemini Analysis:** `{rec_ver}`\n"
+                    f"📝 *Details:* {notes}\n\n"
                     "💡 **Update Commands:**\n"
-                    "• Set manually: `/updatemetaendpoints v21.0`\n"
-                    "• Auto-sync latest: `/updatemetaendpoints auto`\n\n"
-                    "*(Updates in-memory runtime, .env, and GitHub Secrets `META_GRAPH_VERSION`)*"
+                    f"• Bump to Gemini recommended: `/updatemetaendpoints {rec_ver}`\n"
+                    f"• Custom version: `/updatemetaendpoints v22.0`\n"
                 )
                 await status_msg.edit_text(reply_text)
-                return
-
-            if args_text.lower() == "auto":
-                status_msg = await update.message.reply_text("🔍 *Querying Gemini for latest stable Meta Graph API version...*")
-                gemini_res = await asyncio.to_thread(query_gemini_recommended_endpoint_version, "meta")
-                target_ver = gemini_res.get("version") or "v21.0"
-                ok, msg = update_meta_graph_api_version(target_ver, admin_user_id=uid)
-                if ok:
-                    await status_msg.edit_text(
-                        f"✅ **Meta Graph API Version Auto-Updated!**\n\n"
-                        f"• **Active Version:** `{target_ver}`\n"
-                        f"• **Endpoint Base:** `https://graph.facebook.com/{target_ver}`\n"
-                        f"• **Persistence:** In-Memory + `.env` + GitHub Secret `META_GRAPH_VERSION`\n\n"
-                        f"📝 *Details:* {gemini_res.get('notes', 'Updated to latest stable release.')}"
-                    )
-                else:
-                    await status_msg.edit_text(f"⚠️ Failed to auto-update Meta endpoint: {msg}")
                 return
 
             ok, msg = update_meta_graph_api_version(args_text, admin_user_id=uid)
@@ -3860,10 +3833,8 @@ def start_telegram_bot_service():
             if len(parts) >= 2:
                 app_id = parts[0].strip()
                 app_secret = parts[1].strip()
-                os.environ["META_APP_ID"] = app_id
-                os.environ["META_APP_SECRET"] = app_secret
-                _persist_env_var_to_disk("META_APP_ID", app_id)
-                _persist_env_var_to_disk("META_APP_SECRET", app_secret)
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_meta_app
+                set_user_meta_app(uid, app_id, app_secret)
 
                 redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
                 oauth_url = build_meta_oauth_url(app_id=app_id, redirect_uri=redirect_uri)
@@ -3903,9 +3874,82 @@ def start_telegram_bot_service():
                     "📌 **Meta 1-Click Connect Setup**\n\n"
                     "Connect your Facebook Page & Instagram Business account without manual Graph API clicking:\n\n"
                     "👉 **Usage:**\n"
-                    "`/connectmeta <APP_ID> <APP_SECRET>`\n\n"
+                    "`/connectmeta <APP_ID> <APP_SECRET>`\n"
+                    "*(Or `/setmetaapp <APP_ID> <APP_SECRET>`)*\n\n"
                     "*(Or run `python scripts/auth_meta.py` on your machine for zero-copy automatic browser auth!)*"
                 )
+
+        async def _cmd_setmetaapp(update, context):
+            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            from Telegram_Storage_Modules.telegram_user_manager import is_admin_user, set_user_meta_app
+            if not is_admin_user(uid):
+                await update.message.reply_text("⛔ **Access Denied:** Only administrators can configure Meta App credentials.")
+                return
+
+            args = context.args or []
+            if len(args) < 2:
+                await update.message.reply_text(
+                    "📱 **Set Meta App ID & App Secret via Chat**\n\n"
+                    "👉 **Usage:**\n"
+                    "`/setmetaapp <APP_ID> <APP_SECRET>`\n\n"
+                    "*(Example: `/setmetaapp 1234567890 9876543210abcdef`)*\n\n"
+                    "💡 *After setting this, tap the link generated by `/connectmeta` to connect with 1 click!*"
+                )
+                return
+
+            app_id = args[0].strip()
+            app_secret = args[1].strip()
+            ok = set_user_meta_app(uid, app_id, app_secret)
+            if ok:
+                from Publishing_Modules.meta_uploader import build_meta_oauth_url
+                redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
+                oauth_url = build_meta_oauth_url(app_id=app_id, redirect_uri=redirect_uri)
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 1-Click Connect Meta & Instagram", url=oauth_url)]])
+                await update.message.reply_text(
+                    f"✅ **Meta App Credentials Saved & Synced!**\n\n"
+                    f"• **App ID:** `{app_id}`\n"
+                    f"• **App Secret:** `••••••••••••`\n"
+                    f"• **Persistence:** Local `.env` + GitHub Secrets\n\n"
+                    f"👉 **Next Step:** Tap the button below to authorize with 1 click on Facebook, then send back:\n"
+                    f"`/connectmeta code YOUR_CODE`\n\n"
+                    f"*(Or run `python scripts/auth_meta.py` locally for 100% automated browser redirect!)*",
+                    reply_markup=kbd
+                )
+            else:
+                await update.message.reply_text("⚠️ Failed to save Meta App credentials.")
+
+        async def _cmd_setmetaappid(update, context):
+            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            from Telegram_Storage_Modules.telegram_user_manager import is_admin_user, set_user_meta_app_id
+            if not is_admin_user(uid):
+                await update.message.reply_text("⛔ **Access Denied:** Only administrators can configure Meta App credentials.")
+                return
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/setmetaappid <YOUR_META_APP_ID>`")
+                return
+            ok = set_user_meta_app_id(uid, args_text)
+            if ok:
+                await update.message.reply_text(f"✅ **Meta App ID updated to:** `{args_text}`\nSynced to `.env` & GitHub Secrets.")
+            else:
+                await update.message.reply_text("⚠️ Error saving Meta App ID.")
+
+        async def _cmd_setmetaappsecret(update, context):
+            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            from Telegram_Storage_Modules.telegram_user_manager import is_admin_user, set_user_meta_app_secret
+            if not is_admin_user(uid):
+                await update.message.reply_text("⛔ **Access Denied:** Only administrators can configure Meta App credentials.")
+                return
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/setmetaappsecret <YOUR_META_APP_SECRET>`")
+                return
+            ok = set_user_meta_app_secret(uid, args_text)
+            if ok:
+                await update.message.reply_text("✅ **Meta App Secret Saved & Synced to `.env` and GitHub Secrets!**")
+            else:
+                await update.message.reply_text("⚠️ Error saving Meta App Secret.")
 
         async def _cmd_setautoscraplimit(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
@@ -4036,6 +4080,9 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setyoutubeversion", _cmd_updateyoutubeendpoints))
         app.add_handler(CommandHandler("connectmeta", _cmd_connectmeta))
         app.add_handler(CommandHandler("authmeta", _cmd_connectmeta))
+        app.add_handler(CommandHandler("setmetaapp", _cmd_setmetaapp))
+        app.add_handler(CommandHandler("setmetaappid", _cmd_setmetaappid))
+        app.add_handler(CommandHandler("setmetaappsecret", _cmd_setmetaappsecret))
         app.add_handler(CommandHandler("myconfig", _cmd_myconfig))
         app.add_handler(CommandHandler("reject", _cmd_reject))
         app.add_handler(CommandHandler("rejet", _cmd_reject))

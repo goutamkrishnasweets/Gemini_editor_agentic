@@ -646,6 +646,68 @@ def set_user_facebook_token(user_id_str: str, fb_token: str) -> bool:
     return False
 
 
+def set_user_meta_app(user_id_str: str, app_id: str, app_secret: str) -> bool:
+    """Saves Meta App ID and Secret to memory, .env, json, and GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_id = app_id.strip()
+    clean_sec = app_secret.strip()
+    if clean_id and clean_sec:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_app_id"] = clean_id
+        u_rec["meta_app_secret"] = clean_sec
+        save_all_users(users)
+        os.environ["META_APP_ID"] = clean_id
+        os.environ["FACEBOOK_APP_ID"] = clean_id
+        os.environ["META_APP_SECRET"] = clean_sec
+        os.environ["FACEBOOK_APP_SECRET"] = clean_sec
+        _persist_env_var_to_disk("META_APP_ID", clean_id)
+        _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
+        _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
+        _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
+        sync_user_secret_to_github(user_id_str, "META_APP_ID", clean_id)
+        sync_user_secret_to_github(user_id_str, "META_APP_SECRET", clean_sec)
+        logger.info("🔑 [TELEGRAM USER MANAGER] Meta App ID & Secret saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def set_user_meta_app_id(user_id_str: str, app_id: str) -> bool:
+    """Saves Meta App ID."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_id = app_id.strip()
+    if clean_id:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_app_id"] = clean_id
+        save_all_users(users)
+        os.environ["META_APP_ID"] = clean_id
+        os.environ["FACEBOOK_APP_ID"] = clean_id
+        _persist_env_var_to_disk("META_APP_ID", clean_id)
+        _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
+        sync_user_secret_to_github(user_id_str, "META_APP_ID", clean_id)
+        return True
+    return False
+
+
+def set_user_meta_app_secret(user_id_str: str, app_secret: str) -> bool:
+    """Saves Meta App Secret."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_sec = app_secret.strip()
+    if clean_sec:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_app_secret"] = clean_sec
+        save_all_users(users)
+        os.environ["META_APP_SECRET"] = clean_sec
+        os.environ["FACEBOOK_APP_SECRET"] = clean_sec
+        _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
+        _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
+        sync_user_secret_to_github(user_id_str, "META_APP_SECRET", clean_sec)
+        return True
+    return False
+
+
 def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
     """Saves user TikTok Access Token and syncs to TIKTOK_ACCESS_TOKEN in GitHub Secrets."""
     users = load_all_users()
@@ -752,6 +814,8 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/instagramid YOUR_BUSINESS_ID`\n",
         f"📘 **Facebook Page ID:** `{_val('meta_page_id', 'META_PAGE_ID')}`",
         "   👉 Command: `/facebookid YOUR_PAGE_ID`\n",
+        f"⚡ **Meta 1-Click OAuth Status:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
+        "   👉 Command: `/connectmeta` or `/setmetaapp <APP_ID> <APP_SECRET>`\n",
         f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json', 'TOKEN_JSON')}`",
         "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
         f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
@@ -763,7 +827,9 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         meta_ver = get_meta_graph_api_version()
         yt_ver = get_youtube_api_version()
         lines.extend([
-            "👑 **Admin API Endpoints (Configurable via Chat or Secrets):**",
+            "👑 **Admin API & App Settings (Configurable via Chat or Secrets):**",
+            f"📱 **Meta App ID:** `{_val('meta_app_id', 'META_APP_ID')}`",
+            "   👉 Command: `/setmetaapp <APP_ID> <APP_SECRET>` or `/connectmeta`\n",
             f"⚡ **Meta Graph API Version:** `{meta_ver}`",
             "   👉 Command: `/updatemetaendpoints <version>` (e.g. `/updatemetaendpoints v21.0` or `/updatemetaendpoints auto`)\n",
             f"🎬 **YouTube API Version:** `{yt_ver}`",

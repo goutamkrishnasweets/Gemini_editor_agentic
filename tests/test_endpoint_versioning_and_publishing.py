@@ -121,6 +121,20 @@ class TestEndpointVersioning(unittest.TestCase):
             self.assertIn("/updatemetaendpoints", summary)
             self.assertIn("/updateyoutubeendpoints", summary)
             self.assertIn("Meta Graph API Version", summary)
+            self.assertIn("/setmetaapp", summary)
+
+        # Meta app setter functions
+        from Telegram_Storage_Modules.telegram_user_manager import set_user_meta_app, set_user_meta_app_id, set_user_meta_app_secret
+        with patch("Telegram_Storage_Modules.telegram_user_manager.sync_user_secret_to_github"):
+            self.assertTrue(set_user_meta_app("test_user_789", "app_123", "secret_456"))
+            self.assertEqual(os.environ.get("META_APP_ID"), "app_123")
+            self.assertEqual(os.environ.get("META_APP_SECRET"), "secret_456")
+
+            self.assertTrue(set_user_meta_app_id("test_user_789", "app_999"))
+            self.assertEqual(os.environ.get("META_APP_ID"), "app_999")
+
+            self.assertTrue(set_user_meta_app_secret("test_user_789", "secret_888"))
+            self.assertEqual(os.environ.get("META_APP_SECRET"), "secret_888")
 
         # Non-admin summary does NOT contain admin endpoint commands
         with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=False):
