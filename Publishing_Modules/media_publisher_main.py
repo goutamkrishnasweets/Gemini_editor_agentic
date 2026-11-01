@@ -17,6 +17,7 @@ import asyncio
 from typing import Dict, Any, Optional
 
 from Publishing_Modules.postiz_publisher import publish_to_postiz, is_postiz_configured
+from Publishing_Modules.make_publisher import publish_to_make, is_make_configured
 
 logger = logging.getLogger("media_publisher_main")
 logger.setLevel(logging.INFO)
@@ -112,7 +113,33 @@ async def run_phase4_publishing_async(
 
     platforms_payload = (seo_data.get("platforms", {}) if isinstance(seo_data, dict) else {}) or {}
 
-    # 1. Postiz Publishing (YouTube, Instagram, TikTok, Facebook)
+    # 1. Make.com Universal Social Dispatch (Instagram Reels, YouTube Shorts, Stories, Feed)
+    if is_make_configured():
+        logger.info("📡 Dispatching universal social broadcasting to Make.com Webhook...")
+        make_res = publish_to_make(
+            media_path=video_path,
+            title=title,
+            caption=description,
+            tags=tags,
+            post_type="reel",
+            media_type="video",
+            seo_data=seo_data,
+            user_id=user_id
+        )
+
+        if make_res.get("status") == "success":
+            results["platforms"]["make"] = {
+                "status": "success",
+                "url": make_res.get("media_url"),
+                "message": "Broadcasted successfully to Make.com Webhook pipeline!"
+            }
+        else:
+            results["platforms"]["make"] = {
+                "status": "failed",
+                "error": make_res.get("error", "Unknown Make.com error")
+            }
+
+    # 2. Postiz Publishing (Optional fallback / alternative)
     if is_postiz_configured():
         logger.info("📡 Dispatching social broadcasting directly to Postiz API...")
         postiz_res = publish_to_postiz(
@@ -138,10 +165,11 @@ async def run_phase4_publishing_async(
                 "status": "failed",
                 "error": postiz_res.get("error", "Unknown Postiz error")
             }
-    else:
-        results["platforms"]["postiz"] = {
-            "status": "failed",
-            "error": "POSTIZ_URL or POSTIZ_API_KEY missing. Please configure them in your .env or GitHub Secrets."
+
+    if not is_make_configured() and not is_postiz_configured():
+        results["platforms"]["social_dispatch"] = {
+            "status": "skipped",
+            "error": "Neither MAKE_WEBHOOK_URL nor Postiz is configured. Add MAKE_WEBHOOK_URL to GitHub Secrets."
         }
 
     # 2. Telegram Channel Broadcasting

@@ -126,6 +126,7 @@ jobs:
         POSTIZ_URL: ${{ secrets.POSTIZ_URL || vars.POSTIZ_URL }}
         POSTIZ_API_KEY: ${{ secrets.POSTIZ_API_KEY }}
         POSTIZ_CHANNELS: ${{ secrets.POSTIZ_CHANNELS || vars.POSTIZ_CHANNELS || 'all' }}
+        MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL || vars.MAKE_WEBHOOK_URL }}
         APIFY_TOKEN: ${{ secrets.APIFY_TOKEN || secrets.APIFY_API_TOKEN }}
         CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
         TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
@@ -237,6 +238,7 @@ jobs:
         POSTIZ_URL: ${{ secrets.POSTIZ_URL || vars.POSTIZ_URL }}
         POSTIZ_API_KEY: ${{ secrets.POSTIZ_API_KEY }}
         POSTIZ_CHANNELS: ${{ secrets.POSTIZ_CHANNELS || vars.POSTIZ_CHANNELS || 'all' }}
+        MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL || vars.MAKE_WEBHOOK_URL }}
         DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
         DISPATCH_PLATFORM: ${{ github.event.inputs.platform || 'all_available' }}
         DISPATCH_TARGET_ACCOUNTS: ${{ github.event.inputs.target_accounts || '' }}
