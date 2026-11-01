@@ -653,6 +653,38 @@ def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
     return False
 
 
+def set_user_make_webhook_url(user_id_str: str, webhook_url: str) -> bool:
+    """Saves user Make.com Webhook URL and syncs to MAKE_WEBHOOK_URL in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_url = webhook_url.strip().strip("`'\"")
+    if clean_url and clean_url.startswith(("http://", "https://")):
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["make_webhook_url"] = clean_url
+        save_all_users(users)
+        os.environ["MAKE_WEBHOOK_URL"] = clean_url
+        sync_user_secret_to_github(user_id_str, "MAKE_WEBHOOK_URL", clean_url)
+        logger.info("🌐 [TELEGRAM USER MANAGER] Make.com Webhook URL saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def get_user_make_webhook_url(user_id_str: str) -> Optional[str]:
+    """Returns user personal Make.com Webhook URL if present."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    if user_id_str in users:
+        val = users[user_id_str].get("make_webhook_url", "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{user_id_str}_MAKE_WEBHOOK_URL", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(user_id_str):
+        return os.getenv("MAKE_WEBHOOK_URL", "").strip() or None
+    return None
+
+
 def get_user_gemini_key(user_id_str: str) -> Optional[str]:
     """Returns user personal Gemini API key if present."""
     users = load_all_users()
@@ -716,6 +748,8 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
         f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
+        f"🌐 **Make.com Webhook URL:** `{_chk('make_webhook_url', 'MAKE_WEBHOOK_URL')}`",
+        "   👉 Command: `/setmakewebhookurl https://hook.eu2.make.com/...`\n",
         "💡 *Tip: Personal keys bypass queues and rate limits! Run `/autosetup` for the 6-step wizard or `/myconfig` anytime.*"
     ]
     return "\n".join(lines)

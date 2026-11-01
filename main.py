@@ -1258,7 +1258,7 @@ async def handle_telegram_start(update, context):
         "• Automated content scraping runs daily at `07:00` & `19:00`.\n"
         "• Rendered reels are broadcast at `07:30` & `19:30` across YouTube, Instagram, & Facebook.\n\n"
         "🔑 **4. Personal API Keys (Optional):**\n"
-        "• `/setapify <token>` | `/setgemini <key>`\n\n"
+        "• `/setapify <token>` | `/setgemini <key>` | `/setmakewebhookurl <url>`\n\n"
         "🤖 **5. Autonomous Gemini Director:**\n"
         "• `/agent <your goal>` — Run autonomous multi-step scraping, rendering, and publishing with Gemini 2.5 Flash.\n"
         "  *(Example: `/agent Scrape @nike 1 reel, edit with cinematic beats and publish`)*\n\n"
@@ -3628,6 +3628,31 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
 
+        async def _cmd_setmakewebhookurl(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text or not args_text.startswith(("http://", "https://")):
+                await update.message.reply_text(
+                    "🌐 **Usage:** `/setmakewebhookurl <URL>`\n\n"
+                    "*(Example: `/setmakewebhookurl https://hook.eu2.make.com/your-private-webhook`)*\n\n"
+                    "💡 *Enables 1-click multi-platform publishing (Instagram Reels, YouTube Shorts, Stories) via Make.com.*"
+                )
+                return
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_make_webhook_url
+                ok = set_user_make_webhook_url(str(update.effective_chat.id), args_text)
+                if ok:
+                    clean_display = args_text[:45] + "..." if len(args_text) > 45 else args_text
+                    await update.message.reply_text(
+                        f"✅ **Make.com Webhook URL Synced!**\n\n"
+                        f"🔗 **URL:** `{clean_display}`\n\n"
+                        f"All approved reels will now automatically broadcast to your Make.com scenario.\n"
+                        f"Synced to your profile and GitHub Secrets as `MAKE_WEBHOOK_URL`."
+                    )
+                else:
+                    await update.message.reply_text("⚠️ Invalid URL. Please provide a valid HTTP/HTTPS Make.com webhook URL.")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving Make.com Webhook URL: {_e}")
+
         async def _cmd_setautoscraplimit(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             if not args_text:
@@ -3748,6 +3773,9 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("facebookid", _cmd_facebookid))
         app.add_handler(CommandHandler("facebooktoken", _cmd_facebooktoken))
         app.add_handler(CommandHandler("tiktoktoken", _cmd_tiktoktoken))
+        app.add_handler(CommandHandler("setmakewebhookurl", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("setmakewebhook", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("makewebhook", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("myconfig", _cmd_myconfig))
         app.add_handler(CommandHandler("reject", _cmd_reject))
         app.add_handler(CommandHandler("rejet", _cmd_reject))

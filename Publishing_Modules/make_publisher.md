@@ -71,3 +71,4 @@ Set this variable in your `.env` or GitHub Repository Secrets:
 ```env
 MAKE_WEBHOOK_URL="https://hook.eu2.make.com/your-private-webhook-token"
 ```
+
