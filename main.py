@@ -3692,6 +3692,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("⛔ **Access Denied:** Only administrators can view or update platform API endpoints.")
                 return
 
+
             args_text = " ".join(context.args).strip() if context.args else ""
             current_ver = get_youtube_api_version()
 
@@ -3762,9 +3763,17 @@ def start_telegram_bot_service():
             raw_args = " ".join(context.args).strip() if context.args else ""
             parts = raw_args.split()
 
-            # Case 1: User pasted callback code or full redirected URL (e.g. /connectmeta code AQD... or /connectmeta https://...)
-            if parts and (parts[0].lower() in ("code", "auth") or "code=" in raw_args or raw_args.startswith("http")):
-                code_to_exchange = parts[1] if parts[0].lower() in ("code", "auth") and len(parts) > 1 else raw_args
+            # Case 1: User pasted callback code or full redirected URL (e.g. /connectmeta <URL_OR_CODE>)
+            code_to_exchange = None
+            if parts:
+                if parts[0].lower() in ("code", "auth", "token") and len(parts) > 1:
+                    code_to_exchange = parts[1]
+                elif len(parts) == 1:
+                    code_to_exchange = parts[0]
+                elif "code=" in raw_args or raw_args.startswith("http"):
+                    code_to_exchange = raw_args
+
+            if code_to_exchange:
                 app_id = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
                 app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
 
@@ -3833,9 +3842,13 @@ def start_telegram_bot_service():
                 kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Tap to Authorize Meta & Instagram", url=oauth_url)]])
 
                 await update.message.reply_text(
-                    f"⚡ **Meta 1-Click Authorization Link**\n\n"
-                    f"Tap below to approve publishing permissions with 1 click, then send the code back:\n"
-                    f"`/connectmeta code YOUR_CODE`",
+                    "⚡ **Meta 1-Click Connect**\n\n"
+                    "1️⃣ Tap the button below to authorize permissions on Facebook.\n"
+                    "2️⃣ After approving, Facebook redirects to a page starting with `http://localhost:8080/...` "
+                    "(it may say *'Site can't be reached'* — that's completely normal!).\n"
+                    "3️⃣ Copy the URL from your browser address bar and reply with:\n"
+                    "`/connectmeta <PASTED_URL_OR_CODE>`\n\n"
+                    "*(Example: `/connectmeta http://localhost:8080/callback?code=AQD...` or `/connectmeta AQD...`)*",
                     reply_markup=kbd
                 )
             else:
