@@ -1,20 +1,26 @@
 # Publishing_Modules package init
-# Postiz Publishing Gateway & Modern PublishQueue
+# Make.com Multi-Platform Publishing Gateway & PublishQueue
 
-from .postiz_publisher import (
-    publish_to_postiz,
-    upload_video_to_postiz,
-    get_active_integrations,
-    is_postiz_configured,
+from .make_publisher import (
+    publish_to_make,
+    is_make_configured,
+    build_make_payload,
+    resolve_public_media_url,
     PublishQueue,
-    start_publish_scheduler,
+)
+from .media_publisher_main import (
+    run_phase4_publishing,
+    run_phase4_publishing_async,
+    publish_to_telegram,
 )
 
 __all__ = [
-    "publish_to_postiz",
-    "upload_video_to_postiz",
-    "get_active_integrations",
-    "is_postiz_configured",
+    "publish_to_make",
+    "is_make_configured",
+    "build_make_payload",
+    "resolve_public_media_url",
     "PublishQueue",
-    "start_publish_scheduler",
+    "run_phase4_publishing",
+    "run_phase4_publishing_async",
+    "publish_to_telegram",
 ]

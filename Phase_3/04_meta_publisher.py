@@ -1,7 +1,7 @@
 """
-Phase 3 — Step 04: Meta Reels Publisher (Postiz Routing)
-=========================================================
-Handles publishing short-form vertical video content to Instagram & Facebook Reels via Postiz.
+Phase 3 — Step 04: Meta Reels Publisher (Make.com Routing)
+==========================================================
+Handles publishing short-form vertical video content to Instagram & Facebook Reels via Make.com.
 """
 
 import os
@@ -17,27 +17,27 @@ def publish_to_meta_reels(
     target_platform: str = "instagram"
 ) -> Dict[str, Any]:
     """
-    Publish vertical video to Instagram Reels or Facebook Reels via Postiz.
+    Publish vertical video to Instagram Reels or Facebook Reels via Make.com.
     """
     if not os.path.exists(video_path):
         return {"status": "error", "error": f"Video file not found: {video_path}"}
 
     try:
-        from Publishing_Modules.postiz_publisher import publish_to_postiz, is_postiz_configured
-        if is_postiz_configured():
-            res = publish_to_postiz(
-                video_path=video_path,
+        from Publishing_Modules.make_publisher import publish_to_make, is_make_configured
+        if is_make_configured():
+            res = publish_to_make(
+                media_path=video_path,
                 title=caption[:80],
-                description=caption,
-                target_channels=["instagram", "facebook"]
+                caption=caption,
+                post_type="reel"
             )
-            logger.info(f"✅ Step 04 Meta Publisher: Dispatched to Postiz for {target_platform}")
+            logger.info(f"✅ Step 04 Meta Publisher: Dispatched to Make.com for {target_platform}")
             return {"status": "published", "platform": target_platform, "response": res}
         else:
             return {
                 "status": "simulated",
                 "platform": target_platform,
-                "message": "Postiz not configured. Please set POSTIZ_URL and POSTIZ_API_KEY."
+                "message": "Make.com not configured. Run /setmakewebhookurl or set MAKE_WEBHOOK_URL."
             }
     except Exception as e:
         logger.error(f"❌ Step 04 Meta Publisher failed: {e}")

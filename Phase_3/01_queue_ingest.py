@@ -8,7 +8,7 @@ and initializes their publishing queue status.
 import os
 import logging
 from typing import Dict, Any, Optional
-from Publishing_Modules.postiz_publisher import PublishQueue
+from Publishing_Modules.make_publisher import PublishQueue
 
 logger = logging.getLogger("phase3.step01_queue_ingest")
 

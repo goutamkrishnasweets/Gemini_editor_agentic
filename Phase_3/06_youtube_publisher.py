@@ -1,7 +1,7 @@
 """
-Phase 3 — Step 06: YouTube Shorts Publisher (Postiz Routing)
-============================================================
-Handles publishing short-form vertical video content to YouTube Shorts via Postiz.
+Phase 3 — Step 06: YouTube Shorts Publisher (Make.com Routing)
+==============================================================
+Handles publishing short-form vertical video content to YouTube Shorts via Make.com.
 """
 
 import os
@@ -18,29 +18,29 @@ def publish_to_youtube_shorts(
     tags: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
-    Publish vertical video to YouTube Shorts via Postiz.
+    Publish vertical video to YouTube Shorts via Make.com.
     """
     if not os.path.exists(video_path):
         return {"status": "error", "error": f"Video file not found: {video_path}"}
 
     try:
-        from Publishing_Modules.postiz_publisher import publish_to_postiz, is_postiz_configured
-        if is_postiz_configured():
+        from Publishing_Modules.make_publisher import publish_to_make, is_make_configured
+        if is_make_configured():
             tag_str = " ".join(tags) if tags else ""
-            res = publish_to_postiz(
-                video_path=video_path,
+            res = publish_to_make(
+                media_path=video_path,
                 title=title,
-                description=description,
+                caption=description,
                 tags=tag_str,
-                target_channels=["youtube"]
+                post_type="reel"
             )
-            logger.info("✅ Step 06 YouTube Publisher: Dispatched to Postiz for YouTube Shorts")
+            logger.info("✅ Step 06 YouTube Publisher: Dispatched to Make.com for YouTube Shorts")
             return {"status": "published", "platform": "youtube_shorts", "response": res}
         else:
             return {
                 "status": "simulated",
                 "platform": "youtube_shorts",
-                "message": "Postiz not configured. Please set POSTIZ_URL and POSTIZ_API_KEY."
+                "message": "Make.com not configured. Run /setmakewebhookurl or set MAKE_WEBHOOK_URL."
             }
     except Exception as e:
         logger.error(f"❌ Step 06 YouTube Publisher failed: {e}")

@@ -239,7 +239,7 @@ class TargetedHarvest:
         }
         
         try:
-            from Publishing_Modules.postiz_publisher import PublishQueue
+            from Publishing_Modules.make_publisher import PublishQueue
             
             for item in processed_items:
                 try:
@@ -271,8 +271,8 @@ class TargetedHarvest:
                     results["errors"].append(str(e))
         
         except ImportError:
-            logger.error("❌ [TARGETED HARVEST] postiz_publisher not available")
-            results["errors"].append("postiz_publisher module not available")
+            logger.error("❌ [TARGETED HARVEST] make_publisher not available")
+            results["errors"].append("make_publisher module not available")
         
         return results
     

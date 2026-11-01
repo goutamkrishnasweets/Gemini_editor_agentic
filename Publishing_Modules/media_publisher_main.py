@@ -1,8 +1,8 @@
 """
-media_publisher_main.py — Phase 4 Postiz Multi-Platform Publishing Orchestrator
+media_publisher_main.py — Phase 4 Multi-Platform Publishing Orchestrator (Make.com & Telegram)
 ================================================================================
 Orchestrates multi-platform broadcasting for approved master video reels:
-  1. Social Channels (YouTube Shorts, Instagram Reels, TikTok, Facebook) via Postiz API
+  1. Social Channels (YouTube Shorts, Instagram Reels, Facebook) via Make.com Webhook
   2. Telegram Channel / Public Group (via Telegram Bot API)
 
 Called directly after a user approves a reel title or taps 'Post Immediately' in Telegram.
@@ -16,7 +16,6 @@ import logging
 import asyncio
 from typing import Dict, Any, Optional
 
-from Publishing_Modules.postiz_publisher import publish_to_postiz, is_postiz_configured
 from Publishing_Modules.make_publisher import publish_to_make, is_make_configured
 
 logger = logging.getLogger("media_publisher_main")
@@ -93,7 +92,7 @@ async def run_phase4_publishing_async(
     seo_data: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Asynchronous multi-platform publishing orchestrator via Postiz & Telegram.
+    Asynchronous multi-platform publishing orchestrator via Make.com & Telegram.
     """
     logger.info("==================================================================")
     logger.info("🚀 [PHASE 4 MEDIA PUBLISHER] Starting Multi-Platform Broadcast")
@@ -138,38 +137,10 @@ async def run_phase4_publishing_async(
                 "status": "failed",
                 "error": make_res.get("error", "Unknown Make.com error")
             }
-
-    # 2. Postiz Publishing (Optional fallback / alternative)
-    if is_postiz_configured():
-        logger.info("📡 Dispatching social broadcasting directly to Postiz API...")
-        postiz_res = publish_to_postiz(
-            video_path=video_path,
-            title=title,
-            description=description,
-            tags=tags,
-            seo_data=seo_data
-        )
-
-        if postiz_res.get("status") == "success":
-            post_id = postiz_res.get("post_id")
-            post_url = postiz_res.get("url")
-            channels = postiz_res.get("channels", [])
-            results["platforms"]["postiz"] = {
-                "status": "success",
-                "post_id": post_id,
-                "url": post_url,
-                "message": f"Broadcasted to {len(channels)} channel(s): {', '.join(channels)}"
-            }
-        else:
-            results["platforms"]["postiz"] = {
-                "status": "failed",
-                "error": postiz_res.get("error", "Unknown Postiz error")
-            }
-
-    if not is_make_configured() and not is_postiz_configured():
-        results["platforms"]["social_dispatch"] = {
+    else:
+        results["platforms"]["make"] = {
             "status": "skipped",
-            "error": "Neither MAKE_WEBHOOK_URL nor Postiz is configured. Add MAKE_WEBHOOK_URL to GitHub Secrets."
+            "error": "MAKE_WEBHOOK_URL is not configured. Run /setmakewebhookurl or add to GitHub Secrets."
         }
 
     # 2. Telegram Channel Broadcasting
