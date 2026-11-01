@@ -554,7 +554,7 @@ class TelegramVaultIndexer:
 
                         for k, v in files_dict.items():
                             if isinstance(v, dict) and k != "social_media_id":
-                                if v.get("is_source_extract") or v.get("is_unusable_bgm"):
+                                if v.get("is_unusable"):
                                     continue
                                 if clip_stem and clip_stem in k.lower():
                                     continue
@@ -589,19 +589,9 @@ class TelegramVaultIndexer:
                                 if _is_bl(audio_filename=f"{sc}.wav", audio_shortcode=sc, telegram_file_id=ext_fid):
                                     continue
 
-                                # ── STRICT CURATED BGM GATE ───────────────────────────
-                                # Harvested tracks from other clips can only enter the candidate
-                                # BGM pool if they are confirmed musical tracks or explicitly curated.
-                                # Raw source extracts, spoken dialogue, and uncurated noise must
-                                # NEVER masquerade as background music for other clips.
-                                is_src = (
-                                    sm_entry.get("is_source_extract") or
-                                    a_data.get("is_source_extract") or
-                                    sm_entry.get("is_unusable_bgm") or
-                                    a_data.get("is_unusable_bgm")
-                                )
-                                if is_src and not (sm_entry.get("is_curated_bgm") or a_data.get("is_curated_bgm")):
-                                    continue
+                                # ── VALID VAULT AUDIO GATE ─────────────────────────────
+                                # Harvested tracks from other clips enter the candidate BGM
+                                # pool as long as they are usable, musical, and not noise or speech-only.
                                 if sm_entry.get("is_unusable") or a_data.get("is_unusable"):
                                     continue
                                 if sm_entry.get("is_speech_only") or a_data.get("is_speech_only"):
@@ -1962,9 +1952,9 @@ class TelegramVaultIndexer:
                 track_entry["telegram_file_id"] = extracted_audio_file_id
                 track_entry["filename"] = audio_track_name
                 track_entry["is_source_extract"] = True
-                track_entry["is_unusable_bgm"] = True
-                track_entry["is_curated_bgm"] = False
-                track_entry["is_curated_library"] = False
+                track_entry["is_unusable_bgm"] = False
+                track_entry["is_curated_bgm"] = True
+                track_entry["is_curated_library"] = True
                 if audio_math:
                     track_entry["bpm"] = float(audio_math.get("tempo_bpm", 120.0) or 120.0)
                     track_entry["energy"] = float(audio_math.get("avg_energy", 0.7) or 0.7)
@@ -1974,8 +1964,8 @@ class TelegramVaultIndexer:
                 track_entry.setdefault("last_used", 0.0)
 
             clip_entry["is_source_extract"] = True
-            clip_entry["is_unusable_bgm"] = True
-            clip_entry["is_curated_bgm"] = False
+            clip_entry["is_unusable_bgm"] = False
+            clip_entry["is_curated_bgm"] = True
 
             csm = pm.metadata.setdefault("clip_source_math", {})
             csm[target_key] = clip_entry
@@ -2254,8 +2244,8 @@ class TelegramVaultIndexer:
                 entry["user_id"] = user_id
 
             entry["is_source_extract"] = True
-            entry["is_unusable_bgm"] = True
-            entry["is_curated_bgm"] = False
+            entry["is_unusable_bgm"] = False
+            entry["is_curated_bgm"] = True
 
             if audio_file_id and sc_val:
                 audio_track_name = f"{sc_val}.wav"
@@ -2268,9 +2258,9 @@ class TelegramVaultIndexer:
                 track_entry["telegram_file_id"] = audio_file_id
                 track_entry["filename"] = audio_track_name
                 track_entry["is_source_extract"] = True
-                track_entry["is_unusable_bgm"] = True
-                track_entry["is_curated_bgm"] = False
-                track_entry["is_curated_library"] = False
+                track_entry["is_unusable_bgm"] = False
+                track_entry["is_curated_bgm"] = True
+                track_entry["is_curated_library"] = True
                 if beat_math:
                     track_entry["bpm"] = float(beat_math.get("tempo_bpm", 120.0) or 120.0)
                     track_entry["energy"] = float(beat_math.get("avg_energy", 0.7) or 0.7)

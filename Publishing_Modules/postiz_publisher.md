@@ -53,3 +53,4 @@ Master function that uploads the reel, builds the caption and hashtag payload, a
 
 ### 5. `PublishQueue`
 Modern drop-in adapter that replaces the legacy in-memory queue with direct Postiz integration.
+

@@ -1679,8 +1679,7 @@ class AudioPoolManager:
             return {
                 k: v for k, v in raw.items()
                 if k != "social_media_id" and isinstance(v, dict)
-                and not v.get("is_source_extract")
-                and not v.get("is_unusable_bgm")
+                and not v.get("is_unusable", False)
                 and not _is_bl(
                     audio_filename=k,
                     audio_shortcode=v.get("shortcode"),

@@ -12,7 +12,10 @@ import os
 import sys
 import json
 import tempfile
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
 from unittest.mock import patch, MagicMock
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -446,7 +446,7 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
                 "audio_hash": pm._calculate_hash(target_wav),
                 "version": pm.CURRENT_VERSION,
                 "is_source_extract": True,
-                "is_unusable_bgm": True,
+                "is_unusable_bgm": False,
             })
             pm._set_file_metadata(track_name, meta)
             pm._save_metadata()

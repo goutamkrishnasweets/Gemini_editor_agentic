@@ -22,11 +22,8 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("vault.telegram_http")
 
-# Safely pre-import pyrogram if present to avoid thread-local import race/missing loop issues
-try:
-    from pyrogram import Client as _PyroClient
-except Exception:
-    _PyroClient = None
+# Lazy pyrogram placeholder to avoid blocking network socket check at import time
+_PyroClient = None
 
 
 def _ensure_event_loop() -> asyncio.AbstractEventLoop:
@@ -190,16 +187,16 @@ def get_mtproto_credentials() -> Tuple[int, str]:
 def is_mtproto_configured() -> bool:
     """Returns True if Pyrogram is available and MTProto can be used."""
     try:
-        import pyrogram  # noqa: F401
-    except ImportError:
-        return False
-    try:
         t = _token()
         if not t:
             return False
     except Exception:
         return False
-    return True
+    import importlib.util
+    try:
+        return importlib.util.find_spec("pyrogram") is not None
+    except Exception:
+        return False
 
 
 def _calibrate_mtproto_clock() -> None:

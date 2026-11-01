@@ -1412,22 +1412,43 @@ def select_best_audio_for_clip(
         return False
 
     clip_stem = (clip_id or "").lower().strip()
+    clean_stem = clip_stem.replace("manual_", "").strip()
     folder_stem = os.path.basename(clip_folder or "").lower().strip()
+    clean_folder_stem = folder_stem.replace("manual_", "").strip()
+
+    # Active sibling clips currently in downloads/ during a concurrent local run
+    sibling_stems = set()
+    if clip_folder:
+        try:
+            parent_dir = os.path.dirname(os.path.abspath(clip_folder))
+            if os.path.basename(parent_dir).lower() == "downloads" and os.path.isdir(parent_dir):
+                for folder_name in os.listdir(parent_dir):
+                    f_clean = folder_name.lower().replace("manual_", "").strip()
+                    if f_clean and f_clean not in (clean_stem, clip_stem):
+                        sibling_stems.add(f_clean)
+        except Exception:
+            pass
 
     def _is_self_extracted(fname, meta):
         fn_l = fname.lower()
-        if clip_stem and (
-            fn_l == f"bgm_{clip_stem}.wav"
-            or fn_l.startswith(f"bgm_{clip_stem}")
-            or (f"manual_{clip_stem}" in fn_l)
-            or (clip_stem in fn_l and "extracted" in fn_l)
-        ):
-            return True
-        if folder_stem and folder_stem in fn_l:
-            return True
+        stems_to_check = {s for s in (clip_stem, clean_stem, folder_stem, clean_folder_stem) if s}
+        for s in stems_to_check:
+            if fn_l == f"{s}.wav" or fn_l == f"bgm_{s}.wav" or fn_l.startswith(f"bgm_{s}") or (s in fn_l and "extracted" in fn_l):
+                return True
+            if meta.get("shortcode") and str(meta.get("shortcode")).lower() == s:
+                return True
         sess_val = str(meta.get("session_id", "")).lower()
-        if clip_stem and clip_stem in sess_val:
-            return True
+        for s in stems_to_check:
+            if s and s in sess_val:
+                return True
+        return False
+
+    def _is_sibling_extracted(fname, meta):
+        fn_l = fname.lower()
+        m_sc = str(meta.get("shortcode", "")).lower().strip()
+        for s in sibling_stems:
+            if fn_l == f"{s}.wav" or fn_l.startswith(f"bgm_{s}") or (s in fn_l and "extracted" in fn_l) or (m_sc and m_sc == s):
+                return True
         return False
 
     # Filter candidate tracks
@@ -1439,6 +1460,7 @@ def select_best_audio_for_clip(
         and not _is_too_short(fname, meta)
         and not _is_disqualified_by_size_or_blacklist(fname, meta)
         and not _is_self_extracted(fname, meta)
+        and not _is_sibling_extracted(fname, meta)
         and fname.lower().endswith((".mp3", ".wav", ".m4a"))
     ]
 
