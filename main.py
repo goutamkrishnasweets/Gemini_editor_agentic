@@ -949,6 +949,24 @@ async def handle_telegram_callback(update, context):
                 if sess:
                     sess["video_path"] = recovered_reel
 
+        # Fail-Safe Direct Telegram Message Recovery
+        if not video_path or not os.path.exists(video_path):
+            if query and query.message and query.message.video:
+                try:
+                    logger.info("📥 [DIRECT TELEGRAM RECOVERY] Downloading reel directly from Telegram message attachment...")
+                    dest_dir = os.path.join(base_dir, "downloads", "Processed_Shorts")
+                    os.makedirs(dest_dir, exist_ok=True)
+                    tg_vid_path = os.path.join(dest_dir, f"{clip_id or session_id}_master.mp4")
+                    tg_file = await context.bot.get_file(query.message.video.file_id)
+                    await tg_file.download_to_drive(custom_path=tg_vid_path)
+                    if os.path.exists(tg_vid_path) and os.path.getsize(tg_vid_path) > 1024:
+                        video_path = tg_vid_path
+                        if sess:
+                            sess["video_path"] = tg_vid_path
+                        logger.info(f"✅ [DIRECT TELEGRAM RECOVERY] Recovered reel from message attachment -> {tg_vid_path}")
+                except Exception as _tg_dl_err:
+                    logger.warning(f"⚠️ Direct Telegram video download failed: {_tg_dl_err}")
+
         # Load clip intelligence from store or folder
         intel_data = {}
         if video_path and os.path.exists(video_path):
@@ -1187,15 +1205,19 @@ async def handle_telegram_callback(update, context):
         except Exception:
             pass
 
-        if sess:
-            from Core_Modules import purge_full_clip_and_assets
-            purge_res = purge_full_clip_and_assets(
-                clip_id=sess.get("clip_id"),
-                video_path=sess.get("video_path"),
-                attempt_history=sess.get("attempt_history", []),
-                selected_audio=sess.get("selected_audio")
-            )
-            logger.info(f"🗑️ Purged all assets for rejected session {session_id}: {purge_res.get('purged_count')} items removed")
+        target_clip_id = (sess.get("clip_id") if sess else None) or session_id
+        target_video_path = sess.get("video_path") if sess else None
+        target_attempts = sess.get("attempt_history", []) if sess else []
+        target_audio = sess.get("selected_audio") if sess else None
+
+        from Core_Modules import purge_full_clip_and_assets
+        purge_res = purge_full_clip_and_assets(
+            clip_id=target_clip_id,
+            video_path=target_video_path,
+            attempt_history=target_attempts,
+            selected_audio=target_audio
+        )
+        logger.info(f"🗑️ Purged all assets for rejected session {session_id}: {purge_res.get('purged_count', 0)} items removed")
 async def execute_reedit_with_directive(query, context, session_id: str, directive: str, chat_id: int):
     """Executes re-edit by dispatching directly through the Autonomous Gemini Director."""
     logger.info(f"🎬 [EXECUTE RE-EDIT] Delegating re-edit for session '{session_id}' to Gemini Director | Directive: '{directive}'")
@@ -2248,15 +2270,19 @@ async def handle_telegram_incoming_msg(update, context):
         if cmd_check in ("/reject", "reject", "/rejet", "rejet"):
             sess_id = pending_sess["session_id"]
             sess = session_manager.set_rejected(sess_id)
-            if sess:
-                from Core_Modules import purge_full_clip_and_assets
-                purge_res = purge_full_clip_and_assets(
-                    clip_id=sess.get("clip_id"),
-                    video_path=sess.get("video_path"),
-                    attempt_history=sess.get("attempt_history", []),
-                    selected_audio=sess.get("selected_audio")
-                )
-                logger.info(f"🗑️ Purged assets for session {sess_id} via text reject: {purge_res.get('purged_count')} items removed")
+            target_clip_id = (sess.get("clip_id") if sess else None) or sess_id
+            target_video_path = sess.get("video_path") if sess else None
+            target_attempts = sess.get("attempt_history", []) if sess else []
+            target_audio = sess.get("selected_audio") if sess else None
+
+            from Core_Modules import purge_full_clip_and_assets
+            purge_res = purge_full_clip_and_assets(
+                clip_id=target_clip_id,
+                video_path=target_video_path,
+                attempt_history=target_attempts,
+                selected_audio=target_audio
+            )
+            logger.info(f"🗑️ Purged assets for session {sess_id} via text reject: {purge_res.get('purged_count', 0)} items removed")
             await msg.reply_text("🗑️ **REJECTED & DISCARDED BY ADMIN.**\nAll audio, video assets, and metadata pool index purged!")
             return
 
@@ -2395,6 +2421,23 @@ async def handle_telegram_incoming_msg(update, context):
             v_path = updated_sess.get("video_path") or video_path
             if not v_path or not os.path.exists(v_path):
                 v_path = vault_indexer.hydrate_processed_reel_from_vault(shortcode_or_session_id=clip_id or sess_id)
+
+            if not v_path or not os.path.exists(v_path):
+                # Fail-Safe: Check if the user replied to a video message
+                rep_msg = getattr(msg, "reply_to_message", None)
+                if rep_msg and rep_msg.video:
+                    try:
+                        logger.info("📥 [DIRECT TELEGRAM RECOVERY] Downloading reel from replied message attachment...")
+                        dest_dir = os.path.join(base_dir, "downloads", "Processed_Shorts")
+                        os.makedirs(dest_dir, exist_ok=True)
+                        tg_vid_path = os.path.join(dest_dir, f"{clip_id or sess_id}_master.mp4")
+                        tg_file = await context.bot.get_file(rep_msg.video.file_id)
+                        await tg_file.download_to_drive(custom_path=tg_vid_path)
+                        if os.path.exists(tg_vid_path) and os.path.getsize(tg_vid_path) > 1024:
+                            v_path = tg_vid_path
+                            logger.info(f"✅ [DIRECT TELEGRAM RECOVERY] Recovered reel from replied message -> {tg_vid_path}")
+                    except Exception as _tg_dl_err:
+                        logger.warning(f"⚠️ Direct Telegram video recovery from replied message failed: {_tg_dl_err}")
 
             if not v_path or not os.path.exists(v_path):
                 await msg.reply_text("❌ **Publish Failed**: Processed short video file could not be found locally or in Telegram Storage Vault.")
@@ -2673,6 +2716,7 @@ def run_master_pipeline(
         # CLI/scheduled runs without a requestor_chat_id remain local (no spam).
         target_chat = requestor_chat_id
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        delivery_threads = []
 
         def _on_clip_rendered(reel_path: str):
             """Immediately delivers each rendered clip to the requesting Telegram user."""
@@ -2920,6 +2964,7 @@ def run_master_pipeline(
 
                     t = threading.Thread(target=_run_in_thread, daemon=True)
                     t.start()
+                    delivery_threads.append(t)
                     logger.info(f"📲 [REALTIME TELEGRAM DELIVERY] Dispatched delivery task for '{os.path.basename(reel_path)}' to Telegram!")
                 except Exception as _deliv_err:
                     logger.error(f"❌ Realtime Telegram delivery failed for {os.path.basename(reel_path)}: {_deliv_err}")
@@ -2934,6 +2979,14 @@ def run_master_pipeline(
             user_gemini_key=user_gemini_key,
         )
         rendered_master_reels = phase2_res.get("rendered_files", [])
+
+        # Wait for all background delivery and vault upload threads to complete before proceeding
+        if delivery_threads:
+            logger.info(f"⏳ Waiting for {len(delivery_threads)} background Telegram delivery & vault upload task(s) to finish...")
+            for dt in delivery_threads:
+                dt.join(timeout=180.0)
+            logger.info("✅ All background Telegram delivery & vault upload tasks finished.")
+
         logger.info(f"🎬 [PHASE 2 & 3 COMPLETE] {len(rendered_master_reels)} master reel(s) ready.")
 
     except Exception as p2_err:
@@ -2959,6 +3012,10 @@ def run_master_pipeline(
 
         # Force flush and pin any pending vault backups before runner shutdown
         try:
+            if 'delivery_threads' in locals() and delivery_threads:
+                for dt in delivery_threads:
+                    if dt.is_alive():
+                        dt.join(timeout=60.0)
             from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             AudioPoolManager()._sync_to_telegram_vault(force=True)
@@ -3617,15 +3674,19 @@ def start_telegram_bot_service():
             if pending_sess:
                 sess_id = pending_sess["session_id"]
                 sess = session_manager.set_rejected(sess_id)
-                if sess:
-                    from Core_Modules import purge_full_clip_and_assets
-                    purge_res = purge_full_clip_and_assets(
-                        clip_id=sess.get("clip_id"),
-                        video_path=sess.get("video_path"),
-                        attempt_history=sess.get("attempt_history", []),
-                        selected_audio=sess.get("selected_audio")
-                    )
-                    logger.info(f"🗑️ Purged assets for session {sess_id} via /reject: {purge_res.get('purged_count')} items removed")
+                target_clip_id = (sess.get("clip_id") if sess else None) or sess_id
+                target_video_path = sess.get("video_path") if sess else None
+                target_attempts = sess.get("attempt_history", []) if sess else []
+                target_audio = sess.get("selected_audio") if sess else None
+
+                from Core_Modules import purge_full_clip_and_assets
+                purge_res = purge_full_clip_and_assets(
+                    clip_id=target_clip_id,
+                    video_path=target_video_path,
+                    attempt_history=target_attempts,
+                    selected_audio=target_audio
+                )
+                logger.info(f"🗑️ Purged assets for session {sess_id} via /reject: {purge_res.get('purged_count', 0)} items removed")
                 await update.message.reply_text("🗑️ **REJECTED & DISCARDED BY ADMIN.**\nAll audio, video assets, and metadata pool index purged!")
             else:
                 await update.message.reply_text("ℹ️ No active review or pending title session found to reject.")

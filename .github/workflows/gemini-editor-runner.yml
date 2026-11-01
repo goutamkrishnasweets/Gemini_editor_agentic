@@ -273,7 +273,7 @@ jobs:
 
         # Stage state files if present
         # FIX: Use quoted path instead of backslash-escape (more reliable in run blocks)
-        git add -A "Phase_1/The jsons/Github_Actions_json/" "data/rejected_audio_blacklist.json" "data/published_registry.json" "data/scraper_rotation_pointer.json" "Content_Scraper_Modules/content_ledger.json" 2>/dev/null || true
+        git add -A "Phase_1/The jsons/Github_Actions_json/" "data/rejected_audio_blacklist.json" "data/published_registry.json" "data/scraper_rotation_pointer.json" "Content_Scraper_Modules/content_ledger.json" "data/master_vault_index.json" "data/telegram_sessions.json" "Original_audio/pool_metadata.json" 2>/dev/null || true
 
         if git diff --cached --quiet; then
           echo "No state changes to commit."
