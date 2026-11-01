@@ -532,71 +532,160 @@ def _build_math_context(fast_report: Dict[str, Any]) -> str:
     )
 
 
-def _recognize_audio_track(audio_path: str) -> Dict[str, Any]:
+def _load_track_song_intelligence(
+    audio_path: str,
+    pool_meta: Optional[Dict[str, Any]] = None
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Identifies audio track title, artist, and genre using shazamio fingerprinting.
-    Runs asynchronously with a 4.0s timeout so execution never hangs.
+    Retrieves pre-computed Shazam recognition and deep song entities (cast, movie, director)
+    from pool_metadata or local audio_analysis.json with zero runtime event loop overhead.
+    Falls back to Audio_Modules.song_intelligence if unindexed.
     """
-    if not audio_path or not os.path.exists(audio_path):
-        return {}
-    try:
-        import asyncio
-        from shazamio import Shazam
+    shazam_info: Dict[str, Any] = {}
+    song_entities: Dict[str, Any] = {}
 
-        async def _async_recognize():
-            shazam = Shazam()
-            out = await shazam.recognize(audio_path)
-            track = out.get("track", {})
-            return {
-                "title": track.get("title", ""),
-                "artist": track.get("subtitle", ""),
-                "genre": track.get("genres", {}).get("primary", ""),
-            }
+    # 1. Check pool_meta directly
+    if pool_meta and isinstance(pool_meta, dict):
+        shazam_info = pool_meta.get("shazam_info") or (
+            pool_meta.get("audio_data", {}).get("shazam_info") if isinstance(pool_meta.get("audio_data"), dict) else {}
+        ) or {}
+        song_entities = pool_meta.get("song_entities") or (
+            pool_meta.get("audio_data", {}).get("song_entities") if isinstance(pool_meta.get("audio_data"), dict) else {}
+        ) or {}
+        if shazam_info.get("title"):
+            return shazam_info, song_entities
 
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            res = loop.run_until_complete(asyncio.wait_for(_async_recognize(), timeout=4.0))
-            if res and res.get("title"):
-                logger.info(f"🎵 [SHAZAM FINGERPRINT] Recognized track: '{res['title']}' by {res['artist']} ({res['genre']})")
-                return res
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.debug(f"[LYRIC_ALIGNER] Shazam audio recognition notice: {e}")
-        finally:
+    # 2. Check local audio_analysis.json in the audio file's folder
+    if audio_path and os.path.exists(audio_path):
+        audio_dir = os.path.dirname(os.path.abspath(audio_path))
+        analysis_path = os.path.join(audio_dir, "audio_analysis.json")
+        if os.path.exists(analysis_path):
             try:
-                # Cancel pending tasks to prevent unclosed client/connector warnings
-                pending = asyncio.all_tasks(loop)
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                # Grace period for aiohttp / SSL transport shutdown to prevent Bad file descriptor
-                loop.run_until_complete(loop.shutdown_asyncgens())
-                loop.run_until_complete(asyncio.sleep(0.25))
+                with open(analysis_path, "r", encoding="utf-8") as f:
+                    adata = json.load(f)
+                shazam_info = adata.get("shazam_info") or {}
+                song_entities = adata.get("song_entities") or {}
+                if shazam_info.get("title"):
+                    return shazam_info, song_entities
             except Exception:
                 pass
-            finally:
-                try:
-                    asyncio.set_event_loop(None)
-                except Exception:
-                    pass
-                loop.close()
+
+    # 3. Defensive fallback: invoke song_intelligence
+    try:
+        from Audio_Modules.song_intelligence import recognize_track_with_shazam, fetch_song_deep_entities
+        shazam_info = recognize_track_with_shazam(audio_path)
+        if shazam_info.get("title"):
+            song_entities = fetch_song_deep_entities(shazam_info)
     except Exception as e:
-        logger.debug(f"[LYRIC_ALIGNER] Shazam audio recognition notice: {e}")
-    return {}
+        logger.debug(f"[LYRIC_ALIGNER] Song intelligence lookup notice: {e}")
+
+    return shazam_info, song_entities
 
 
-def _build_shazam_context(track_info: Dict[str, Any]) -> str:
+def compare_semantic_entities(
+    clip_text: str,
+    song_entities: Optional[Dict[str, Any]],
+    candidate_meta: Optional[Dict[str, Any]] = None
+) -> Tuple[float, List[str]]:
+    """
+    Compares the incoming video metadata/content text (hashtags, captions, keywords, detected visual objects)
+    with the song's deep cultural entities (cast members, movie/album, singers, search keywords).
+
+    Returns:
+      (entity_bonus: float, matched_entities: List[str])
+      - If a cast member (e.g. Sakshi Malik) is in the video hashtags/text: +0.45 bonus!
+      - If movie or album matches: +0.35 bonus!
+      - If singer matches: +0.25 bonus!
+      - If search keywords match: +0.15 bonus!
+    """
+    if not song_entities and candidate_meta and isinstance(candidate_meta, dict):
+        song_entities = candidate_meta.get("song_entities") or (
+            candidate_meta.get("audio_data", {}).get("song_entities") if isinstance(candidate_meta.get("audio_data"), dict) else {}
+        ) or {}
+
+    if not song_entities or not isinstance(song_entities, dict):
+        return 0.0, []
+
+    c_text = (clip_text or "").lower()
+    clean_text = re.sub(r"[#_@\-\.]", " ", c_text)
+    no_space_text = re.sub(r"[^a-z0-9]", "", c_text)
+
+    matched: List[str] = []
+    bonus = 0.0
+
+    # 1. Cast Members Match (Highest Value: actor in video is in the song's video!)
+    cast_members = song_entities.get("cast_members") or []
+    for cast in cast_members:
+        cast_s = str(cast).strip()
+        if len(cast_s) < 3:
+            continue
+        cast_l = cast_s.lower()
+        cast_clean = re.sub(r"[^a-z0-9]", "", cast_l)
+        if cast_l in clean_text or cast_clean in no_space_text:
+            matched.append(f"Cast: {cast_s}")
+            bonus += 0.45
+
+    # 2. Movie or Album Match
+    movie = str(song_entities.get("movie_or_album") or "").strip()
+    if len(movie) >= 3:
+        mov_l = movie.lower()
+        mov_clean = re.sub(r"[^a-z0-9]", "", mov_l)
+        if mov_l in clean_text or mov_clean in no_space_text:
+            matched.append(f"Movie: {movie}")
+            bonus += 0.35
+
+    # 3. Singers Match
+    singers = song_entities.get("singers") or []
+    for singer in singers:
+        singer_s = str(singer).strip()
+        if len(singer_s) < 3:
+            continue
+        sing_l = singer_s.lower()
+        sing_clean = re.sub(r"[^a-z0-9]", "", sing_l)
+        if sing_l in clean_text or sing_clean in no_space_text:
+            matched.append(f"Singer: {singer_s}")
+            bonus += 0.25
+
+    # 4. Search Keywords Match
+    keywords = song_entities.get("search_keywords") or []
+    for kw in keywords:
+        kw_s = str(kw).strip()
+        if len(kw_s) < 3:
+            continue
+        kw_l = kw_s.lower()
+        kw_clean = re.sub(r"[^a-z0-9]", "", kw_l)
+        if (kw_l in clean_text or kw_clean in no_space_text) and not any(kw_s.lower() in m.lower() for m in matched):
+            matched.append(f"Keyword: {kw_s}")
+            bonus += 0.15
+
+    return min(0.65, bonus), matched
+
+
+def _build_shazam_context(track_info: Dict[str, Any], song_entities: Optional[Dict[str, Any]] = None) -> str:
     if not track_info or not track_info.get("title"):
-        return "\n\n### AUDIO TRACK IDENTIFICATION (SHAZAM FINGERPRINT): Unknown / Unindexed\n"
-    return (
-        f"\n\n### AUDIO TRACK IDENTIFICATION (SHAZAM AUDIO FINGERPRINT):\n"
+        return "\n\n### AUDIO TRACK IDENTIFICATION: Unknown / Unindexed\n"
+
+    ctx = (
+        f"\n\n### AUDIO TRACK IDENTIFICATION (OFFICIAL SONG INTEL):\n"
         f"  - Track Title: '{track_info.get('title')}'\n"
         f"  - Artist: '{track_info.get('artist')}'\n"
         f"  - Primary Genre: '{track_info.get('genre')}'\n"
-        "USE THIS KNOWN SONG IDENTIFICATION to ensure 100% exact lyric words in `transcript` and `lyrics[].text`. "
-        "Correct any misheard ASR words (e.g. Whisper mistranslating song lyrics to English phonetics) using the official lyrics of this song!\n"
     )
+    if song_entities and isinstance(song_entities, dict):
+        if song_entities.get("movie_or_album"):
+            ctx += f"  - Source Movie / Album: '{song_entities['movie_or_album']}'\n"
+        if song_entities.get("cast_members"):
+            ctx += f"  - Music Video Cast / Actors: {', '.join(str(c) for c in song_entities['cast_members'])}\n"
+        if song_entities.get("singers"):
+            ctx += f"  - Vocalists: {', '.join(str(s) for s in song_entities['singers'])}\n"
+        if song_entities.get("visual_theme"):
+            ctx += f"  - Visual / Dance Theme: '{song_entities['visual_theme']}'\n"
+
+    ctx += (
+        "USE THIS KNOWN SONG IDENTIFICATION to ensure 100% exact lyric words in `transcript` and `lyrics[].text`. "
+        "Correct any misheard ASR words using the official lyrics and cultural context of this song!\n"
+    )
+    return ctx
 
 
 # ─── Main API ─────────────────────────────────────────────────────────────────
@@ -721,9 +810,9 @@ def analyze_music(audio_path: str) -> Dict[str, Any]:
         except Exception as _fe:
             logger.warning(f"Beat engine computation notice: {_fe}")
 
-    # 🎵 STEP 1b: Shazam Audio Track Fingerprinting (Title & Artist Recognition)
-    shazam_info = _recognize_audio_track(audio_path)
-    shazam_context = _build_shazam_context(shazam_info)
+    # 🎵 STEP 1b: Song Intelligence & Deep Cultural Entity Retrieval
+    shazam_info, song_entities = _load_track_song_intelligence(audio_path, pool_meta=pool_meta)
+    shazam_context = _build_shazam_context(shazam_info, song_entities=song_entities)
 
     # 🎙️ STEP 2: Load or run word-level ASR
     whisper_data = _load_or_run_whisper(audio_path, cache_dir, audio_basename, pool_meta=pool_meta)
@@ -1235,8 +1324,18 @@ def compute_4d_audio_score(
     elif is_clip_indian and not is_track_indian and any(bad in track_text for bad in ["phonk", "drill", "death_metal"]):
         cultural_bonus = -0.20
 
-    # Base semantic score starts at 0.35, scaled by overlap, partial match, and cultural synergy
-    s_semantic = max(0.10, min(1.0, 0.35 + (exact_overlap * 0.15) + (min(3, partial_matches) * 0.08) + cultural_bonus))
+    # ── 2b. Deep Song Entity & Cast Correlation Boost ───────────────────────
+    song_ents = candidate_meta.get("song_entities") or (
+        candidate_meta.get("audio_data", {}).get("song_entities") if isinstance(candidate_meta.get("audio_data"), dict) else {}
+    )
+    entity_bonus, matched_entities = compare_semantic_entities(clip_text, song_ents, candidate_meta=candidate_meta)
+    if matched_entities:
+        logger.info(f"🎯 [ENTITY SYNERGY] Candidate '{candidate_filename}' matched video metadata: {matched_entities} (+{entity_bonus:.2f} bonus)")
+        if isinstance(candidate_meta, dict):
+            candidate_meta["matched_entities"] = matched_entities
+
+    # Base semantic score starts at 0.35, scaled by overlap, partial match, cultural synergy, and deep entity match
+    s_semantic = max(0.10, min(1.0, 0.35 + (exact_overlap * 0.15) + (min(3, partial_matches) * 0.08) + cultural_bonus + entity_bonus))
 
     # ── 3. S_rhythm (0.1 to 1.0) ─────────────────────────────────────────────
     clip_math_bpm = float(current_audio.get("math", {}).get("tempo_bpm", 0.0))
@@ -1644,6 +1743,16 @@ def select_best_audio_for_clip(
             trans_preview = (c_trans[:120] + "...") if len(c_trans) > 120 else c_trans
             info_parts.append(f"lyrics='{trans_preview}'")
 
+        song_ents = meta.get("song_entities") or (meta.get("audio_data", {}).get("song_entities") if isinstance(meta.get("audio_data"), dict) else {})
+        if song_ents and isinstance(song_ents, dict):
+            if song_ents.get("movie_or_album"):
+                info_parts.append(f"movie='{song_ents['movie_or_album']}'")
+            if song_ents.get("cast_members"):
+                info_parts.append(f"cast={song_ents['cast_members'][:3]}")
+        matched = meta.get("matched_entities") or cand.get("matched_entities")
+        if matched:
+            info_parts.append(f"🎯_MATCHED_ENTITIES={matched}")
+
         info_parts.append(f"archetype_fit={cand['s_arch']:.2f}")
         info_parts.append(f"4d_score={cand['score']:.3f}")
         info_parts.append(f"last_used={hrs_ago:.1f}h_ago")
@@ -1681,6 +1790,7 @@ DIRECTOR DIRECTIVE:
    - For Bollywood, Hindi, Indian, or Desi creators/scenes: prioritize tracks with matching Indian/Bollywood vibes, Hindi lyrics, or culturally authentic rhythm. NEVER pick an incongruous Western phonk, trap, or unrelated podcast track.
    - For fashion/glamour struts: pick tracks with swagger, luxury, beat drop, or high-fashion elegance.
    - Match the lyrics and mood to what is visually occurring (e.g. romance, celebration, fitness, comedy).
+   - SONG ENTITY & CAST SYNERGY (GOLD STANDARD): If any candidate has '🎯_MATCHED_ENTITIES' (e.g. the video's hashtags, caption, or actors match the song's official music video cast or movie title), this is a HIGH-CONFIDENCE MATCH! Select it enthusiastically to unite the visual actors with their iconic song!
 5. Return ONLY valid JSON with 'selected_audio_track', 'telegram_file_id', 'alignment_score', and 'reasoning'.
 
 [FORBIDDEN TRACKS — DO NOT SELECT]

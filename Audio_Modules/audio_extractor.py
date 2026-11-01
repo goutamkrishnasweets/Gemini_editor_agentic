@@ -315,6 +315,19 @@ def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
             except Exception as _sb_err:
                 logger.warning("⚠️ [Speech Boundary] Extraction skipped/failed: %s", _sb_err)
 
+            # Step 2c: Instant Song Intelligence & Deep Entity Extraction (Shazam + Gemini)
+            try:
+                from Audio_Modules.song_intelligence import enrich_audio_with_song_intelligence
+                song_intel = enrich_audio_with_song_intelligence(wav_path, clip_dir=clip_dir)
+                if song_intel and song_intel.get("shazam_info"):
+                    analysis["shazam_info"] = song_intel.get("shazam_info")
+                    analysis["song_entities"] = song_intel.get("song_entities")
+                    if song_intel.get("shazam_info", {}).get("title"):
+                        analysis["is_speech_vocal"] = False
+                        analysis["has_vocals"] = True
+            except Exception as _si_err:
+                logger.debug("⚠️ [Song Intelligence] Extraction notice: %s", _si_err)
+
         except Exception as exc:
             logger.warning("⚠️ Beat analysis failed: %s — storing raw extraction only.", exc)
     else:
