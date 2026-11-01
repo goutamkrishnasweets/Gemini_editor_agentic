@@ -4,7 +4,7 @@ import logging
 import asyncio
 import json
 import httpx
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 
 try:
     from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens
@@ -982,6 +982,194 @@ class AsyncMetaUploader:
         return False
 
 
+# ── 1-Click Meta OAuth & Account Auto-Discovery ─────────────────────────────
+
+def build_meta_oauth_url(app_id: str, redirect_uri: str, scopes: Optional[str] = None) -> str:
+    """Builds the 1-Click Meta OAuth authorization URL with all required publishing scopes."""
+    import urllib.parse
+    scopes_str = scopes or "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement,pages_manage_posts,public_profile"
+    ver = get_meta_graph_version()
+    params = {
+        "client_id": app_id.strip(),
+        "redirect_uri": redirect_uri.strip(),
+        "scope": scopes_str,
+        "response_type": "code"
+    }
+    return f"https://www.facebook.com/{ver}/dialog/oauth?{urllib.parse.urlencode(params)}"
+
+
+def exchange_meta_oauth_code(code: str, app_id: str, app_secret: str, redirect_uri: str) -> Dict[str, Any]:
+    """
+    1-Click Automated Token Exchange & Account Discovery:
+      1. Exchanges OAuth authorization code for short-lived User Access Token.
+      2. Upgrades short-lived token to 60-day Long-Lived User Access Token.
+      3. Calls /me/accounts to discover Facebook Pages and extract non-expiring Page Access Tokens.
+      4. Queries each page for linked Instagram Business Accounts.
+      5. Returns full discovery dictionary with primary IDs and tokens ready for publishing.
+    """
+    import urllib.parse
+    ver = get_meta_graph_version()
+    clean_code = code.strip()
+
+    # Strip full redirect URL if user pasted the entire redirected URL
+    if "code=" in clean_code:
+        parsed = urllib.parse.urlparse(clean_code)
+        q = urllib.parse.parse_qs(parsed.query)
+        clean_code = q.get("code", [clean_code])[0]
+    if "#" in clean_code:
+        clean_code = clean_code.split("#")[0]
+
+    with httpx.Client(timeout=30.0) as client:
+        # Step 1: Exchange code for short-lived user token
+        tok_url = f"https://graph.facebook.com/{ver}/oauth/access_token"
+        tok_params = {
+            "client_id": app_id.strip(),
+            "client_secret": app_secret.strip(),
+            "redirect_uri": redirect_uri.strip(),
+            "code": clean_code
+        }
+        res1 = client.get(tok_url, params=tok_params)
+        data1 = res1.json()
+        if "error" in data1 or "access_token" not in data1:
+            err_msg = data1.get("error", {}).get("message", str(data1))
+            return {"success": False, "error": f"Failed to exchange code for token: {err_msg}"}
+
+        short_lived_token = data1["access_token"]
+
+        # Step 2: Upgrade to 60-day Long-Lived Token
+        ext_params = {
+            "grant_type": "fb_exchange_token",
+            "client_id": app_id.strip(),
+            "client_secret": app_secret.strip(),
+            "fb_exchange_token": short_lived_token
+        }
+        res2 = client.get(tok_url, params=ext_params)
+        data2 = res2.json()
+        long_lived_token = data2.get("access_token", short_lived_token)
+
+        # Step 3: Discover Facebook Pages & Page Tokens
+        pages_url = f"https://graph.facebook.com/{ver}/me/accounts"
+        res3 = client.get(pages_url, params={"access_token": long_lived_token})
+        data3 = res3.json()
+        raw_pages = data3.get("data", [])
+
+        if not raw_pages:
+            return {
+                "success": False,
+                "error": "No Facebook Pages found for this account. Ensure your Facebook account owns or manages a Page."
+            }
+
+        pages_info = []
+        primary_match = None
+
+        for p in raw_pages:
+            p_id = p.get("id")
+            p_name = p.get("name")
+            p_token = p.get("access_token")
+
+            # Step 4: Query linked Instagram Business Account
+            ig_url = f"https://graph.facebook.com/{ver}/{p_id}"
+            res_ig = client.get(ig_url, params={
+                "fields": "instagram_business_account{id,username,name}",
+                "access_token": p_token
+            })
+            data_ig = res_ig.json()
+            ig_data = data_ig.get("instagram_business_account") or {}
+            ig_id = ig_data.get("id")
+            ig_username = ig_data.get("username")
+
+            p_entry = {
+                "page_id": p_id,
+                "page_name": p_name,
+                "page_token": p_token,
+                "instagram_id": ig_id,
+                "instagram_username": ig_username
+            }
+            pages_info.append(p_entry)
+
+            if ig_id and not primary_match:
+                primary_match = p_entry
+
+        if not primary_match:
+            primary_match = pages_info[0]
+
+        return {
+            "success": True,
+            "long_lived_user_token": long_lived_token,
+            "pages": pages_info,
+            "primary": primary_match,
+            "meta_page_id": primary_match.get("page_id"),
+            "meta_page_token": primary_match.get("page_token"),
+            "ig_business_id": primary_match.get("instagram_id"),
+            "ig_business_token": primary_match.get("page_token") or long_lived_token,
+            "ig_username": primary_match.get("instagram_username"),
+            "page_name": primary_match.get("page_name"),
+        }
+
+
+def save_and_sync_meta_credentials(auth_result: Dict[str, Any], user_id_str: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Persists discovered Meta & Instagram credentials to .env, Credentials/.env,
+    telegram_users.json, and GitHub Secrets.
+    """
+    if not auth_result.get("success"):
+        return False, auth_result.get("error", "Unknown auth failure")
+
+    p_id = auth_result.get("meta_page_id") or ""
+    p_token = auth_result.get("meta_page_token") or ""
+    ig_id = auth_result.get("ig_business_id") or ""
+    ig_token = auth_result.get("ig_business_token") or p_token
+
+    if not p_id or not p_token:
+        return False, "Missing Page ID or Page Token in discovery result."
+
+    # Update in-memory runtime
+    os.environ["META_PAGE_ID"] = p_id
+    os.environ["META_PAGE_TOKEN"] = p_token
+    if ig_id:
+        os.environ["IG_BUSINESS_ID"] = ig_id
+        os.environ["IG_BUSINESS_TOKEN"] = ig_token
+
+    # Persist to local .env and Credentials/.env
+    from Telegram_Storage_Modules.telegram_user_manager import _persist_env_var_to_disk
+    _persist_env_var_to_disk("META_PAGE_ID", p_id)
+    _persist_env_var_to_disk("META_PAGE_TOKEN", p_token)
+    if ig_id:
+        _persist_env_var_to_disk("IG_BUSINESS_ID", ig_id)
+        _persist_env_var_to_disk("IG_BUSINESS_TOKEN", ig_token)
+
+    # Persist in telegram_users.json
+    try:
+        from Telegram_Storage_Modules.telegram_user_manager import load_all_users, save_all_users
+        users = load_all_users()
+        uid = str(user_id_str) if user_id_str else "admin"
+        u_rec = users.setdefault(uid, {})
+        u_rec["meta_page_id"] = p_id
+        u_rec["meta_page_token"] = p_token
+        if ig_id:
+            u_rec["ig_business_id"] = ig_id
+            u_rec["ig_business_token"] = ig_token
+        save_all_users(users)
+    except Exception as _e:
+        logger.warning("Could not persist to telegram_users.json: %s", _e)
+
+    # Sync to GitHub Secrets
+    try:
+        from Utilities.github_secret_updater import sync_custom_secret_to_github
+        sync_custom_secret_to_github("META_PAGE_ID", p_id)
+        sync_custom_secret_to_github("META_PAGE_TOKEN", p_token)
+        if ig_id:
+            sync_custom_secret_to_github("IG_BUSINESS_ID", ig_id)
+            sync_custom_secret_to_github("IG_BUSINESS_TOKEN", ig_token)
+    except Exception as _ge:
+        logger.warning("GitHub Secret sync notice: %s", _ge)
+
+    msg = f"Connected Facebook Page '{auth_result.get('page_name')}' (ID: {p_id})"
+    if ig_id:
+        msg += f" and Instagram '@{auth_result.get('ig_username', 'linked')}' (ID: {ig_id})"
+    return True, msg
+
+
 __all__ = [
     "AsyncMetaUploader",
     "get_meta_graph_version",
@@ -990,4 +1178,8 @@ __all__ = [
     "get_rupload_video_url",
     "GRAPH_API_URL",
     "DEFAULT_META_GRAPH_VERSION",
+    "build_meta_oauth_url",
+    "exchange_meta_oauth_code",
+    "save_and_sync_meta_credentials",
 ]
+

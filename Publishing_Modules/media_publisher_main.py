@@ -147,7 +147,7 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
         }
 
 
-def publish_to_youtube(
+async def publish_to_youtube(
     video_path: str,
     title: str,
     description: str = "",
@@ -163,8 +163,8 @@ def publish_to_youtube(
             logger.warning("YouTube API credentials missing for non-admin User %s. Skipping YouTube upload.", user_id)
             return {"status": "skipped", "message": "Personal YouTube credentials not configured for non-admin user"}
 
-        from Publishing_Modules.uploader import _upload_sync
-        video_id = _upload_sync(
+        from Publishing_Modules.uploader import upload_to_youtube
+        video_id = await upload_to_youtube(
             file_path=video_path,
             title=title,
             description=description or f"{title}\n\n#shorts #viral #trending",
@@ -334,62 +334,13 @@ async def run_phase4_publishing_async(
 
     platforms_payload = (seo_data.get("platforms", {}) if isinstance(seo_data, dict) else {}) or {}
 
-    # 1. YouTube Shorts (Direct Python Data API)
-    yt_payload = platforms_payload.get("youtube", {})
-    yt_title = yt_payload.get("title") or title
-    yt_desc = yt_payload.get("description") or description or f"{title}\n\n{tags}"
-    yt_tags = " ".join(yt_payload.get("hashtags", [])) if yt_payload.get("hashtags") else tags
+    # ── Gateway Strategy: Waterfall Failover ─────────────────────────────────
+    # Primary: Make.com Webhook (if configured & active)
+    # Failover: Local direct uploaders (uploader.py & meta_uploader.py) if Make.com fails/disabled
+    make_success = False
 
-    try:
-        yt_res = await asyncio.to_thread(
-            publish_to_youtube,
-            video_path=video_path,
-            title=yt_title,
-            description=yt_desc,
-            tags=yt_tags,
-            niche=niche,
-            user_id=user_id
-        )
-        if yt_res.get("status") != "skipped":
-            results["platforms"]["youtube"] = yt_res
-    except Exception as e:
-        logger.error("❌ YouTube publish error: %s", e)
-        results["platforms"]["youtube"] = {"status": "failed", "error": str(e)}
-
-    # 2. Meta (Instagram Reels & Facebook Pages)
-    ig_payload = platforms_payload.get("instagram", {})
-    ig_caption = ig_payload.get("caption") or description or f"{title}\n\n{tags}"
-    if ig_payload.get("hashtags") and not any(h in ig_caption for h in ig_payload.get("hashtags", [])):
-        ig_caption += "\n\n" + " ".join(ig_payload.get("hashtags", []))
-
-    try:
-        meta_res = await publish_to_meta(
-            video_path=video_path,
-            caption=ig_caption,
-            niche=niche,
-            user_id=user_id
-        )
-        ig_result = meta_res.get("instagram", {})
-        if ig_result.get("status") == "success":
-            media_id = ig_result.get("id")
-            link = ig_result.get("link") or (f"https://www.instagram.com/p/{media_id}/" if media_id else "Uploaded successfully")
-            results["platforms"]["instagram"] = {"status": "success", "media_id": media_id, "link": link, "url": link}
-        elif ig_result.get("status") not in ("skipped", None):
-            results["platforms"]["instagram"] = {"status": "failed", "response": ig_result}
-
-        fb_result = meta_res.get("facebook", {})
-        if fb_result.get("status") == "success":
-            fb_link = fb_result.get("link") or fb_result.get("url") or "Uploaded successfully"
-            results["platforms"]["facebook"] = {"status": "success", "link": fb_link, "url": fb_link}
-        elif fb_result.get("status") not in ("skipped", "disabled/skipped", None):
-            results["platforms"]["facebook"] = {"status": "failed", "response": fb_result}
-    except Exception as e:
-        logger.error("❌ Meta publish error: %s", e)
-        results["platforms"]["instagram"] = {"status": "failed", "error": str(e)}
-
-    # 3. Make.com Universal Social Dispatch (Optional Webhook Broadcast)
     if is_make_configured():
-        logger.info("📡 Dispatching universal social broadcasting to Make.com Webhook...")
+        logger.info("📡 [PRIMARY GATEWAY] Attempting universal social broadcast via Make.com Webhook...")
         make_res = publish_to_make(
             media_path=video_path,
             title=title,
@@ -402,16 +353,82 @@ async def run_phase4_publishing_async(
         )
 
         if make_res.get("status") == "success":
+            make_success = True
             results["platforms"]["make"] = {
                 "status": "success",
                 "url": make_res.get("media_url"),
-                "message": "Broadcasted successfully to Make.com Webhook pipeline!"
+                "message": "Broadcasted successfully via Make.com Webhook pipeline!"
             }
+            logger.info("✅ [PRIMARY GATEWAY SUCCESS] Make.com broadcast completed successfully!")
         else:
+            logger.warning("⚠️ [PRIMARY GATEWAY FAILED] Make.com broadcast failed (%s). Activating local failover uploaders...", make_res.get("error"))
             results["platforms"]["make"] = {
-                "status": "failed",
+                "status": "fallback_triggered",
                 "error": make_res.get("error", "Unknown Make.com error")
             }
+    else:
+        results["platforms"]["make"] = {
+            "status": "skipped",
+            "message": "MAKE_WEBHOOK_URL not configured. Using local direct uploaders."
+        }
+
+    # ── Fallback Execution (or Direct Publishing) ─────────────────────────────
+    # If Make.com succeeded, all social platforms are handled.
+    # If Make.com was NOT configured OR failed, trigger local YouTube & Meta uploaders!
+    if not make_success:
+        logger.info("🔄 [LOCAL FAILOVER PIPELINE] Executing direct YouTube & Meta uploaders...")
+
+        # 1. YouTube Shorts (Direct Python Data API)
+        yt_payload = platforms_payload.get("youtube", {})
+        yt_title = yt_payload.get("title") or title
+        yt_desc = yt_payload.get("description") or description or f"{title}\n\n{tags}"
+        yt_tags = " ".join(yt_payload.get("hashtags", [])) if yt_payload.get("hashtags") else tags
+
+        try:
+            yt_res = await publish_to_youtube(
+                video_path=video_path,
+                title=yt_title,
+                description=yt_desc,
+                tags=yt_tags,
+                niche=niche,
+                user_id=user_id
+            )
+            if yt_res.get("status") != "skipped":
+                results["platforms"]["youtube"] = yt_res
+        except Exception as e:
+            logger.error("❌ YouTube publish error: %s", e)
+            results["platforms"]["youtube"] = {"status": "failed", "error": str(e)}
+
+        # 2. Meta (Instagram Reels & Facebook Pages)
+        ig_payload = platforms_payload.get("instagram", {})
+        ig_caption = ig_payload.get("caption") or description or f"{title}\n\n{tags}"
+        if ig_payload.get("hashtags") and not any(h in ig_caption for h in ig_payload.get("hashtags", [])):
+            ig_caption += "\n\n" + " ".join(ig_payload.get("hashtags", []))
+
+        try:
+            meta_res = await publish_to_meta(
+                video_path=video_path,
+                caption=ig_caption,
+                niche=niche,
+                user_id=user_id
+            )
+            ig_result = meta_res.get("instagram", {})
+            if ig_result.get("status") == "success":
+                media_id = ig_result.get("id")
+                link = ig_result.get("link") or (f"https://www.instagram.com/p/{media_id}/" if media_id else "Uploaded successfully")
+                results["platforms"]["instagram"] = {"status": "success", "media_id": media_id, "link": link, "url": link}
+            elif ig_result.get("status") not in ("skipped", None):
+                results["platforms"]["instagram"] = {"status": "failed", "response": ig_result}
+
+            fb_result = meta_res.get("facebook", {})
+            if fb_result.get("status") == "success":
+                fb_link = fb_result.get("link") or fb_result.get("url") or "Uploaded successfully"
+                results["platforms"]["facebook"] = {"status": "success", "link": fb_link, "url": fb_link}
+            elif fb_result.get("status") not in ("skipped", "disabled/skipped", None):
+                results["platforms"]["facebook"] = {"status": "failed", "response": fb_result}
+        except Exception as e:
+            logger.error("❌ Meta publish error: %s", e)
+            results["platforms"]["instagram"] = {"status": "failed", "error": str(e)}
 
     # 4. Telegram Channel Broadcasting
     tg_payload = platforms_payload.get("telegram", {})

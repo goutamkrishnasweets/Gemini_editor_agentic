@@ -3801,6 +3801,112 @@ def start_telegram_bot_service():
             else:
                 await update.message.reply_text(f"⚠️ Error updating YouTube endpoint: {msg}")
 
+        async def _cmd_connectmeta(update, context):
+            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            from Telegram_Storage_Modules.telegram_user_manager import is_admin_user, _persist_env_var_to_disk
+            if not is_admin_user(uid):
+                logger.warning(f"🛡️ [SECURITY GUARD] Unauthorized attempt to /connectmeta by User {uid}")
+                await update.message.reply_text("⛔ **Access Denied:** Only administrators can configure platform credentials.")
+                return
+
+            from Publishing_Modules.meta_uploader import (
+                build_meta_oauth_url,
+                exchange_meta_oauth_code,
+                save_and_sync_meta_credentials,
+            )
+
+            raw_args = " ".join(context.args).strip() if context.args else ""
+            parts = raw_args.split()
+
+            # Case 1: User pasted callback code or full redirected URL (e.g. /connectmeta code AQD... or /connectmeta https://...)
+            if parts and (parts[0].lower() in ("code", "auth") or "code=" in raw_args or raw_args.startswith("http")):
+                code_to_exchange = parts[1] if parts[0].lower() in ("code", "auth") and len(parts) > 1 else raw_args
+                app_id = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+                app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
+
+                if not app_id or not app_secret:
+                    await update.message.reply_text(
+                        "⚠️ **App ID or Secret Missing:** Please run `/connectmeta <APP_ID> <APP_SECRET>` first."
+                    )
+                    return
+
+                status_msg = await update.message.reply_text("⏳ *Exchanging code & discovering your Facebook Pages and Instagram accounts...*")
+                redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
+                res = await asyncio.to_thread(
+                    exchange_meta_oauth_code,
+                    code=code_to_exchange,
+                    app_id=app_id,
+                    app_secret=app_secret,
+                    redirect_uri=redirect_uri
+                )
+
+                if res.get("success"):
+                    ok, sync_msg = save_and_sync_meta_credentials(res, user_id_str=uid)
+                    pages = res.get("pages", [])
+                    details = "\n".join([f"• **{p.get('page_name')}** (IG: @{p.get('instagram_username', 'none')})" for p in pages])
+                    await status_msg.edit_text(
+                        f"🎉 **Meta & Instagram Connected Successfully!**\n\n"
+                        f"{details}\n\n"
+                        f"✅ **Page ID & Token:** Auto-saved\n"
+                        f"✅ **IG Business ID & Token:** Auto-saved\n"
+                        f"✅ **GitHub Secrets:** Synced\n\n"
+                        f"*(Ready for 1-click publishing!)*"
+                    )
+                else:
+                    await status_msg.edit_text(f"❌ **Connection Failed:** {res.get('error')}")
+                return
+
+            # Case 2: User supplied App ID and App Secret (e.g. /connectmeta 123456 abcdef...)
+            if len(parts) >= 2:
+                app_id = parts[0].strip()
+                app_secret = parts[1].strip()
+                os.environ["META_APP_ID"] = app_id
+                os.environ["META_APP_SECRET"] = app_secret
+                _persist_env_var_to_disk("META_APP_ID", app_id)
+                _persist_env_var_to_disk("META_APP_SECRET", app_secret)
+
+                redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
+                oauth_url = build_meta_oauth_url(app_id=app_id, redirect_uri=redirect_uri)
+
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Tap to Authorize Meta & Instagram", url=oauth_url)]])
+
+                await update.message.reply_text(
+                    f"⚡ **Meta 1-Click Authorization Ready!**\n\n"
+                    f"1. Tap the button below to log in and approve permissions once.\n"
+                    f"2. When redirected, copy the redirected URL or `code`.\n"
+                    f"3. Send it back here as:\n`/connectmeta code YOUR_CODE`\n\n"
+                    f"*(Or on your desktop, run `python scripts/auth_meta.py` for 100% automatic browser redirect!)*",
+                    reply_markup=kbd
+                )
+                return
+
+            # Case 3: No args provided — check if App ID/Secret already stored
+            stored_id = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+            stored_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
+
+            if stored_id and stored_secret:
+                redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
+                oauth_url = build_meta_oauth_url(app_id=stored_id, redirect_uri=redirect_uri)
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Tap to Authorize Meta & Instagram", url=oauth_url)]])
+
+                await update.message.reply_text(
+                    f"⚡ **Meta 1-Click Authorization Link**\n\n"
+                    f"• **App ID:** `{stored_id}`\n\n"
+                    f"Tap below to approve publishing permissions with 1 click, then send the code back:\n"
+                    f"`/connectmeta code YOUR_CODE`",
+                    reply_markup=kbd
+                )
+            else:
+                await update.message.reply_text(
+                    "📌 **Meta 1-Click Connect Setup**\n\n"
+                    "Connect your Facebook Page & Instagram Business account without manual Graph API clicking:\n\n"
+                    "👉 **Usage:**\n"
+                    "`/connectmeta <APP_ID> <APP_SECRET>`\n\n"
+                    "*(Or run `python scripts/auth_meta.py` on your machine for zero-copy automatic browser auth!)*"
+                )
+
         async def _cmd_setautoscraplimit(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             if not args_text:
@@ -3928,6 +4034,8 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setmetaversion", _cmd_updatemetaendpoints))
         app.add_handler(CommandHandler("updateyoutubeendpoints", _cmd_updateyoutubeendpoints))
         app.add_handler(CommandHandler("setyoutubeversion", _cmd_updateyoutubeendpoints))
+        app.add_handler(CommandHandler("connectmeta", _cmd_connectmeta))
+        app.add_handler(CommandHandler("authmeta", _cmd_connectmeta))
         app.add_handler(CommandHandler("myconfig", _cmd_myconfig))
         app.add_handler(CommandHandler("reject", _cmd_reject))
         app.add_handler(CommandHandler("rejet", _cmd_reject))

@@ -11,13 +11,23 @@ Unit tests verifying:
 
 import os
 import sys
+import asyncio
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 # Ensure repo root is on sys.path
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+
+def _run_coro(coro):
+    """Executes a coroutine safely without requiring OS-level network loopback sockets."""
+    try:
+        coro.send(None)
+    except StopIteration as e:
+        return e.value
+    raise RuntimeError("Coroutine did not complete synchronously")
 
 
 class TestEndpointVersioning(unittest.TestCase):
@@ -96,13 +106,14 @@ class TestEndpointVersioning(unittest.TestCase):
         self.assertEqual(get_youtube_api_version(), "v3")
 
         # Gemini recommendation query returns valid schema even on fallback
-        meta_rec = query_gemini_recommended_endpoint_version("meta")
-        self.assertIn("version", meta_rec)
-        self.assertTrue(meta_rec["version"].startswith("v"))
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}):
+            meta_rec = query_gemini_recommended_endpoint_version("meta")
+            self.assertIn("version", meta_rec)
+            self.assertTrue(meta_rec["version"].startswith("v"))
 
-        yt_rec = query_gemini_recommended_endpoint_version("youtube")
-        self.assertIn("version", yt_rec)
-        self.assertTrue(yt_rec["version"].startswith("v"))
+            yt_rec = query_gemini_recommended_endpoint_version("youtube")
+            self.assertIn("version", yt_rec)
+            self.assertTrue(yt_rec["version"].startswith("v"))
 
         # Admin summary contains endpoint section
         with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=True):
@@ -126,6 +137,49 @@ class TestEndpointVersioning(unittest.TestCase):
         self.assertTrue(hasattr(Publishing_Modules, "get_meta_graph_version"))
         self.assertTrue(hasattr(Publishing_Modules, "get_youtube_api_version"))
 
+    def test_meta_oauth_url_builder(self):
+        from Publishing_Modules.meta_uploader import build_meta_oauth_url
+        url = build_meta_oauth_url(app_id="123456789", redirect_uri="http://localhost:8080/callback")
+        self.assertIn("client_id=123456789", url)
+        self.assertIn("redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcallback", url)
+        self.assertIn("scope=instagram_basic", url)
+        self.assertIn("instagram_content_publish", url)
+        self.assertIn("pages_manage_posts", url)
+
+    def test_waterfall_primary_success(self):
+        import Publishing_Modules.media_publisher_main as mpm
+        with patch.object(mpm, "is_make_configured", return_value=True), \
+             patch.object(mpm, "publish_to_make", return_value={"status": "success", "media_url": "https://example.com/v.mp4"}), \
+             patch.object(mpm, "publish_to_youtube", new_callable=AsyncMock) as mock_yt, \
+             patch.object(mpm, "publish_to_meta", new_callable=AsyncMock) as mock_meta, \
+             patch.object(mpm, "publish_to_telegram", new_callable=AsyncMock) as mock_tg:
+            
+            mock_tg.return_value = {"status": "success"}
+            res = _run_coro(mpm.run_phase4_publishing_async(video_path=__file__, title="Test Title"))
+            self.assertTrue(res["success"])
+            self.assertEqual(res["platforms"]["make"]["status"], "success")
+            mock_yt.assert_not_called()
+            mock_meta.assert_not_called()
+
+    def test_waterfall_failover_to_local(self):
+        import Publishing_Modules.media_publisher_main as mpm
+        with patch.object(mpm, "is_make_configured", return_value=True), \
+             patch.object(mpm, "publish_to_make", return_value={"status": "failed", "error": "HTTP 410 Gone"}), \
+             patch.object(mpm, "publish_to_youtube", new_callable=AsyncMock) as mock_yt, \
+             patch.object(mpm, "publish_to_meta", new_callable=AsyncMock) as mock_meta, \
+             patch.object(mpm, "publish_to_telegram", new_callable=AsyncMock) as mock_tg:
+            
+            mock_yt.return_value = {"status": "success", "video_id": "yt_123"}
+            mock_meta.return_value = {"instagram": {"status": "success", "id": "ig_456"}}
+            mock_tg.return_value = {"status": "success"}
+
+            res = _run_coro(mpm.run_phase4_publishing_async(video_path=__file__, title="Test Title"))
+            self.assertTrue(res["success"])
+            self.assertEqual(res["platforms"]["make"]["status"], "fallback_triggered")
+            mock_yt.assert_called_once()
+            mock_meta.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
