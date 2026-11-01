@@ -3771,7 +3771,9 @@ def start_telegram_bot_service():
                 if not app_id or not app_secret:
                     if is_admin_user(uid):
                         await update.message.reply_text(
-                            "⚠️ **App ID or Secret Missing:** Please run `/setmetaapp <APP_ID> <APP_SECRET>` first."
+                            "⚠️ **App ID or Secret Missing:** Please configure:\n"
+                            "• `/setmetaappid <YOUR_APP_ID>`\n"
+                            "• `/setmetaappsecret <YOUR_APP_SECRET>`"
                         )
                     else:
                         await update.message.reply_text(
@@ -3805,7 +3807,7 @@ def start_telegram_bot_service():
                     await status_msg.edit_text(f"❌ **Connection Failed:** {res.get('error')}")
                 return
 
-            # Case 2: Admin supplied App ID and App Secret (e.g. /connectmeta 123456 abcdef...)
+            # Case 2: User supplied args (e.g. /connectmeta 123456 abcdef...)
             if len(parts) >= 2:
                 if not is_admin_user(uid):
                     await update.message.reply_text(
@@ -3813,24 +3815,10 @@ def start_telegram_bot_service():
                     )
                     return
 
-                app_id = parts[0].strip()
-                app_secret = parts[1].strip()
-                from Telegram_Storage_Modules.telegram_user_manager import set_user_meta_app
-                set_user_meta_app(uid, app_id, app_secret)
-
-                redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
-                oauth_url = build_meta_oauth_url(app_id=app_id, redirect_uri=redirect_uri)
-
-                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Tap to Authorize Meta & Instagram", url=oauth_url)]])
-
                 await update.message.reply_text(
-                    f"⚡ **Meta 1-Click Authorization Ready!**\n\n"
-                    f"1. Tap the button below to log in and approve permissions once.\n"
-                    f"2. When redirected, copy the redirected URL or `code`.\n"
-                    f"3. Send it back here as:\n`/connectmeta code YOUR_CODE`\n\n"
-                    f"*(Or on your desktop, run `python scripts/auth_meta.py` for 100% automatic browser redirect!)*",
-                    reply_markup=kbd
+                    "💡 **Please use the semantic commands to set credentials clearly:**\n\n"
+                    f"1️⃣ `/setmetaappid {parts[0].strip()}`\n"
+                    f"2️⃣ `/setmetaappsecret {parts[1].strip()}`"
                 )
                 return
 
@@ -3855,63 +3843,19 @@ def start_telegram_bot_service():
                     await update.message.reply_text(
                         "📌 **Meta 1-Click Connect Setup (Admin)**\n\n"
                         "To enable 1-click Instagram/Facebook connection, configure your Meta Developer App:\n\n"
-                        "👉 **Option 1 (Fast - Single Command):**\n"
-                        "`/setmetaapp <APP_ID> <APP_SECRET>`\n"
-                        "*(Or `/connectmeta <APP_ID> <APP_SECRET>`)*\n\n"
-                        "👉 **Option 2 (Semantic - Step-by-Step):**\n"
-                        "• `/setmetaappid <APP_ID>`\n"
-                        "• `/setmetaappsecret <APP_SECRET>`\n\n"
-                        "*(Or run `python scripts/auth_meta.py` on your machine for zero-copy automatic browser auth!)*"
+                        "👉 **Step 1:** `/setmetaappid <YOUR_APP_ID>`\n"
+                        "👉 **Step 2:** `/setmetaappsecret <YOUR_APP_SECRET>`\n\n"
+                        "💡 *Once both are configured, run `/connectmeta` to generate your 1-click authorization link!*"
                     )
                 else:
                     await update.message.reply_text(
                         "⚠️ **Meta 1-Click Connection Not Ready**\n\n"
                         "The platform administrator has not configured the Meta Developer App yet.\n"
-                        "Please ask the admin to run `/setmetaapp`.\n\n"
+                        "Please ask the admin to configure the Meta app integration.\n\n"
                         "💡 *You can still configure manual tokens if you have them:*\n"
                         "• `/instagramtoken <YOUR_TOKEN>`\n"
                         "• `/instagramid <YOUR_BUSINESS_ID>`"
                     )
-
-        async def _cmd_setmetaapp(update, context):
-            uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
-            from Telegram_Storage_Modules.telegram_user_manager import is_admin_user, set_user_meta_app
-            if not is_admin_user(uid):
-                await update.message.reply_text("⛔ **Access Denied:** Only administrators can configure Meta App credentials.")
-                return
-
-            args = context.args or []
-            if len(args) < 2:
-                await update.message.reply_text(
-                    "📱 **Set Meta App ID & App Secret via Chat**\n\n"
-                    "👉 **Usage:**\n"
-                    "`/setmetaapp <APP_ID> <APP_SECRET>`\n\n"
-                    "*(Example: `/setmetaapp 1234567890 9876543210abcdef`)*\n\n"
-                    "💡 *After setting this, tap the link generated by `/connectmeta` to connect with 1 click!*"
-                )
-                return
-
-            app_id = args[0].strip()
-            app_secret = args[1].strip()
-            ok = set_user_meta_app(uid, app_id, app_secret)
-            if ok:
-                from Publishing_Modules.meta_uploader import build_meta_oauth_url
-                redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
-                oauth_url = build_meta_oauth_url(app_id=app_id, redirect_uri=redirect_uri)
-                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 1-Click Connect Meta & Instagram", url=oauth_url)]])
-                await update.message.reply_text(
-                    f"✅ **Meta App Credentials Saved & Synced!**\n\n"
-                    f"• **App ID:** `{app_id}`\n"
-                    f"• **App Secret:** `••••••••••••`\n"
-                    f"• **Persistence:** Local `.env` + GitHub Secrets\n\n"
-                    f"👉 **Next Step:** Tap the button below to authorize with 1 click on Facebook, then send back:\n"
-                    f"`/connectmeta code YOUR_CODE`\n\n"
-                    f"*(Or run `python scripts/auth_meta.py` locally for 100% automated browser redirect!)*",
-                    reply_markup=kbd
-                )
-            else:
-                await update.message.reply_text("⚠️ Failed to save Meta App credentials.")
 
         async def _cmd_setmetaappid(update, context):
             uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
@@ -3925,7 +3869,27 @@ def start_telegram_bot_service():
                 return
             ok = set_user_meta_app_id(uid, args_text)
             if ok:
-                await update.message.reply_text(f"✅ **Meta App ID updated to:** `{args_text}`\nSynced to `.env` & GitHub Secrets.")
+                stored_sec = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
+                if stored_sec:
+                    from Publishing_Modules.meta_uploader import build_meta_oauth_url
+                    redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
+                    oauth_url = build_meta_oauth_url(app_id=args_text, redirect_uri=redirect_uri)
+                    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                    kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 1-Click Connect Meta & Instagram", url=oauth_url)]])
+                    await update.message.reply_text(
+                        f"✅ **Meta App ID Saved!** (`{args_text}`)\n"
+                        f"🎉 Both App ID & App Secret are now configured!\n\n"
+                        f"👉 Tap below to authorize with 1 click, then send back:\n"
+                        f"`/connectmeta code YOUR_CODE`",
+                        reply_markup=kbd
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"✅ **Meta App ID Saved!** (`{args_text}`)\n"
+                        f"Synced to `.env` & GitHub Secrets.\n\n"
+                        f"👉 **Next Step:** Set your Meta App Secret:\n"
+                        f"`/setmetaappsecret <YOUR_META_APP_SECRET>`"
+                    )
             else:
                 await update.message.reply_text("⚠️ Error saving Meta App ID.")
 
@@ -3941,7 +3905,26 @@ def start_telegram_bot_service():
                 return
             ok = set_user_meta_app_secret(uid, args_text)
             if ok:
-                await update.message.reply_text("✅ **Meta App Secret Saved & Synced to `.env` and GitHub Secrets!**")
+                stored_id = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+                if stored_id:
+                    from Publishing_Modules.meta_uploader import build_meta_oauth_url
+                    redirect_uri = os.getenv("META_REDIRECT_URI", "https://localhost:8080/callback")
+                    oauth_url = build_meta_oauth_url(app_id=stored_id, redirect_uri=redirect_uri)
+                    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                    kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 1-Click Connect Meta & Instagram", url=oauth_url)]])
+                    await update.message.reply_text(
+                        "✅ **Meta App Secret Saved & Synced!**\n"
+                        "🎉 Both App ID & App Secret are now configured!\n\n"
+                        "👉 Tap below to authorize with 1 click, then send back:\n"
+                        "`/connectmeta code YOUR_CODE`",
+                        reply_markup=kbd
+                    )
+                else:
+                    await update.message.reply_text(
+                        "✅ **Meta App Secret Saved & Synced!**\n\n"
+                        "👉 **Next Step:** Set your Meta App ID:\n"
+                        "`/setmetaappid <YOUR_META_APP_ID>`"
+                    )
             else:
                 await update.message.reply_text("⚠️ Error saving Meta App Secret.")
 
@@ -4074,7 +4057,6 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setyoutubeversion", _cmd_updateyoutubeendpoints))
         app.add_handler(CommandHandler("connectmeta", _cmd_connectmeta))
         app.add_handler(CommandHandler("authmeta", _cmd_connectmeta))
-        app.add_handler(CommandHandler("setmetaapp", _cmd_setmetaapp))
         app.add_handler(CommandHandler("setmetaappid", _cmd_setmetaappid))
         app.add_handler(CommandHandler("setmetaappsecret", _cmd_setmetaappsecret))
         app.add_handler(CommandHandler("myconfig", _cmd_myconfig))

@@ -815,7 +815,7 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         f"📘 **Facebook Page ID:** `{_val('meta_page_id', 'META_PAGE_ID')}`",
         "   👉 Command: `/facebookid YOUR_PAGE_ID`\n",
         f"⚡ **Meta 1-Click OAuth Status:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
-        "   👉 Command: `/connectmeta` or `/setmetaapp <APP_ID> <APP_SECRET>`\n",
+        "   👉 Command: `/connectmeta`\n",
         f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json', 'TOKEN_JSON')}`",
         "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
         f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
@@ -829,7 +829,7 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         lines.extend([
             "👑 **Admin API & App Settings (Configurable via Chat or Secrets):**",
             f"📱 **Meta App ID:** `{_val('meta_app_id', 'META_APP_ID')}`",
-            "   👉 Command: `/setmetaapp <APP_ID> <APP_SECRET>` or `/connectmeta`\n",
+            "   👉 Commands: `/setmetaappid <APP_ID>` and `/setmetaappsecret <APP_SECRET>`\n",
             f"⚡ **Meta Graph API Version:** `{meta_ver}`",
             "   👉 Command: `/updatemetaendpoints <version>` (e.g. `/updatemetaendpoints v21.0` or `/updatemetaendpoints auto`)\n",
             f"🎬 **YouTube API Version:** `{yt_ver}`",

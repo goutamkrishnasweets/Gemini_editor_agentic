@@ -121,7 +121,8 @@ class TestEndpointVersioning(unittest.TestCase):
             self.assertIn("/updatemetaendpoints", summary)
             self.assertIn("/updateyoutubeendpoints", summary)
             self.assertIn("Meta Graph API Version", summary)
-            self.assertIn("/setmetaapp", summary)
+            self.assertIn("/setmetaappid", summary)
+            self.assertIn("/setmetaappsecret", summary)
 
         # Meta app setter functions
         from Telegram_Storage_Modules.telegram_user_manager import set_user_meta_app, set_user_meta_app_id, set_user_meta_app_secret
