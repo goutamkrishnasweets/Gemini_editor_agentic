@@ -1,55 +1,15 @@
-# Phase 4 — Standalone Multi-Platform Media Publisher (`media_publisher_main.py`)
+# Phase 4 Media Publisher (`media_publisher_main.py`)
 
-## 📌 Module Purpose
-`media_publisher_main.py` serves as the centralized **Phase 4 Broadcasting Orchestrator** in the master pipeline. It connects all platform uploaders into a single, unified execution flow triggered immediately when a user approves a reel title or taps *'Post Immediately'*.
+`media_publisher_main.py` is the **Phase 4 Multi-Platform Broadcasting Orchestrator**.
 
----
-
-## 🏗️ Architecture & Platform Flow
-
-```
-                              [ User Approves Title ]
-                                         │
-                                         ▼
-                     ┌──────────────────────────────────────┐
-                     │ run_phase4_publishing(video, title)  │
-                     └──────────────────┬───────────────────┘
-                                        │
-        ┌───────────────────────────────┼───────────────────────────────┐
-        │                               │                               │
-        ▼                               ▼                               ▼
-┌──────────────┐                ┌──────────────┐                ┌──────────────┐
-│  Platform 1  │                │  Platform 2  │                │  Platform 3  │
-│YouTube Shorts│ ─────────────► │Instagram Reel│ ─────────────► │TikTok Creator│
-│(uploader.py) │                │(meta_uploader)│               │(tiktok_upload)│
-└──────────────┘                └──────────────┘                └──────────────┘
-                                                                        │
-                                                                        ▼
-                                                                ┌──────────────┐
-                                                                │  Platform 4  │
-                                                                │ Telegram Bot │
-                                                                └──────────────┘
-```
+It is invoked automatically when a user clicks **[Approve]** or replies with a custom title in Telegram.
 
 ---
 
-## ⚙️ Function Call Signatures
+## Workflow
 
-### 1. `run_phase4_publishing(...)`
-```python
-def run_phase4_publishing(
-    video_path: str,
-    title: str,
-    description: str = "",
-    tags: str = "#viral #shorts #trending",
-    niche: Optional[str] = None
-) -> Dict[str, Any]
-```
-- **Inputs**: Absolute video path, approved video title, optional description, hashtags, and niche target.
-- **Returns**: Execution summary dictionary containing per-platform status (`success`, `skipped`, `failed`).
-
----
-
-## 🛡️ Fallback & Safety Rules
-- **Missing Credentials**: If credentials for YouTube, Instagram, or TikTok are not yet configured in `.env` / `Credentials/`, the module logs a warning and marks that specific platform as `skipped` without crashing the rest of the pipeline.
-- **Sequential Safety**: Platforms execute in order (YouTube -> Instagram -> TikTok -> Telegram) so real-time status reporting can update the user as each broadcast completes.
+1. Receives rendered master reel and SEO data from `platform_seo_generator.py`.
+2. Dispatches broadcasting directly to **Postiz** (`postiz_publisher.publish_to_postiz`).
+   - Postiz handles YouTube Shorts, Instagram Reels, TikTok, and Facebook.
+3. Broadcasts video to configured Telegram Public Channel (`publish_to_telegram`).
+4. Sends real-time status and live post links back to the user's Telegram chat window.

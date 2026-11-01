@@ -1,11 +1,20 @@
 # Publishing_Modules package init
-# Thin compatibility shim: export the local queue implementation for the
-# sample tree so the launcher can boot cleanly without the removed legacy
-# Content_Harvester package.
+# Postiz Publishing Gateway & Modern PublishQueue
 
-from .queue_publisher import PublishQueue, start_publish_scheduler
+from .postiz_publisher import (
+    publish_to_postiz,
+    upload_video_to_postiz,
+    get_active_integrations,
+    is_postiz_configured,
+    PublishQueue,
+    start_publish_scheduler,
+)
 
 __all__ = [
+    "publish_to_postiz",
+    "upload_video_to_postiz",
+    "get_active_integrations",
+    "is_postiz_configured",
     "PublishQueue",
     "start_publish_scheduler",
 ]

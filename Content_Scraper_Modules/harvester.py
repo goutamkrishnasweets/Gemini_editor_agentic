@@ -35,7 +35,7 @@ try:
     from Downloader_Modules.apify_downloader import apify_scrape_actress_accounts
     from Downloader_Modules.downloader import download_video
     from Content_Scraper_Modules.content_ledger import get_ledger
-    from Publishing_Modules.queue_publisher import PublishQueue
+    from Publishing_Modules.postiz_publisher import PublishQueue
 except ImportError:
     pass
 
@@ -222,7 +222,7 @@ def _run_harvest_cycle() -> int:
     os.makedirs(downloads_dir, exist_ok=True)
 
     try:
-        from Publishing_Modules.queue_publisher import PublishQueue
+        from Publishing_Modules.postiz_publisher import PublishQueue
     except ImportError:
         PublishQueue = None
 

@@ -123,6 +123,9 @@ jobs:
         TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID || vars.TELEGRAM_API_ID }}
         TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH || vars.TELEGRAM_API_HASH }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
+        POSTIZ_URL: ${{ secrets.POSTIZ_URL || vars.POSTIZ_URL }}
+        POSTIZ_API_KEY: ${{ secrets.POSTIZ_API_KEY }}
+        POSTIZ_CHANNELS: ${{ secrets.POSTIZ_CHANNELS || vars.POSTIZ_CHANNELS || 'all' }}
         APIFY_TOKEN: ${{ secrets.APIFY_TOKEN || secrets.APIFY_API_TOKEN }}
         CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
         TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
@@ -231,6 +234,9 @@ jobs:
         TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID || vars.TELEGRAM_API_ID }}
         TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH || vars.TELEGRAM_API_HASH }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
+        POSTIZ_URL: ${{ secrets.POSTIZ_URL || vars.POSTIZ_URL }}
+        POSTIZ_API_KEY: ${{ secrets.POSTIZ_API_KEY }}
+        POSTIZ_CHANNELS: ${{ secrets.POSTIZ_CHANNELS || vars.POSTIZ_CHANNELS || 'all' }}
         DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
         DISPATCH_PLATFORM: ${{ github.event.inputs.platform || 'all_available' }}
         DISPATCH_TARGET_ACCOUNTS: ${{ github.event.inputs.target_accounts || '' }}
