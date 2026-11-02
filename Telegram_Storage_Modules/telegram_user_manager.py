@@ -821,7 +821,7 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
         f"🌐 **Make.com Webhook URL:** `{_chk('make_webhook_url', 'MAKE_WEBHOOK_URL')}`",
-        "   👉 Command: `/setwebhook https://hook.eu2.make.com/...` (Guide: `/makeguide`)\n",
+        "   👉 Command: `/setwebhook <URL>` (Guide: `/setwebhook guide` or `/guide make`)\n",
     ]
     if is_admin:
         meta_ver = get_meta_graph_api_version()

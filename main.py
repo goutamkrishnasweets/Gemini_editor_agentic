@@ -3366,6 +3366,9 @@ def start_telegram_bot_service():
                         BotCommand("start", "Show welcome & platform selection menu"),
                         BotCommand("myconfig", "View your SaaS credential checklist & setup commands"),
                         BotCommand("autosetup", "Run interactive 6-step setup wizard"),
+                        BotCommand("guide", "Setup guides: /guide make, meta, yt"),
+                        BotCommand("setwebhook", "Set Make.com Webhook URL (or /setwebhook guide)"),
+                        BotCommand("connectmeta", "1-Click Meta (Instagram & FB) OAuth login"),
                         BotCommand("setgemini", "Set your Google Gemini API Key"),
                         BotCommand("setapify", "Set your Apify Scraper Token"),
                         BotCommand("setbranding", "Set your custom brand watermark text"),
@@ -3615,13 +3618,13 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
 
-        async def _cmd_makeguide(update, context):
-            await update.message.reply_text(
+        async def _send_make_guide(target_msg):
+            guide_text = (
                 "📚 **Make.com Social Publishing Setup Guide**\n\n"
                 "Publish approved reels to **Instagram Reels & Facebook Pages** automatically:\n\n"
                 "**1️⃣ Create Webhook in Make.com:**\n"
                 "• Go to Make.com → Webhooks → Add Webhook (name: `Gemini-Editor`).\n"
-                "• Copy URL and send: `/setmakewebhookurl <URL>`\n\n"
+                "• Copy URL and send: `/setwebhook <URL>`\n\n"
                 "**2️⃣ Build Scenario in Make.com:**\n"
                 "• Go to Scenarios → Create new scenario.\n"
                 "• Click `+` → Add **Webhooks** (select `Gemini-Editor`).\n\n"
@@ -3642,17 +3645,82 @@ def start_telegram_bot_service():
                 "• Click Save at the bottom, flip top-right switch to **Active**!\n\n"
                 "💡 *Full documentation with screenshots: `Publishing_Modules/MAKE_SOCIAL_SETUP_GUIDE.md`*"
             )
+            try:
+                await target_msg.reply_text(guide_text, parse_mode="Markdown")
+            except Exception:
+                await target_msg.reply_text(guide_text)
+
+        async def _send_meta_guide(target_msg):
+            guide_text = (
+                "⚡ **Meta 1-Click OAuth Setup Guide (Instagram & Facebook)**\n\n"
+                "Connect your Facebook Page & Instagram account in 1 click without manual tokens:\n\n"
+                "**1️⃣ Meta App Setup (Admin):**\n"
+                "• Set App ID: `/setmetaappid <APP_ID>`\n"
+                "• Set App Secret: `/setmetaappsecret <APP_SECRET>`\n\n"
+                "**2️⃣ 1-Click Login:**\n"
+                "• Send `/connectmeta` to receive your private authorization URL.\n"
+                "• Log into Facebook, select your Pages & Instagram accounts, and approve.\n\n"
+                "**3️⃣ Paste Redirect URL:**\n"
+                "• Copy the URL or code from the browser and send: `/connectmeta <URL_OR_CODE>`\n\n"
+                "✅ The bot automatically saves your Page ID, Instagram Business ID, and 60-day long token!"
+            )
+            try:
+                await target_msg.reply_text(guide_text, parse_mode="Markdown")
+            except Exception:
+                await target_msg.reply_text(guide_text)
+
+        async def _send_youtube_guide(target_msg):
+            guide_text = (
+                "🔴 **YouTube Shorts Setup Guide**\n\n"
+                "Publish approved reels directly to your YouTube Channel:\n\n"
+                "**1️⃣ Upload Client JSON:**\n"
+                "• Send: `/setytclient <PASTE_CLIENT_SECRET_JSON>`\n\n"
+                "**2️⃣ Authorize Account:**\n"
+                "• Open the Google OAuth login link returned by the bot.\n"
+                "• Copy the authorization code and send: `/ytcode <CODE>`\n\n"
+                "✅ YouTube Shorts publishing is active and authenticated!"
+            )
+            try:
+                await target_msg.reply_text(guide_text, parse_mode="Markdown")
+            except Exception:
+                await target_msg.reply_text(guide_text)
+
+        async def _cmd_guide(update, context):
+            sub = (context.args[0].lower().strip() if context.args else "") if context.args else ""
+            if sub in ("make", "makeguide", "webhook", "make.com"):
+                await _send_make_guide(update.message)
+            elif sub in ("meta", "instagram", "facebook", "fb", "ig"):
+                await _send_meta_guide(update.message)
+            elif sub in ("youtube", "yt"):
+                await _send_youtube_guide(update.message)
+            else:
+                await update.message.reply_text(
+                    "📚 **AMTCE Setup & Automation Guides**\n\n"
+                    "Select a topic below for step-by-step setup:\n\n"
+                    "• 🌐 **Make.com Social Publishing:** `/guide make` (or `/setwebhook guide`)\n"
+                    "• ⚡ **Meta 1-Click Login (IG & FB):** `/guide meta`\n"
+                    "• 🔴 **YouTube Shorts Setup:** `/guide youtube`\n\n"
+                    "💡 *Send any command above to open its full walkthrough.*"
+                )
+
+        async def _cmd_makeguide(update, context):
+            await _send_make_guide(update.message)
 
         async def _cmd_setmakewebhookurl(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
+            clean_arg = args_text.lower().strip()
+            if clean_arg in ("guide", "makeguide", "help", "setup", "tutorial"):
+                await _send_make_guide(update.message)
+                return
+
             if not args_text or not args_text.startswith(("http://", "https://")):
                 await update.message.reply_text(
                     "🌐 **Make.com Webhook Publisher Setup**\n\n"
-                    "👉 **Usage:**\n"
+                    "👉 **Save Webhook:**\n"
                     "`/setwebhook <URL>`\n"
                     "*(Example: `/setwebhook https://hook.us2.make.com/your-private-webhook`)*\n\n"
                     "📖 **Step-by-Step Scenario Guide:**\n"
-                    "Send `/makeguide` for the complete 5-step walkthrough on configuring Instagram Reels & Facebook Pages in Make.com!"
+                    "Send `/setwebhook guide` (or `/guide make`) for the complete 5-step walkthrough on configuring Instagram Reels & Facebook Pages in Make.com!"
                 )
                 return
             try:
@@ -4115,6 +4183,8 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("makeurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makeguide", _cmd_makeguide))
         app.add_handler(CommandHandler("makesetup", _cmd_makeguide))
+        app.add_handler(CommandHandler("guide", _cmd_guide))
+        app.add_handler(CommandHandler("guides", _cmd_guide))
         app.add_handler(CommandHandler("updatemetaendpoints", _cmd_updatemetaendpoints))
         app.add_handler(CommandHandler("setmetaversion", _cmd_updatemetaendpoints))
         app.add_handler(CommandHandler("updateyoutubeendpoints", _cmd_updateyoutubeendpoints))
