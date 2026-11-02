@@ -1966,32 +1966,32 @@ class AudioPoolManager:
                 logger.warning(f"⚠️ [POOL PURGE] Blacklist write failed (non-fatal): {_bl_err}")
             # ─────────────────────────────────────────────────────────────────────
 
-                if audio_sc:
-                    for url_key, entry in list(social_dict.items()):
-                        if not isinstance(entry, dict):
-                            continue
-                        sc_val = str(entry.get("shortcode", "")).lower()
-                        sm_val = str(entry.get("social_media_id", "")).lower()
-                        u_key_l = str(url_key).lower()
+            if audio_sc:
+                for url_key, entry in list(social_dict.items()):
+                    if not isinstance(entry, dict):
+                        continue
+                    sc_val = str(entry.get("shortcode", "")).lower()
+                    sm_val = str(entry.get("social_media_id", "")).lower()
+                    u_key_l = str(url_key).lower()
 
-                        if (
-                            (audio_sc and (audio_sc == sc_val or audio_sc in u_key_l or audio_sc in sm_val))
-                            or (audio_fname and audio_fname in u_key_l)
-                        ):
-                            # DELETE ENTIRE OBJECT for selected audio harvest source!
-                            del social_dict[url_key]
-                            purged_items.append(f"Audio source harvest section: {url_key}")
-                            logger.info(f"🗑️ [POOL PURGE] Completely deleted audio source harvest section: {url_key}")
+                    if (
+                        (audio_sc and (audio_sc == sc_val or audio_sc in u_key_l or audio_sc in sm_val))
+                        or (audio_fname and audio_fname in u_key_l)
+                    ):
+                        # DELETE ENTIRE OBJECT for selected audio harvest source!
+                        del social_dict[url_key]
+                        purged_items.append(f"Audio source harvest section: {url_key}")
+                        logger.info(f"🗑️ [POOL PURGE] Completely deleted audio source harvest section: {url_key}")
 
-                # 3. Purge audio track key from files_root
-                keys_to_del = [k for k in files_root if k != "social_media_id" and (
-                    k.lower() == audio_fname
-                    or (audio_sc and audio_sc in k.lower())
-                )]
-                for k in keys_to_del:
-                    del files_root[k]
-                    purged_items.append(f"Audio pool entry: {k}")
-                    logger.info(f"🗑️ [POOL PURGE] Completely deleted audio pool track entry: {k}")
+            # 3. Purge audio track key from files_root
+            keys_to_del = [k for k in files_root if k != "social_media_id" and (
+                k.lower() == audio_fname
+                or (audio_sc and audio_sc in k.lower())
+            )]
+            for k in keys_to_del:
+                del files_root[k]
+                purged_items.append(f"Audio pool entry: {k}")
+                logger.info(f"🗑️ [POOL PURGE] Completely deleted audio pool track entry: {k}")
 
             # 4. Purge from clips section
             clips_dict = self.metadata.get("clips", {})

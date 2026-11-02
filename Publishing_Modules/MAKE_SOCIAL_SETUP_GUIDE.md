@@ -33,9 +33,10 @@ Every time you approve a video in Telegram, AMTCE automatically sends the video 
 
 In your Telegram bot chat, send:
 ```text
-/setmakewebhookurl <PASTED_WEBHOOK_URL>
+/setwebhook <PASTED_WEBHOOK_URL>
 ```
-*(Example: `/setmakewebhookurl https://hook.us2.make.com/j2pdpbgrvnv2crgxxmkd34vvslg9vsa0`)*
+*(Example: `/setwebhook https://hook.us2.make.com/j2pdpbgrvnv2crgxxmkd34vvslg9vsa0`)*  
+*(Note: `/setmakewebhookurl` also works as an alias).*
 
 The bot will reply: `✅ Make.com Webhook URL Synced!`.
 

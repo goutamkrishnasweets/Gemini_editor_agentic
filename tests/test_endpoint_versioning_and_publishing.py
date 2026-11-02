@@ -125,17 +125,36 @@ class TestEndpointVersioning(unittest.TestCase):
             self.assertIn("/setmetaappsecret", summary)
 
         # Meta app setter functions
-        from Telegram_Storage_Modules.telegram_user_manager import set_user_meta_app, set_user_meta_app_id, set_user_meta_app_secret
+        from Telegram_Storage_Modules.telegram_user_manager import (
+            set_user_meta_app,
+            set_user_meta_app_id,
+            set_user_meta_app_secret,
+            get_user_meta_app_id,
+            get_user_meta_app_secret,
+        )
         with patch("Telegram_Storage_Modules.telegram_user_manager.sync_user_secret_to_github"):
-            self.assertTrue(set_user_meta_app("test_user_789", "app_123", "secret_456"))
-            self.assertEqual(os.environ.get("META_APP_ID"), "app_123")
-            self.assertEqual(os.environ.get("META_APP_SECRET"), "secret_456")
+            # When admin sets it, root os.environ is updated
+            with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=True):
+                self.assertTrue(set_user_meta_app("admin_test_123", "app_123", "secret_456"))
+                self.assertEqual(os.environ.get("META_APP_ID"), "app_123")
+                self.assertEqual(os.environ.get("META_APP_SECRET"), "secret_456")
 
-            self.assertTrue(set_user_meta_app_id("test_user_789", "app_999"))
-            self.assertEqual(os.environ.get("META_APP_ID"), "app_999")
+                self.assertTrue(set_user_meta_app_id("admin_test_123", "app_999"))
+                self.assertEqual(os.environ.get("META_APP_ID"), "app_999")
 
-            self.assertTrue(set_user_meta_app_secret("test_user_789", "secret_888"))
-            self.assertEqual(os.environ.get("META_APP_SECRET"), "secret_888")
+                self.assertTrue(set_user_meta_app_secret("admin_test_123", "secret_888"))
+                self.assertEqual(os.environ.get("META_APP_SECRET"), "secret_888")
+
+            # When non-admin sets it, root os.environ is NOT polluted, but user-specific getter returns it
+            with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=False):
+                os.environ.pop("META_APP_ID", None)
+                os.environ.pop("META_APP_SECRET", None)
+                self.assertTrue(set_user_meta_app("normal_user_456", "user_app_777", "user_secret_777"))
+                self.assertIsNone(os.environ.get("META_APP_ID"))
+                self.assertEqual(get_user_meta_app_id("normal_user_456"), "user_app_777")
+                self.assertEqual(get_user_meta_app_secret("normal_user_456"), "user_secret_777")
+                # Another non-admin user gets None (strict zero fallback to admin credentials)
+                self.assertIsNone(get_user_meta_app_id("unknown_user_999"))
 
         # Non-admin summary does NOT contain admin endpoint commands
         with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=False):

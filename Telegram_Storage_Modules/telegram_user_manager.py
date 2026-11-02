@@ -647,7 +647,7 @@ def set_user_facebook_token(user_id_str: str, fb_token: str) -> bool:
 
 
 def set_user_meta_app(user_id_str: str, app_id: str, app_secret: str) -> bool:
-    """Saves Meta App ID and Secret to memory, .env, json, and GitHub Secrets."""
+    """Saves Meta App ID and Secret. Admins update root .env; non-admins update user-prefixed env and json."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_id = app_id.strip()
@@ -657,14 +657,18 @@ def set_user_meta_app(user_id_str: str, app_id: str, app_secret: str) -> bool:
         u_rec["meta_app_id"] = clean_id
         u_rec["meta_app_secret"] = clean_sec
         save_all_users(users)
-        os.environ["META_APP_ID"] = clean_id
-        os.environ["FACEBOOK_APP_ID"] = clean_id
-        os.environ["META_APP_SECRET"] = clean_sec
-        os.environ["FACEBOOK_APP_SECRET"] = clean_sec
-        _persist_env_var_to_disk("META_APP_ID", clean_id)
-        _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
-        _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
-        _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
+        if _is_admin_user(user_id_str):
+            os.environ["META_APP_ID"] = clean_id
+            os.environ["FACEBOOK_APP_ID"] = clean_id
+            os.environ["META_APP_SECRET"] = clean_sec
+            os.environ["FACEBOOK_APP_SECRET"] = clean_sec
+            _persist_env_var_to_disk("META_APP_ID", clean_id)
+            _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
+            _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
+            _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
+        else:
+            os.environ[f"USER_{user_id_str}_META_APP_ID"] = clean_id
+            os.environ[f"USER_{user_id_str}_META_APP_SECRET"] = clean_sec
         sync_user_secret_to_github(user_id_str, "META_APP_ID", clean_id)
         sync_user_secret_to_github(user_id_str, "META_APP_SECRET", clean_sec)
         logger.info("🔑 [TELEGRAM USER MANAGER] Meta App ID & Secret saved for User ID %s", user_id_str)
@@ -673,7 +677,7 @@ def set_user_meta_app(user_id_str: str, app_id: str, app_secret: str) -> bool:
 
 
 def set_user_meta_app_id(user_id_str: str, app_id: str) -> bool:
-    """Saves Meta App ID for user and platform runtime."""
+    """Saves Meta App ID. Admins update root .env; non-admins update isolated personal record."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_id = app_id.strip()
@@ -681,18 +685,20 @@ def set_user_meta_app_id(user_id_str: str, app_id: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["meta_app_id"] = clean_id
         save_all_users(users)
-        os.environ["META_APP_ID"] = clean_id
-        os.environ["FACEBOOK_APP_ID"] = clean_id
-        os.environ[f"USER_{user_id_str}_META_APP_ID"] = clean_id
-        _persist_env_var_to_disk("META_APP_ID", clean_id)
-        _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
+        if _is_admin_user(user_id_str):
+            os.environ["META_APP_ID"] = clean_id
+            os.environ["FACEBOOK_APP_ID"] = clean_id
+            _persist_env_var_to_disk("META_APP_ID", clean_id)
+            _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
+        else:
+            os.environ[f"USER_{user_id_str}_META_APP_ID"] = clean_id
         sync_user_secret_to_github(user_id_str, "META_APP_ID", clean_id)
         return True
     return False
 
 
 def set_user_meta_app_secret(user_id_str: str, app_secret: str) -> bool:
-    """Saves Meta App Secret for user and platform runtime."""
+    """Saves Meta App Secret. Admins update root .env; non-admins update isolated personal record."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_sec = app_secret.strip()
@@ -700,14 +706,48 @@ def set_user_meta_app_secret(user_id_str: str, app_secret: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["meta_app_secret"] = clean_sec
         save_all_users(users)
-        os.environ["META_APP_SECRET"] = clean_sec
-        os.environ["FACEBOOK_APP_SECRET"] = clean_sec
-        os.environ[f"USER_{user_id_str}_META_APP_SECRET"] = clean_sec
-        _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
-        _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
+        if _is_admin_user(user_id_str):
+            os.environ["META_APP_SECRET"] = clean_sec
+            os.environ["FACEBOOK_APP_SECRET"] = clean_sec
+            _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
+            _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
+        else:
+            os.environ[f"USER_{user_id_str}_META_APP_SECRET"] = clean_sec
         sync_user_secret_to_github(user_id_str, "META_APP_SECRET", clean_sec)
         return True
     return False
+
+
+def get_user_meta_app_id(user_id_str: str) -> Optional[str]:
+    """Returns user personal Meta App ID. Non-admins NEVER inherit admin root app ID."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    if user_id_str in users:
+        val = users[user_id_str].get("meta_app_id", "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{user_id_str}_META_APP_ID", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(user_id_str):
+        return os.getenv("META_APP_ID", "").strip() or os.getenv("FACEBOOK_APP_ID", "").strip() or None
+    return None
+
+
+def get_user_meta_app_secret(user_id_str: str) -> Optional[str]:
+    """Returns user personal Meta App Secret. Non-admins NEVER inherit admin root app secret."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    if user_id_str in users:
+        val = users[user_id_str].get("meta_app_secret", "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{user_id_str}_META_APP_SECRET", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(user_id_str):
+        return os.getenv("META_APP_SECRET", "").strip() or os.getenv("FACEBOOK_APP_SECRET", "").strip() or None
+    return None
 
 
 def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
@@ -734,7 +774,11 @@ def set_user_make_webhook_url(user_id_str: str, webhook_url: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["make_webhook_url"] = clean_url
         save_all_users(users)
-        os.environ["MAKE_WEBHOOK_URL"] = clean_url
+        if _is_admin_user(user_id_str):
+            os.environ["MAKE_WEBHOOK_URL"] = clean_url
+            _persist_env_var_to_disk("MAKE_WEBHOOK_URL", clean_url)
+        else:
+            os.environ[f"USER_{user_id_str}_MAKE_WEBHOOK_URL"] = clean_url
         sync_user_secret_to_github(user_id_str, "MAKE_WEBHOOK_URL", clean_url)
         logger.info("🌐 [TELEGRAM USER MANAGER] Make.com Webhook URL saved for User ID %s", user_id_str)
         return True
@@ -816,6 +860,8 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/instagramid YOUR_BUSINESS_ID`\n",
         f"📘 **Facebook Page ID:** `{_val('meta_page_id', 'META_PAGE_ID')}`",
         "   👉 Command: `/facebookid YOUR_PAGE_ID`\n",
+        f"📱 **Meta App ID:** `{_val('meta_app_id', 'META_APP_ID')}`",
+        "   👉 Commands: `/setmetaappid <APP_ID>` and `/setmetaappsecret <APP_SECRET>`\n",
         f"⚡ **Meta 1-Click OAuth Status:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
         "   👉 Command: `/connectmeta`\n",
         f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json', 'TOKEN_JSON')}`",
@@ -829,9 +875,7 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         meta_ver = get_meta_graph_api_version()
         yt_ver = get_youtube_api_version()
         lines.extend([
-            "👑 **Admin API & App Settings (Configurable via Chat or Secrets):**",
-            f"📱 **Meta App ID:** `{_val('meta_app_id', 'META_APP_ID')}`",
-            "   👉 Commands: `/setmetaappid <APP_ID>` and `/setmetaappsecret <APP_SECRET>`\n",
+            "👑 **Admin API Global Versions:**",
             f"⚡ **Meta Graph API Version:** `{meta_ver}`",
             "   👉 Command: `/updatemetaendpoints <version>` (e.g. `/updatemetaendpoints v21.0` or `/updatemetaendpoints auto`)\n",
             f"🎬 **YouTube API Version:** `{yt_ver}`",

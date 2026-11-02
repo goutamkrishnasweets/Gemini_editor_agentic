@@ -45,8 +45,15 @@ if _REPO_ROOT not in sys.path:
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
 
 
-def is_make_configured() -> bool:
-    """Returns True if MAKE_WEBHOOK_URL is set in environment or secrets."""
+def is_make_configured(user_id: Optional[str] = None) -> bool:
+    """Returns True if user has Make.com configured. Non-admins NEVER inherit admin webhook."""
+    if user_id:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_make_webhook_url
+            url = get_user_make_webhook_url(str(user_id))
+            return bool(url and str(url).startswith("http"))
+        except Exception:
+            return False
     url = os.getenv("MAKE_WEBHOOK_URL", MAKE_WEBHOOK_URL).strip()
     return bool(url and url.startswith("http"))
 
@@ -340,11 +347,28 @@ def publish_to_make(
         "url": webhook_url
       }
     """
-    active_url = (webhook_url or os.getenv("MAKE_WEBHOOK_URL", MAKE_WEBHOOK_URL)).strip()
+    active_url = webhook_url
+    if not active_url and user_id:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_make_webhook_url
+            active_url = get_user_make_webhook_url(str(user_id))
+        except Exception:
+            active_url = None
+    if not active_url:
+        is_admin = True
+        if user_id:
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import _is_admin_user
+                is_admin = _is_admin_user(str(user_id))
+            except Exception:
+                is_admin = False
+        if is_admin:
+            active_url = (os.getenv("MAKE_WEBHOOK_URL", MAKE_WEBHOOK_URL) or "").strip()
+
     if not active_url:
         return {
             "status": "failed",
-            "error": "MAKE_WEBHOOK_URL is not set. Please add it to your .env or GitHub Secrets."
+            "error": "MAKE_WEBHOOK_URL is not configured for this account. Set with /setwebhook <URL>."
         }
 
     logger.info("📡 [MakePublisher] Constructing payload for Make.com dispatch...")

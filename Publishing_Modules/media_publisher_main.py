@@ -339,7 +339,7 @@ async def run_phase4_publishing_async(
     # Failover: Local direct uploaders (uploader.py & meta_uploader.py) if Make.com fails/disabled
     make_success = False
 
-    if is_make_configured():
+    if is_make_configured(user_id=user_id):
         logger.info("📡 [PRIMARY GATEWAY] Attempting universal social broadcast via Make.com Webhook...")
         make_res = publish_to_make(
             media_path=video_path,
