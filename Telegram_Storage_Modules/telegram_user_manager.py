@@ -673,7 +673,7 @@ def set_user_meta_app(user_id_str: str, app_id: str, app_secret: str) -> bool:
 
 
 def set_user_meta_app_id(user_id_str: str, app_id: str) -> bool:
-    """Saves Meta App ID."""
+    """Saves Meta App ID for user and platform runtime."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_id = app_id.strip()
@@ -683,6 +683,7 @@ def set_user_meta_app_id(user_id_str: str, app_id: str) -> bool:
         save_all_users(users)
         os.environ["META_APP_ID"] = clean_id
         os.environ["FACEBOOK_APP_ID"] = clean_id
+        os.environ[f"USER_{user_id_str}_META_APP_ID"] = clean_id
         _persist_env_var_to_disk("META_APP_ID", clean_id)
         _persist_env_var_to_disk("FACEBOOK_APP_ID", clean_id)
         sync_user_secret_to_github(user_id_str, "META_APP_ID", clean_id)
@@ -691,7 +692,7 @@ def set_user_meta_app_id(user_id_str: str, app_id: str) -> bool:
 
 
 def set_user_meta_app_secret(user_id_str: str, app_secret: str) -> bool:
-    """Saves Meta App Secret."""
+    """Saves Meta App Secret for user and platform runtime."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_sec = app_secret.strip()
@@ -701,6 +702,7 @@ def set_user_meta_app_secret(user_id_str: str, app_secret: str) -> bool:
         save_all_users(users)
         os.environ["META_APP_SECRET"] = clean_sec
         os.environ["FACEBOOK_APP_SECRET"] = clean_sec
+        os.environ[f"USER_{user_id_str}_META_APP_SECRET"] = clean_sec
         _persist_env_var_to_disk("META_APP_SECRET", clean_sec)
         _persist_env_var_to_disk("FACEBOOK_APP_SECRET", clean_sec)
         sync_user_secret_to_github(user_id_str, "META_APP_SECRET", clean_sec)
