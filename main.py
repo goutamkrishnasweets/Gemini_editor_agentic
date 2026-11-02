@@ -3637,8 +3637,8 @@ def start_telegram_bot_service():
                 await update.message.reply_text(
                     "🌐 **Make.com Webhook Publisher Setup**\n\n"
                     "👉 **Usage:**\n"
-                    "`/setmakewebhookurl <URL>`\n"
-                    "*(Example: `/setmakewebhookurl https://hook.us2.make.com/your-private-webhook`)*\n\n"
+                    "`/setwebhook <URL>`\n"
+                    "*(Example: `/setwebhook https://hook.us2.make.com/your-private-webhook`)*\n\n"
                     "📖 **Step-by-Step Scenario Guide:**\n"
                     "Send `/makeguide` for the complete 5-step walkthrough on configuring Instagram Reels & Facebook Pages in Make.com!"
                 )
@@ -4095,6 +4095,12 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setmakewebhookurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("setmakewebhook", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makewebhook", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("setwebhook", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("setwebhookurl", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("webhook", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("webhookurl", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("setmake", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("makeurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makeguide", _cmd_makeguide))
         app.add_handler(CommandHandler("makesetup", _cmd_makeguide))
         app.add_handler(CommandHandler("updatemetaendpoints", _cmd_updatemetaendpoints))
