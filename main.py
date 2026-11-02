@@ -1063,7 +1063,6 @@ async def handle_telegram_callback(update, context):
             await context.bot.send_message(chat_id=query.message.chat_id, text=new_text)
 
         if video_path and os.path.exists(video_path):
-            PublishQueue.add(video_path, channel_title=approved_title, channel_folder=creator_niche)
             import asyncio
             loop = asyncio.get_running_loop()
             cb_user_id = str(query.from_user.id) if query.from_user else str(query.message.chat_id)
@@ -1148,7 +1147,19 @@ async def handle_telegram_callback(update, context):
             winning_path = history[winning_idx] if (winning_idx is not None and winning_idx < len(history)) else (sess.get("video_path") if sess else None)
 
             if sess and winning_path:
-                PublishQueue.add(winning_path, channel_title=sess.get("title", "Viral Reel"), channel_folder=sess.get("creator", "General"))
+                import asyncio
+                loop = asyncio.get_running_loop()
+                _dispatch_phase4_publishing_in_background(
+                    bot_obj=context.bot,
+                    chat_id=query.message.chat_id,
+                    loop=loop,
+                    video_path=winning_path,
+                    title=sess.get("title", "Viral Reel"),
+                    niche=sess.get("creator", "General"),
+                    tags=sess.get("tags", "#viral #shorts #trending"),
+                    user_id=str(query.from_user.id) if query.from_user else str(query.message.chat_id),
+                    seo_data=sess.get("seo_result")
+                )
 
             new_text = (
                 f"🏆 **ATTEMPT {winning_idx + 1} SAVED AS BEST MASTER EDIT!**\n\n"
@@ -1490,10 +1501,14 @@ def _dispatch_phase4_publishing_in_background(
                     f"📌 **Title**: `{title}`\n\n"
                     + "\n".join(status_lines)
                 )
-                asyncio.run_coroutine_threadsafe(
-                    bot_obj.send_message(chat_id=chat_id, text=msg_text, parse_mode="Markdown"),
-                    loop
-                )
+                async def _send_completion():
+                    try:
+                        await bot_obj.send_message(chat_id=int(chat_id), text=msg_text, parse_mode="Markdown")
+                    except Exception as _md_err:
+                        logger.warning(f"Markdown send failed for Phase 4 summary ({_md_err}), retrying plain text...")
+                        await bot_obj.send_message(chat_id=int(chat_id), text=msg_text)
+
+                asyncio.run_coroutine_threadsafe(_send_completion(), loop)
 
             # Clean up local master reel now that Phase 4 broadcast has completed
             try:
@@ -2418,7 +2433,6 @@ async def handle_telegram_incoming_msg(update, context):
                 await msg.reply_text("❌ **Publish Failed**: Processed short video file could not be found locally or in Telegram Storage Vault.")
                 return
 
-            PublishQueue.add(v_path, channel_title=approved_title, channel_folder=creator_niche)
             logger.info(f"🚀 Custom Title & Affiliate SEO saved for session {sess_id}: '{approved_title}'. Triggering Phase 4...")
 
             if extracted_urls:
@@ -2694,9 +2708,7 @@ def run_master_pipeline(
         delivery_threads = []
 
         def _on_clip_rendered(reel_path: str):
-            """Immediately delivers each rendered clip to the requesting Telegram user."""
-            PublishQueue.add(reel_path, channel_title="General", channel_folder="General")
-            logger.info(f"🚀 [PHASE 4] Dispatched reel '{os.path.basename(reel_path)}' to publish queue.")
+            """Immediately delivers each rendered clip to the requesting Telegram user for review."""
             reel_cid = os.path.basename(reel_path).replace("_master.mp4", "")
             if target_chat:
                 session_manager.record_rendered_attempt(target_chat, reel_path, clip_id=reel_cid)

@@ -93,6 +93,9 @@ def _upload_fallback_tmpfiles(local_path: str) -> Optional[str]:
     return None
 
 
+_PUBLIC_URL_CACHE: Dict[str, str] = {}
+
+
 def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
     """
     Ensures media is accessible via a public HTTP(S) URL for Make.com / Meta.
@@ -100,12 +103,16 @@ def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
     If a local file, obtains its Telegram Bot API direct download link:
       https://api.telegram.org/file/bot{TOKEN}/{file_path}
     Falls back to direct temporary hosting if file exceeds 20MB.
+    Caches resolved URLs to eliminate redundant uploads.
     """
     if not local_path_or_url:
         return None
 
     if str(local_path_or_url).startswith(("http://", "https://")):
         return str(local_path_or_url)
+
+    if local_path_or_url in _PUBLIC_URL_CACHE:
+        return _PUBLIC_URL_CACHE[local_path_or_url]
 
     if not os.path.isfile(local_path_or_url):
         logger.warning(f"⚠️ [MakePublisher] File does not exist locally: {local_path_or_url}")
@@ -118,6 +125,7 @@ def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
         logger.info(f"📦 [MakePublisher] File is {file_size_mb:.1f}MB (>20MB Telegram limit). Using direct public uploader...")
         fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
         if fallback_url:
+            _PUBLIC_URL_CACHE[local_path_or_url] = fallback_url
             return fallback_url
 
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -130,20 +138,33 @@ def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
         return _upload_fallback_tmpfiles(local_path_or_url)
 
     try:
-        # Step 1: Upload to Telegram Storage Group to get file_id
-        from Telegram_Storage_Modules.telegram_http import send_document, extract_file_id
-
-        doc_res = send_document(
-            local_path=local_path_or_url,
-            chat_id=storage_chat_id,
-            caption="📦 Media for Make.com Dispatch"
-        )
+        # Step 1: Check if file was already uploaded in active session
         file_id = None
-        if doc_res and isinstance(doc_res, dict):
-            file_id = extract_file_id(doc_res)
-            if not file_id:
-                res_obj = doc_res.get("result", {})
-                file_id = extract_file_id(res_obj)
+        try:
+            from Telegram_Storage_Modules.telegram_session_manager import session_manager
+            c_name = os.path.basename(local_path_or_url).replace("_master.mp4", "").replace(".mp4", "")
+            for s in session_manager.sessions.values():
+                if s.get("processed_file_id") and (s.get("clip_id") == c_name or s.get("video_path") == local_path_or_url):
+                    file_id = s.get("processed_file_id")
+                    logger.info("⚡ [MakePublisher] Reusing cached Telegram vault file_id: %s", file_id[:20] + "...")
+                    break
+        except Exception:
+            file_id = None
+
+        # Upload to Telegram Storage Group if not already recorded
+        if not file_id:
+            from Telegram_Storage_Modules.telegram_http import send_document, extract_file_id
+
+            doc_res = send_document(
+                local_path=local_path_or_url,
+                chat_id=storage_chat_id,
+                caption="📦 Media for Make.com Dispatch"
+            )
+            if doc_res and isinstance(doc_res, dict):
+                file_id = extract_file_id(doc_res)
+                if not file_id:
+                    res_obj = doc_res.get("result", {})
+                    file_id = extract_file_id(res_obj)
 
         if not file_id:
             logger.warning("⚠️ [MakePublisher] Failed to upload media to Telegram for public URL resolution. Trying fallback...")
@@ -159,13 +180,20 @@ def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
             remote_file_path = data["result"]["file_path"]
             public_url = f"https://api.telegram.org/file/bot{clean_token}/{remote_file_path}"
             logger.info("🌐 [MakePublisher] Resolved public media URL: %s", public_url[:40] + "...")
+            _PUBLIC_URL_CACHE[local_path_or_url] = public_url
             return public_url
         else:
             logger.warning("⚠️ [MakePublisher] Telegram getFile did not return a file_path. Trying fallback...")
-            return _upload_fallback_tmpfiles(local_path_or_url)
+            fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
+            if fallback_url:
+                _PUBLIC_URL_CACHE[local_path_or_url] = fallback_url
+            return fallback_url
     except Exception as e:
         logger.warning(f"⚠️ [MakePublisher] Public URL resolution error: {e}. Trying fallback...")
-        return _upload_fallback_tmpfiles(local_path_or_url)
+        fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
+        if fallback_url:
+            _PUBLIC_URL_CACHE[local_path_or_url] = fallback_url
+        return fallback_url
 
 
 # ── Payload Builder ────────────────────────────────────────────────────────────
@@ -385,7 +413,7 @@ def publish_to_make(
 # ── Drop-In PublishQueue Compatibility Class ──────────────────────────────────
 
 class PublishQueue:
-    """Drop-in adapter replacing legacy queue publishers with Make.com webhook dispatch."""
+    """Drop-in adapter for legacy callers. All broadcasting is orchestrated by Phase 4."""
 
     @classmethod
     def add(
@@ -398,17 +426,9 @@ class PublishQueue:
         seo_data: Optional[Dict[str, Any]] = None,
         post_type: str = "reel"
     ) -> bool:
-        """Enqueues and immediately dispatches reel to Make.com."""
-        logger.info("📥 [Make.com Queue] Dispatched reel '%s' (title: '%s')", os.path.basename(video_path), channel_title)
-        res = publish_to_make(
-            media_path=video_path,
-            title=channel_title,
-            caption=caption,
-            tags=tags,
-            post_type=post_type,
-            seo_data=seo_data
-        )
-        return res.get("status") == "success"
+        """Legacy compatibility hook. Avoids unapproved or duplicate background dispatches."""
+        logger.info("ℹ️ [PublishQueue] Registered reel '%s' for Phase 4 orchestration", os.path.basename(video_path))
+        return True
 
     @classmethod
     def status(cls) -> Dict[str, Any]:
