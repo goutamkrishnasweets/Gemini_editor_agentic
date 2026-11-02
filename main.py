@@ -3603,13 +3603,44 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
 
+        async def _cmd_makeguide(update, context):
+            await update.message.reply_text(
+                "📚 **Make.com Social Publishing Setup Guide**\n\n"
+                "Publish approved reels to **Instagram Reels & Facebook Pages** automatically:\n\n"
+                "**1️⃣ Create Webhook in Make.com:**\n"
+                "• Go to Make.com → Webhooks → Add Webhook (name: `Gemini-Editor`).\n"
+                "• Copy URL and send: `/setmakewebhookurl <URL>`\n\n"
+                "**2️⃣ Build Scenario in Make.com:**\n"
+                "• Go to Scenarios → Create new scenario.\n"
+                "• Click `+` → Add **Webhooks** (select `Gemini-Editor`).\n\n"
+                "**3️⃣ Add Instagram Reels:**\n"
+                "• Click `+` next to Webhook → choose **Instagram for Business**.\n"
+                "• Action: **Create a reel post** *(⚠️ NOT photo!)*.\n"
+                "• Page: Select your page (keep `Map` toggle OFF).\n"
+                "• Video URL: `{{1.video_url}}`\n"
+                "• Caption: `{{1.caption}}` → Click Save.\n\n"
+                "**4️⃣ Add Facebook Pages:**\n"
+                "• Click `+` next to Instagram → choose **Facebook Pages**.\n"
+                "• Action: **Upload a Video**.\n"
+                "• Page: Select your page (keep `Map` toggle OFF).\n"
+                "• Type: Switch dropdown to **download a video from URL** *(keep `Map` OFF)*.\n"
+                "• URL: `{{1.video_url}}`\n"
+                "• Caption: `{{1.caption}}` → Click Save.\n\n"
+                "**5️⃣ Turn it ON:**\n"
+                "• Click Save at the bottom, flip top-right switch to **Active**!\n\n"
+                "💡 *Full documentation with screenshots: `Publishing_Modules/MAKE_SOCIAL_SETUP_GUIDE.md`*"
+            )
+
         async def _cmd_setmakewebhookurl(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             if not args_text or not args_text.startswith(("http://", "https://")):
                 await update.message.reply_text(
-                    "🌐 **Usage:** `/setmakewebhookurl <URL>`\n\n"
-                    "*(Example: `/setmakewebhookurl https://hook.eu2.make.com/your-private-webhook`)*\n\n"
-                    "💡 *Enables 1-click multi-platform publishing (Instagram Reels, YouTube Shorts, Stories) via Make.com.*"
+                    "🌐 **Make.com Webhook Publisher Setup**\n\n"
+                    "👉 **Usage:**\n"
+                    "`/setmakewebhookurl <URL>`\n"
+                    "*(Example: `/setmakewebhookurl https://hook.us2.make.com/your-private-webhook`)*\n\n"
+                    "📖 **Step-by-Step Scenario Guide:**\n"
+                    "Send `/makeguide` for the complete 5-step walkthrough on configuring Instagram Reels & Facebook Pages in Make.com!"
                 )
                 return
             try:
@@ -4064,6 +4095,8 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setmakewebhookurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("setmakewebhook", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makewebhook", _cmd_setmakewebhookurl))
+        app.add_handler(CommandHandler("makeguide", _cmd_makeguide))
+        app.add_handler(CommandHandler("makesetup", _cmd_makeguide))
         app.add_handler(CommandHandler("updatemetaendpoints", _cmd_updatemetaendpoints))
         app.add_handler(CommandHandler("setmetaversion", _cmd_updatemetaendpoints))
         app.add_handler(CommandHandler("updateyoutubeendpoints", _cmd_updateyoutubeendpoints))
