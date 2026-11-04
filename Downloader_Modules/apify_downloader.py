@@ -218,41 +218,29 @@ def _consume_quota(amount: int = 1) -> None:
         global _quota_used
         _quota_used += amount
         logger.info("💰 Apify quota used: %d/%d today", _quota_used, DAILY_QUOTA)
-    
-    # Track usage in API key pool if pooled key was used
-    if _get_client._last_pooled_user:
-        try:
-            from Core_Modules.api_key_pool_manager import record_api_usage
-            record_api_usage("apify_api_token", _get_client._last_pooled_user, success=True)
-            logger.info(f"📊 [API POOL] Recorded usage for user: {_get_client._last_pooled_user}")
-        except ImportError:
-            pass
 
 
 def _get_client(requesting_user_id: Optional[str] = None):
     """
     Lazily initialise the Apify client.
-    Uses API key pool if available, otherwise falls back to env var.
+    Strictly isolated: resolves requesting_user_id's personal token via get_user_apify_token.
+    Non-admins NEVER borrow another user's or admin's token.
+    Daemon/background runners (requesting_user_id=None) use the root APIFY_API_TOKEN.
     """
-    # Try to get token from API key pool first
-    try:
-        from Core_Modules.api_key_pool_manager import get_next_api_key
-        pooled_key = get_next_api_key("apify_api_token", requesting_user_id)
-        if pooled_key:
-            token = pooled_key["api_key"]
-            logger.info(f"🔑 [API POOL] Using pooled token from user: {pooled_key['user_id']}")
-            # Store for usage tracking later
-            _get_client._last_pooled_user = pooled_key["user_id"]
-        else:
-            token = os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_TOKEN") or APIFY_TOKEN
-            _get_client._last_pooled_user = None
-    except ImportError:
+    token = None
+    if requesting_user_id:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_apify_token
+            token = get_user_apify_token(str(requesting_user_id))
+        except Exception as e:
+            logger.debug("Notice resolving user apify token: %s", e)
+
+    if not token and not requesting_user_id:
         token = os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_TOKEN") or APIFY_TOKEN
-        _get_client._last_pooled_user = None
-    
+
     if not token:
         raise RuntimeError(
-            "APIFY_API_TOKEN is not set in .env and no pooled keys available. Add your token to .env or provide user credentials."
+            "APIFY_API_TOKEN is not configured for this user. Run /setapify YOUR_TOKEN in Telegram."
         )
     try:
         from apify_client import ApifyClient

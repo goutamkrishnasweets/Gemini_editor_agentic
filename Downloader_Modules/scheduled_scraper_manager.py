@@ -294,8 +294,12 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
 
     scrape_limit = 8
     try:
-        scrape_limit = int(os.getenv("AUTO_SCRAPE_LIMIT", os.getenv("APIFY_REELS_PER_ACCOUNT", "8")))
-    except ValueError:
+        if for_chat_id:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_auto_scrape_limit
+            scrape_limit = get_user_auto_scrape_limit(str(for_chat_id))
+        else:
+            scrape_limit = int(os.getenv("AUTO_SCRAPE_LIMIT", os.getenv("APIFY_REELS_PER_ACCOUNT", "8")))
+    except (ValueError, TypeError):
         scrape_limit = 8
 
     # Run ingestion for selected accounts (scrapes 8 clips, avoiding top 3 pinned clips)

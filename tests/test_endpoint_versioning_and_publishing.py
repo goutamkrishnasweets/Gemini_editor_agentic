@@ -33,21 +33,18 @@ def _run_coro(coro):
 class TestEndpointVersioning(unittest.TestCase):
 
     def setUp(self):
-        # Save env state
-        self._orig_meta_ver = os.environ.get("META_GRAPH_VERSION")
-        self._orig_yt_ver = os.environ.get("YOUTUBE_API_VERSION")
+        # Save complete env state
+        self._orig_env = dict(os.environ)
+        # Patch telegram vault sync so unit tests never hit network
+        self._vault_patcher = patch("Telegram_Storage_Modules.telegram_user_manager.sync_users_json_to_telegram_vault")
+        self._vault_patcher.start()
 
     def tearDown(self):
-        # Restore env state
-        if self._orig_meta_ver is not None:
-            os.environ["META_GRAPH_VERSION"] = self._orig_meta_ver
-        else:
-            os.environ.pop("META_GRAPH_VERSION", None)
-
-        if self._orig_yt_ver is not None:
-            os.environ["YOUTUBE_API_VERSION"] = self._orig_yt_ver
-        else:
-            os.environ.pop("YOUTUBE_API_VERSION", None)
+        # Stop vault patcher
+        self._vault_patcher.stop()
+        # Restore complete env state
+        os.environ.clear()
+        os.environ.update(self._orig_env)
 
     def test_meta_graph_versioning_dynamic(self):
         from Publishing_Modules.meta_uploader import (
@@ -254,6 +251,133 @@ class TestEndpointVersioning(unittest.TestCase):
             mock_user_sync.assert_any_call("normal_user_888", "META_PAGE_ID", "normal_page_111")
             mock_user_sync.assert_any_call("normal_user_888", "META_PAGE_TOKEN", "normal_tok_222")
             mock_user_sync.assert_any_call("normal_user_888", "IG_BUSINESS_ID", "normal_ig_333")
+
+    def test_user_setters_and_getters_strict_isolation(self):
+        """Verifies that all user credential getters & setters strictly isolate non-admin vs admin."""
+        from Telegram_Storage_Modules import telegram_user_manager as tum
+
+        # Setup root env vars (admin credentials)
+        os.environ["IG_BUSINESS_TOKEN"] = "root_ig_tok"
+        os.environ["IG_BUSINESS_ID"] = "root_ig_id"
+        os.environ["META_PAGE_ID"] = "root_fb_id"
+        os.environ["META_PAGE_TOKEN"] = "root_fb_tok"
+        os.environ["TIKTOK_ACCESS_TOKEN"] = "root_tt_tok"
+        os.environ["TOKEN_JSON"] = '{"root": "yt"}'
+        os.environ["CLIENT_SECRET_JSON"] = '{"root": "secret"}'
+        os.environ["TELEGRAM_PUBLIC_GROUP_ID"] = "-1009999999"
+        os.environ["AUTO_INPUT_SCHEDULE_TIMES"] = "09:00,18:00"
+        os.environ["APIFY_API_TOKEN"] = "root_apify_tok"
+        os.environ["GEMINI_API_KEY"] = "root_gemini_key"
+        os.environ["BRAND_WATERMARK_TEXT"] = "@RootAdmin"
+
+        non_admin_uid = "5551234"
+        admin_uid = "9998887"
+
+        # Patch _is_admin_user so non_admin_uid is False, admin_uid is True
+        def mock_is_admin(uid):
+            return str(uid) == admin_uid
+
+        with patch.object(tum, "_is_admin_user", side_effect=mock_is_admin), \
+             patch.object(tum, "_persist_env_var_to_disk") as mock_persist, \
+             patch.object(tum, "save_all_users"), \
+             patch.object(tum, "sync_user_secret_to_github") as mock_sync:
+
+            # 1. Non-admin with NO credentials must get None or empty string, NEVER root admin values
+            self.assertIsNone(tum.get_user_instagram_token(non_admin_uid))
+            self.assertIsNone(tum.get_user_instagram_id(non_admin_uid))
+            self.assertIsNone(tum.get_user_facebook_id(non_admin_uid))
+            self.assertIsNone(tum.get_user_facebook_token(non_admin_uid))
+            self.assertIsNone(tum.get_user_tiktok_token(non_admin_uid))
+            self.assertIsNone(tum.get_user_youtube_token_json(non_admin_uid))
+            self.assertIsNone(tum.get_user_youtube_client_secret(non_admin_uid))
+            self.assertIsNone(tum.get_user_public_group(non_admin_uid))
+            self.assertIsNone(tum.get_user_schedule_times(non_admin_uid))
+            self.assertIsNone(tum.get_user_apify_token(non_admin_uid))
+            self.assertIsNone(tum.get_user_gemini_key(non_admin_uid))
+            self.assertEqual(tum.get_user_branding(non_admin_uid), "")
+
+            # 2. Admin with no personal override gets root credentials
+            self.assertEqual(tum.get_user_instagram_token(admin_uid), "root_ig_tok")
+            self.assertEqual(tum.get_user_instagram_id(admin_uid), "root_ig_id")
+            self.assertEqual(tum.get_user_facebook_id(admin_uid), "root_fb_id")
+            self.assertEqual(tum.get_user_facebook_token(admin_uid), "root_fb_tok")
+            self.assertEqual(tum.get_user_tiktok_token(admin_uid), "root_tt_tok")
+            self.assertEqual(tum.get_user_youtube_token_json(admin_uid), '{"root": "yt"}')
+            self.assertEqual(tum.get_user_public_group(admin_uid), "-1009999999")
+            self.assertEqual(tum.get_user_branding(admin_uid), "@RootAdmin")
+
+            # 3. Non-admin calls setters -> sets USER_<uid>_<VAR>, does NOT overwrite root, does NOT persist to disk
+            tum.set_user_instagram_token(non_admin_uid, "user_ig_tok")
+            tum.set_user_instagram_id(non_admin_uid, "user_ig_id")
+            tum.set_user_facebook_id(non_admin_uid, "user_fb_id")
+            tum.set_user_facebook_token(non_admin_uid, "user_fb_tok")
+            tum.set_user_tiktok_token(non_admin_uid, "user_tt_tok")
+            tum.set_user_branding(non_admin_uid, "@UserBrand")
+            tum.set_user_public_group_id(non_admin_uid, "-1005555555")
+
+            mock_persist.assert_not_called()
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_IG_BUSINESS_TOKEN"), "user_ig_tok")
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_IG_BUSINESS_ID"), "user_ig_id")
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_META_PAGE_ID"), "user_fb_id")
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_META_PAGE_TOKEN"), "user_fb_tok")
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_TIKTOK_ACCESS_TOKEN"), "user_tt_tok")
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_BRAND_WATERMARK_TEXT"), "@UserBrand")
+            self.assertEqual(os.environ.get(f"USER_{non_admin_uid}_TELEGRAM_PUBLIC_GROUP_ID"), "-1005555555")
+
+            # Root credentials intact
+            self.assertEqual(os.environ.get("IG_BUSINESS_TOKEN"), "root_ig_tok")
+            self.assertEqual(os.environ.get("META_PAGE_ID"), "root_fb_id")
+            self.assertEqual(os.environ.get("BRAND_WATERMARK_TEXT"), "@RootAdmin")
+
+            # Now getters return personal values for non-admin
+            self.assertEqual(tum.get_user_instagram_token(non_admin_uid), "user_ig_tok")
+            self.assertEqual(tum.get_user_instagram_id(non_admin_uid), "user_ig_id")
+            self.assertEqual(tum.get_user_facebook_id(non_admin_uid), "user_fb_id")
+            self.assertEqual(tum.get_user_facebook_token(non_admin_uid), "user_fb_tok")
+            self.assertEqual(tum.get_user_tiktok_token(non_admin_uid), "user_tt_tok")
+            self.assertEqual(tum.get_user_branding(non_admin_uid), "@UserBrand")
+            self.assertEqual(tum.get_user_public_group(non_admin_uid), "-1005555555")
+
+    def test_apify_client_user_isolation(self):
+        """Verifies that Apify client strictly requires user's personal token and never shares tokens."""
+        from Downloader_Modules import apify_downloader as ad
+
+        non_admin_uid = "777888"
+        with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=False):
+            # Non-admin without personal token raises RuntimeError
+            with patch("Telegram_Storage_Modules.telegram_user_manager.get_user_apify_token", return_value=None):
+                with self.assertRaises(RuntimeError) as ctx:
+                    ad._get_client(requesting_user_id=non_admin_uid)
+                self.assertIn("APIFY_API_TOKEN is not configured for this user", str(ctx.exception))
+
+            # Non-admin with personal token creates client with their token
+            with patch("Telegram_Storage_Modules.telegram_user_manager.get_user_apify_token", return_value="personal_apify_123"), \
+                 patch("apify_client.ApifyClient") as mock_client:
+                ad._get_client(requesting_user_id=non_admin_uid)
+                mock_client.assert_called_once_with("personal_apify_123")
+
+    def test_publish_to_telegram_never_falls_back_to_storage_vault(self):
+        """Verifies that publish_to_telegram never leaks into TELEGRAM_STORAGE_GROUP_ID."""
+        from Publishing_Modules import media_publisher_main as mpm
+
+        env_patch = {
+            "TELEGRAM_BOT_TOKEN": "fake_bot_token",
+            "TELEGRAM_STORAGE_GROUP_ID": "-100999888777"
+        }
+        non_admin_uid = "333444"
+        with patch.dict(os.environ, env_patch), \
+             patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=False), \
+             patch("Telegram_Storage_Modules.telegram_user_manager.get_user_public_group", return_value=None):
+            os.environ.pop("TELEGRAM_PUBLIC_GROUP_ID", None)
+
+            res = _run_coro(mpm.publish_to_telegram(
+                video_path=__file__,
+                title="Test Video",
+                user_id=non_admin_uid
+            ))
+            # Must skip cleanly instead of broadcasting to private vault
+            self.assertEqual(res.get("status"), "skipped")
+            self.assertIn("not configured", res.get("reason", ""))
 
 
 if __name__ == "__main__":

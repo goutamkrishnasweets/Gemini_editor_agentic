@@ -41,22 +41,41 @@ def load_all_users() -> Dict[str, Dict]:
     # Dynamically hydrate from any USER_<chat_id>_<var> variables in os.environ
     for k, v in os.environ.items():
         if k.startswith("USER_") and v and v.strip():
-            m = re.match(r"^USER_(\d+)_(.+)$", k)
+            m = re.match(r"^USER_(-?\d+)_(.+)$", k)
             if m:
                 uid = m.group(1)
                 suffix = m.group(2).lower()
                 val = v.strip()
                 u_rec = users.setdefault(uid, {})
-                if suffix in ("ig_business_token", "meta_page_token", "meta_token"):
+                if suffix in ("ig_business_id", "instagram_id"):
+                    if not u_rec.get("ig_business_id"):
+                        u_rec["ig_business_id"] = val
+                elif suffix in ("meta_page_id", "facebook_page_id", "facebook_id"):
+                    if not u_rec.get("meta_page_id"):
+                        u_rec["meta_page_id"] = val
+                elif suffix in ("ig_business_token", "instagram_token"):
+                    if not u_rec.get("ig_business_token"):
+                        u_rec["ig_business_token"] = val
+                elif suffix in ("meta_page_token", "facebook_page_token", "facebook_token"):
+                    if not u_rec.get("meta_page_token"):
+                        u_rec["meta_page_token"] = val
+                elif suffix in ("meta_token",):
                     if not u_rec.get("ig_business_token"):
                         u_rec["ig_business_token"] = val
                     if not u_rec.get("meta_page_token"):
                         u_rec["meta_page_token"] = val
-                elif suffix in ("ig_business_id", "meta_page_id"):
-                    if not u_rec.get("ig_business_id"):
-                        u_rec["ig_business_id"] = val
-                    if not u_rec.get("meta_page_id"):
-                        u_rec["meta_page_id"] = val
+                elif suffix in ("meta_app_id", "facebook_app_id"):
+                    if not u_rec.get("meta_app_id"):
+                        u_rec["meta_app_id"] = val
+                elif suffix in ("meta_app_secret", "facebook_app_secret"):
+                    if not u_rec.get("meta_app_secret"):
+                        u_rec["meta_app_secret"] = val
+                elif suffix in ("tiktok_access_token", "tiktok_token"):
+                    if not u_rec.get("tiktok_access_token"):
+                        u_rec["tiktok_access_token"] = val
+                elif suffix in ("make_webhook_url", "webhook_url"):
+                    if not u_rec.get("make_webhook_url"):
+                        u_rec["make_webhook_url"] = val
                 elif suffix in ("client_secret_json", "youtube_client_secret"):
                     if not u_rec.get("youtube_client_secret"):
                         u_rec["youtube_client_secret"] = val
@@ -391,20 +410,27 @@ def sync_user_secret_to_github(user_id_str: str, secret_suffix: str, secret_valu
 def set_user_apify_token(user_id_str: str, apify_token: str) -> bool:
     """Saves user personal Apify API token and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_token = apify_token.strip()
     if clean_token:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["apify_api_token"] = clean_token
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["APIFY_API_TOKEN"] = clean_token
+            _persist_env_var_to_disk("APIFY_API_TOKEN", clean_token)
+        else:
+            os.environ[f"USER_{user_id_str}_APIFY_API_TOKEN"] = clean_token
         sync_user_secret_to_github(user_id_str, "APIFY_API_TOKEN", clean_token)
         logger.info("🔑 [TELEGRAM USER MANAGER] Personal Apify token saved for User ID %s", user_id_str)
         return True
     return False
 
 
-def get_user_apify_token(user_id_str: str) -> Optional[str]:
-    """Returns user personal Apify API token if present."""
+def get_user_apify_token(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Apify API token if present. Non-admins NEVER inherit admin token."""
+    if not user_id_str:
+        return os.getenv("APIFY_API_TOKEN", "").strip() or None
     users = load_all_users()
     user_id_str = str(user_id_str).strip()
     if user_id_str in users:
@@ -422,12 +448,17 @@ def get_user_apify_token(user_id_str: str) -> Optional[str]:
 def set_user_gemini_key(user_id_str: str, gemini_key: str) -> bool:
     """Saves user personal Gemini API key and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_key = gemini_key.strip()
     if clean_key:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["gemini_api_key"] = clean_key
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["GEMINI_API_KEY"] = clean_key
+            _persist_env_var_to_disk("GEMINI_API_KEY", clean_key)
+        else:
+            os.environ[f"USER_{user_id_str}_GEMINI_API_KEY"] = clean_key
         sync_user_secret_to_github(user_id_str, "GEMINI_API_KEY", clean_key)
         logger.info("🤖 [TELEGRAM USER MANAGER] Personal Gemini API key saved for User ID %s", user_id_str)
         return True
@@ -437,13 +468,23 @@ def set_user_gemini_key(user_id_str: str, gemini_key: str) -> bool:
 def set_user_meta_token(user_id_str: str, meta_token: str) -> bool:
     """Saves user personal Meta/Instagram Access Token and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_token = meta_token.strip()
     if clean_token:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["meta_page_token"] = clean_token
+        u_rec["ig_business_token"] = clean_token
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["META_PAGE_TOKEN"] = clean_token
+            os.environ["IG_BUSINESS_TOKEN"] = clean_token
+            _persist_env_var_to_disk("META_PAGE_TOKEN", clean_token)
+            _persist_env_var_to_disk("IG_BUSINESS_TOKEN", clean_token)
+        else:
+            os.environ[f"USER_{user_id_str}_META_PAGE_TOKEN"] = clean_token
+            os.environ[f"USER_{user_id_str}_IG_BUSINESS_TOKEN"] = clean_token
         sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_token)
+        sync_user_secret_to_github(user_id_str, "IG_BUSINESS_TOKEN", clean_token)
         logger.info("📸 [TELEGRAM USER MANAGER] Personal Meta Access Token saved for User ID %s", user_id_str)
         return True
     return False
@@ -452,7 +493,7 @@ def set_user_meta_token(user_id_str: str, meta_token: str) -> bool:
 def set_user_youtube_token(user_id_str: str, token_json_str: str) -> bool:
     """Saves user personal YouTube OAuth token JSON, writes token files locally, and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_json = token_json_str.strip()
     if clean_json:
         u_rec = users.setdefault(user_id_str, {})
@@ -461,10 +502,16 @@ def set_user_youtube_token(user_id_str: str, token_json_str: str) -> bool:
 
         # Write local disk files for immediate auth use (shared disk path, only do this for admin)
         if _is_admin_user(user_id_str):
+            os.environ["TOKEN_JSON"] = clean_json
+            os.environ["YOUTUBE_TOKEN_JSON"] = clean_json
             for fpath in ["Credentials/youtube/token.json", "Credentials/token.json"]:
-                os.makedirs(os.path.dirname(fpath), exist_ok=True)
-                with open(fpath, "w", encoding="utf-8") as f:
+                full_p = os.path.join(_REPO_ROOT, fpath)
+                os.makedirs(os.path.dirname(full_p), exist_ok=True)
+                with open(full_p, "w", encoding="utf-8") as f:
                     f.write(clean_json)
+        else:
+            os.environ[f"USER_{user_id_str}_TOKEN_JSON"] = clean_json
+            os.environ[f"USER_{user_id_str}_YOUTUBE_TOKEN_JSON"] = clean_json
 
         sync_user_secret_to_github(user_id_str, "TOKEN_JSON", clean_json)
         logger.info("🔴 [TELEGRAM USER MANAGER] Personal YouTube OAuth Token saved & synced for User ID %s", user_id_str)
@@ -475,12 +522,17 @@ def set_user_youtube_token(user_id_str: str, token_json_str: str) -> bool:
 def set_user_branding(user_id_str: str, brand_text: str) -> bool:
     """Saves user personal brand watermark text and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_brand = brand_text.strip()
     if clean_brand:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["brand_watermark"] = clean_brand
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["BRAND_WATERMARK_TEXT"] = clean_brand
+            _persist_env_var_to_disk("BRAND_WATERMARK_TEXT", clean_brand)
+        else:
+            os.environ[f"USER_{user_id_str}_BRAND_WATERMARK_TEXT"] = clean_brand
         sync_user_secret_to_github(user_id_str, "BRAND_WATERMARK_TEXT", clean_brand)
         logger.info("🏷️ [TELEGRAM USER MANAGER] Personal brand watermark saved for User ID %s: %s", user_id_str, clean_brand)
         return True
@@ -490,12 +542,17 @@ def set_user_branding(user_id_str: str, brand_text: str) -> bool:
 def set_user_public_group_id(user_id_str: str, group_id: str) -> bool:
     """Saves user personal Telegram Public Group ID and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_group = group_id.strip()
     if clean_group:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["telegram_public_group_id"] = clean_group
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["TELEGRAM_PUBLIC_GROUP_ID"] = clean_group
+            _persist_env_var_to_disk("TELEGRAM_PUBLIC_GROUP_ID", clean_group)
+        else:
+            os.environ[f"USER_{user_id_str}_TELEGRAM_PUBLIC_GROUP_ID"] = clean_group
         synced = sync_user_secret_to_github(user_id_str, "TELEGRAM_PUBLIC_GROUP_ID", clean_group)
         logger.info("📢 [TELEGRAM USER MANAGER] Telegram Public Group ID saved for User ID %s: %s (GitHub Synced: %s)", user_id_str, clean_group, synced)
         return synced
@@ -505,12 +562,17 @@ def set_user_public_group_id(user_id_str: str, group_id: str) -> bool:
 def set_user_schedule_times(user_id_str: str, schedule_times: str) -> bool:
     """Saves user personal auto-input schedule times and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_sched = schedule_times.strip()
     if clean_sched:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["auto_input_schedule_times"] = clean_sched
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["AUTO_INPUT_SCHEDULE_TIMES"] = clean_sched
+            _persist_env_var_to_disk("AUTO_INPUT_SCHEDULE_TIMES", clean_sched)
+        else:
+            os.environ[f"USER_{user_id_str}_AUTO_INPUT_SCHEDULE_TIMES"] = clean_sched
         synced = sync_user_secret_to_github(user_id_str, "AUTO_INPUT_SCHEDULE_TIMES", clean_sched)
         logger.info("⏰ [TELEGRAM USER MANAGER] Schedule times saved for User ID %s: %s (GitHub Synced: %s)", user_id_str, clean_sched, synced)
         return synced
@@ -520,7 +582,7 @@ def set_user_schedule_times(user_id_str: str, schedule_times: str) -> bool:
 def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> bool:
     """Saves user personal YouTube client_secret.json content, writes files locally, and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_secret = client_secret_str.strip()
     if clean_secret:
         u_rec = users.setdefault(user_id_str, {})
@@ -529,10 +591,16 @@ def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> 
 
         # Write local disk files only for admin to avoid overwriting shared credentials
         if _is_admin_user(user_id_str):
+            os.environ["CLIENT_SECRET_JSON"] = clean_secret
+            os.environ["YOUTUBE_CLIENT_SECRET"] = clean_secret
             for fpath in ["Credentials/youtube/client_secret.json", "Credentials/client_secret.json"]:
-                os.makedirs(os.path.dirname(fpath), exist_ok=True)
-                with open(fpath, "w", encoding="utf-8") as f:
+                full_p = os.path.join(_REPO_ROOT, fpath)
+                os.makedirs(os.path.dirname(full_p), exist_ok=True)
+                with open(full_p, "w", encoding="utf-8") as f:
                     f.write(clean_secret)
+        else:
+            os.environ[f"USER_{user_id_str}_CLIENT_SECRET_JSON"] = clean_secret
+            os.environ[f"USER_{user_id_str}_YOUTUBE_CLIENT_SECRET"] = clean_secret
 
         sync_user_secret_to_github(user_id_str, "CLIENT_SECRET_JSON", clean_secret)
         logger.info("🔐 [TELEGRAM USER MANAGER] YouTube Client Secret saved & synced for User ID %s", user_id_str)
@@ -543,7 +611,7 @@ def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> 
 def set_user_auto_scrape_limit(user_id_str: str, limit_val: int) -> bool:
     """Saves user personal auto-scrape limit (default 8) and syncs to GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     try:
         val = int(limit_val)
         if val <= 0:
@@ -554,13 +622,26 @@ def set_user_auto_scrape_limit(user_id_str: str, limit_val: int) -> bool:
     u_rec = users.setdefault(user_id_str, {})
     u_rec["auto_scrape_limit"] = val
     save_all_users(users)
+    if _is_admin_user(user_id_str):
+        os.environ["AUTO_SCRAPE_LIMIT"] = str(val)
+        _persist_env_var_to_disk("AUTO_SCRAPE_LIMIT", str(val))
+    else:
+        os.environ[f"USER_{user_id_str}_AUTO_SCRAPE_LIMIT"] = str(val)
     synced = sync_user_secret_to_github(user_id_str, "AUTO_SCRAPE_LIMIT", str(val))
     logger.info("🔢 [TELEGRAM USER MANAGER] Auto-scrape limit saved for User ID %s: %d (GitHub Synced: %s)", user_id_str, val, synced)
     return True
 
 
-def get_user_auto_scrape_limit(user_id_str: str) -> int:
+def get_user_auto_scrape_limit(user_id_str: Optional[Union[str, int]] = None) -> int:
     """Returns user personal auto-scrape limit, falling back to env AUTO_SCRAPE_LIMIT or default 8."""
+    if not user_id_str:
+        env_root = os.getenv("AUTO_SCRAPE_LIMIT")
+        if env_root:
+            try:
+                return int(env_root)
+            except (ValueError, TypeError):
+                pass
+        return 8
     users = load_all_users()
     u_rec = users.get(str(user_id_str), {})
     lim = u_rec.get("auto_scrape_limit")
@@ -575,28 +656,34 @@ def get_user_auto_scrape_limit(user_id_str: str) -> int:
             return int(env_user)
         except (ValueError, TypeError):
             pass
-    env_root = os.getenv("AUTO_SCRAPE_LIMIT")
-    if env_root:
-        try:
-            return int(env_root)
-        except (ValueError, TypeError):
-            pass
+    if _is_admin_user(str(user_id_str)):
+        env_root = os.getenv("AUTO_SCRAPE_LIMIT")
+        if env_root:
+            try:
+                return int(env_root)
+            except (ValueError, TypeError):
+                pass
     return 8
 
 
 def set_user_instagram_token(user_id_str: str, token: str) -> bool:
-    """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets."""
+    """Saves user Instagram Access Token and syncs to IG_BUSINESS_TOKEN in GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_tok = token.strip()
     if clean_tok:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["ig_business_token"] = clean_tok
-        u_rec["meta_page_token"] = clean_tok
+        if not u_rec.get("meta_page_token"):
+            u_rec["meta_page_token"] = clean_tok
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["IG_BUSINESS_TOKEN"] = clean_tok
+            _persist_env_var_to_disk("IG_BUSINESS_TOKEN", clean_tok)
+        else:
+            os.environ[f"USER_{user_id_str}_IG_BUSINESS_TOKEN"] = clean_tok
         sync_user_secret_to_github(user_id_str, "IG_BUSINESS_TOKEN", clean_tok)
-        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
-        logger.info("📸 [TELEGRAM USER MANAGER] Instagram/Meta Access Token saved for User ID %s", user_id_str)
+        logger.info("📸 [TELEGRAM USER MANAGER] Instagram Access Token saved for User ID %s", user_id_str)
         return True
     return False
 
@@ -604,12 +691,17 @@ def set_user_instagram_token(user_id_str: str, token: str) -> bool:
 def set_user_instagram_id(user_id_str: str, ig_id: str) -> bool:
     """Saves user Instagram Business Account ID and syncs to IG_BUSINESS_ID in GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_id = ig_id.strip()
     if clean_id:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["ig_business_id"] = clean_id
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["IG_BUSINESS_ID"] = clean_id
+            _persist_env_var_to_disk("IG_BUSINESS_ID", clean_id)
+        else:
+            os.environ[f"USER_{user_id_str}_IG_BUSINESS_ID"] = clean_id
         sync_user_secret_to_github(user_id_str, "IG_BUSINESS_ID", clean_id)
         logger.info("🆔 [TELEGRAM USER MANAGER] Instagram Business ID saved for User ID %s: %s", user_id_str, clean_id)
         return True
@@ -619,12 +711,17 @@ def set_user_instagram_id(user_id_str: str, ig_id: str) -> bool:
 def set_user_facebook_id(user_id_str: str, fb_page_id: str) -> bool:
     """Saves user Facebook Page ID and syncs to META_PAGE_ID in GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_id = fb_page_id.strip()
     if clean_id:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["meta_page_id"] = clean_id
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["META_PAGE_ID"] = clean_id
+            _persist_env_var_to_disk("META_PAGE_ID", clean_id)
+        else:
+            os.environ[f"USER_{user_id_str}_META_PAGE_ID"] = clean_id
         sync_user_secret_to_github(user_id_str, "META_PAGE_ID", clean_id)
         logger.info("📘 [TELEGRAM USER MANAGER] Facebook Page ID saved for User ID %s: %s", user_id_str, clean_id)
         return True
@@ -634,8 +731,21 @@ def set_user_facebook_id(user_id_str: str, fb_page_id: str) -> bool:
 def set_user_facebook_token(user_id_str: str, fb_token: str) -> bool:
     """Saves user Facebook Page Access Token and syncs to META_PAGE_TOKEN in GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_tok = fb_token.strip()
+    if clean_tok:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_page_token"] = clean_tok
+        save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["META_PAGE_TOKEN"] = clean_tok
+            _persist_env_var_to_disk("META_PAGE_TOKEN", clean_tok)
+        else:
+            os.environ[f"USER_{user_id_str}_META_PAGE_TOKEN"] = clean_tok
+        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
+        logger.info("🔑 [TELEGRAM USER MANAGER] Facebook Page Token saved for User ID %s", user_id_str)
+        return True
+    return False
     if clean_tok:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["meta_page_token"] = clean_tok
@@ -753,12 +863,17 @@ def get_user_meta_app_secret(user_id_str: str) -> Optional[str]:
 def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
     """Saves user TikTok Access Token and syncs to TIKTOK_ACCESS_TOKEN in GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_tok = tiktok_token.strip()
     if clean_tok:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["tiktok_access_token"] = clean_tok
         save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["TIKTOK_ACCESS_TOKEN"] = clean_tok
+            _persist_env_var_to_disk("TIKTOK_ACCESS_TOKEN", clean_tok)
+        else:
+            os.environ[f"USER_{user_id_str}_TIKTOK_ACCESS_TOKEN"] = clean_tok
         sync_user_secret_to_github(user_id_str, "TIKTOK_ACCESS_TOKEN", clean_tok)
         logger.info("🎵 [TELEGRAM USER MANAGER] TikTok Access Token saved for User ID %s", user_id_str)
         return True
@@ -768,7 +883,7 @@ def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
 def set_user_make_webhook_url(user_id_str: str, webhook_url: str) -> bool:
     """Saves user Make.com Webhook URL and syncs to MAKE_WEBHOOK_URL in GitHub Secrets."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     clean_url = webhook_url.strip().strip("`'\"")
     if clean_url and clean_url.startswith(("http://", "https://")):
         u_rec = users.setdefault(user_id_str, {})
@@ -785,8 +900,10 @@ def set_user_make_webhook_url(user_id_str: str, webhook_url: str) -> bool:
     return False
 
 
-def get_user_make_webhook_url(user_id_str: str) -> Optional[str]:
-    """Returns user personal Make.com Webhook URL if present."""
+def get_user_make_webhook_url(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Make.com Webhook URL if present. Non-admins NEVER inherit admin webhook."""
+    if not user_id_str:
+        return os.getenv("MAKE_WEBHOOK_URL", "").strip() or None
     users = load_all_users()
     user_id_str = str(user_id_str).strip()
     if user_id_str in users:
@@ -801,8 +918,10 @@ def get_user_make_webhook_url(user_id_str: str) -> Optional[str]:
     return None
 
 
-def get_user_gemini_key(user_id_str: str) -> Optional[str]:
-    """Returns user personal Gemini API key if present."""
+def get_user_gemini_key(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Gemini API key if present. Non-admins NEVER inherit admin key."""
+    if not user_id_str:
+        return os.getenv("GEMINI_API_KEY", "").strip() or None
     users = load_all_users()
     user_id_str = str(user_id_str).strip()
     if user_id_str in users:
@@ -814,6 +933,214 @@ def get_user_gemini_key(user_id_str: str) -> Optional[str]:
         return env_val
     if _is_admin_user(user_id_str):
         return os.getenv("GEMINI_API_KEY", "").strip() or None
+    return None
+
+
+def get_user_instagram_token(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Instagram/Meta token. Non-admins NEVER inherit admin root token."""
+    if not user_id_str:
+        return os.getenv("IG_BUSINESS_TOKEN", "").strip() or os.getenv("META_PAGE_TOKEN", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("ig_business_token") or users[clean_uid].get("meta_page_token") or "").strip()
+        if val:
+            return val
+    for var in [f"USER_{clean_uid}_IG_BUSINESS_TOKEN", f"USER_{clean_uid}_META_PAGE_TOKEN"]:
+        env_val = os.getenv(var, "").strip()
+        if env_val:
+            return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("IG_BUSINESS_TOKEN", "").strip() or os.getenv("META_PAGE_TOKEN", "").strip() or None
+    return None
+
+
+def get_user_instagram_id(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Instagram Business Account ID. Non-admins NEVER inherit admin root ID."""
+    if not user_id_str:
+        return os.getenv("IG_BUSINESS_ID", "").strip() or os.getenv("IG_BUSINESS_ACCOUNT_ID", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("ig_business_id") or "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{clean_uid}_IG_BUSINESS_ID", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("IG_BUSINESS_ID", "").strip() or os.getenv("IG_BUSINESS_ACCOUNT_ID", "").strip() or None
+    return None
+
+
+def get_user_facebook_id(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Facebook Page ID. Non-admins NEVER inherit admin root ID."""
+    if not user_id_str:
+        return os.getenv("META_PAGE_ID", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("meta_page_id") or "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{clean_uid}_META_PAGE_ID", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("META_PAGE_ID", "").strip() or None
+    return None
+
+
+def get_user_facebook_token(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Facebook Page Access Token. Non-admins NEVER inherit admin root token."""
+    if not user_id_str:
+        return os.getenv("META_PAGE_TOKEN", "").strip() or os.getenv("META_TOKEN", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("meta_page_token") or users[clean_uid].get("meta_token") or "").strip()
+        if val:
+            return val
+    for var in [f"USER_{clean_uid}_META_PAGE_TOKEN", f"USER_{clean_uid}_META_TOKEN"]:
+        env_val = os.getenv(var, "").strip()
+        if env_val:
+            return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("META_PAGE_TOKEN", "").strip() or os.getenv("META_TOKEN", "").strip() or None
+    return None
+
+
+def get_user_tiktok_token(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal TikTok Access Token. Non-admins NEVER inherit admin root token."""
+    if not user_id_str:
+        return os.getenv("TIKTOK_ACCESS_TOKEN", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("tiktok_access_token") or "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{clean_uid}_TIKTOK_ACCESS_TOKEN", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("TIKTOK_ACCESS_TOKEN", "").strip() or None
+    return None
+
+
+def get_user_youtube_token_json(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal YouTube token JSON string. Non-admins NEVER inherit admin root credentials."""
+    if not user_id_str:
+        tok = os.getenv("TOKEN_JSON", "").strip() or os.getenv("YOUTUBE_TOKEN_JSON", "").strip()
+        if tok:
+            return tok
+        for fpath in ["Credentials/youtube/token.json", "Credentials/token.json"]:
+            full_p = os.path.join(_REPO_ROOT, fpath)
+            if os.path.exists(full_p):
+                try:
+                    with open(full_p, "r", encoding="utf-8") as f:
+                        return f.read().strip()
+                except Exception:
+                    pass
+        return None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("youtube_token_json") or "").strip()
+        if val:
+            return val
+    for var in [f"USER_{clean_uid}_TOKEN_JSON", f"USER_{clean_uid}_YOUTUBE_TOKEN_JSON"]:
+        env_val = os.getenv(var, "").strip()
+        if env_val:
+            return env_val
+    if _is_admin_user(clean_uid):
+        tok = os.getenv("TOKEN_JSON", "").strip() or os.getenv("YOUTUBE_TOKEN_JSON", "").strip()
+        if tok:
+            return tok
+        for fpath in ["Credentials/youtube/token.json", "Credentials/token.json"]:
+            full_p = os.path.join(_REPO_ROOT, fpath)
+            if os.path.exists(full_p):
+                try:
+                    with open(full_p, "r", encoding="utf-8") as f:
+                        return f.read().strip()
+                except Exception:
+                    pass
+    return None
+
+
+def get_user_youtube_client_secret(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal YouTube client secret JSON string. Non-admins NEVER inherit admin root credentials."""
+    if not user_id_str:
+        sec = os.getenv("CLIENT_SECRET_JSON", "").strip() or os.getenv("YOUTUBE_CLIENT_SECRET", "").strip()
+        if sec:
+            return sec
+        for fpath in ["Credentials/youtube/client_secret.json", "Credentials/client_secret.json"]:
+            full_p = os.path.join(_REPO_ROOT, fpath)
+            if os.path.exists(full_p):
+                try:
+                    with open(full_p, "r", encoding="utf-8") as f:
+                        return f.read().strip()
+                except Exception:
+                    pass
+        return None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("youtube_client_secret") or "").strip()
+        if val:
+            return val
+    for var in [f"USER_{clean_uid}_CLIENT_SECRET_JSON", f"USER_{clean_uid}_YOUTUBE_CLIENT_SECRET"]:
+        env_val = os.getenv(var, "").strip()
+        if env_val:
+            return env_val
+    if _is_admin_user(clean_uid):
+        sec = os.getenv("CLIENT_SECRET_JSON", "").strip() or os.getenv("YOUTUBE_CLIENT_SECRET", "").strip()
+        if sec:
+            return sec
+        for fpath in ["Credentials/youtube/client_secret.json", "Credentials/client_secret.json"]:
+            full_p = os.path.join(_REPO_ROOT, fpath)
+            if os.path.exists(full_p):
+                try:
+                    with open(full_p, "r", encoding="utf-8") as f:
+                        return f.read().strip()
+                except Exception:
+                    pass
+    return None
+
+
+def get_user_public_group(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Telegram Public Group/Channel ID. Non-admins NEVER inherit admin group, and NEVER falls back to storage vault."""
+    if not user_id_str:
+        return os.getenv("TELEGRAM_PUBLIC_GROUP_ID", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("telegram_public_group_id") or "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{clean_uid}_TELEGRAM_PUBLIC_GROUP_ID", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("TELEGRAM_PUBLIC_GROUP_ID", "").strip() or None
+    return None
+
+
+def get_user_schedule_times(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal auto-input schedule times. Non-admins NEVER inherit admin schedule."""
+    if not user_id_str:
+        return os.getenv("AUTO_INPUT_SCHEDULE_TIMES", "").strip() or os.getenv("SCRAPING_AUTO_INPUT_TIMES", "").strip() or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES", "").strip() or None
+    users = load_all_users()
+    clean_uid = str(user_id_str).strip()
+    if clean_uid in users:
+        val = (users[clean_uid].get("auto_input_schedule_times") or "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{clean_uid}_AUTO_INPUT_SCHEDULE_TIMES", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(clean_uid):
+        return os.getenv("AUTO_INPUT_SCHEDULE_TIMES", "").strip() or os.getenv("SCRAPING_AUTO_INPUT_TIMES", "").strip() or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES", "").strip() or None
     return None
 
 
