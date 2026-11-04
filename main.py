@@ -3063,14 +3063,14 @@ def parse_scraping_auto_input_times() -> List[str]:
     """
     Parses AUTO_INPUT_SCHEDULE_TIMES from .env and aggregates per-user schedule times
     from telegram_users.json so any registered user's configured schedule slot fires.
-    Defaults to ['06:00', '19:00'].
     """
-    raw = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("SCRAPING_AUTO_INPUT_TIMES") or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES") or "06:00,19:00"
+    raw = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("SCRAPING_AUTO_INPUT_TIMES") or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES") or ""
     slots = set()
-    for piece in raw.split(","):
-        norm = normalize_time_slot(piece)
-        if norm:
-            slots.add(norm)
+    if raw:
+        for piece in raw.split(","):
+            norm = normalize_time_slot(piece)
+            if norm:
+                slots.add(norm)
 
     # Hydrate per-user schedule times from telegram_users.json
     try:
@@ -3086,13 +3086,13 @@ def parse_scraping_auto_input_times() -> List[str]:
     except Exception as _ue:
         logger.debug("Notice parsing user schedule times: %s", _ue)
 
-    return sorted(list(slots)) if slots else ["06:00", "19:00"]
+    return sorted(list(slots))
 
 
 def parse_static_publish_times() -> List[str]:
     """
     Legacy compatibility helper.
-    Publishing is dynamic and triggers automatically inside the 06:00 & 19:00 execution cycle.
+    Publishing is dynamic and triggers automatically inside user-configured execution cycles.
     """
     return parse_scraping_auto_input_times()
 
@@ -3148,7 +3148,7 @@ def get_seconds_until_next_slot(slots: List[str]) -> tuple[str, float, str]:
             pass
 
     if not candidates:
-        return ("12:00", 3600.0, tz_label)
+        return (None, 0.0, tz_label)
 
     candidates.sort(key=lambda x: x[1])
     next_slot, next_dt = candidates[0]
@@ -3179,7 +3179,7 @@ def get_scheduled_users_for_slot(target_slot: str) -> List[Optional[str]]:
                     target_runs.append(uid_str)
 
     # Check admin env schedules
-    env_raw = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("SCRAPING_AUTO_INPUT_TIMES") or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES") or "06:00,19:00"
+    env_raw = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("SCRAPING_AUTO_INPUT_TIMES") or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES") or ""
     env_slots = [normalize_time_slot(p) for p in env_raw.split(",") if normalize_time_slot(p)]
     if target_slot in env_slots:
         for aid in admin_ids:
@@ -3207,7 +3207,13 @@ def run_scheduled_pipeline_loop():
     while True:
         # Dynamically reload slots from .env on every check
         slots = parse_scraping_auto_input_times()
+        if not slots:
+            time.sleep(60)
+            continue
         next_slot, delay_s, tz_label = get_seconds_until_next_slot(slots)
+        if not next_slot:
+            time.sleep(60)
+            continue
         hours_left = delay_s / 3600.0
         logger.info(f"⏳ [SCHEDULER] Next scheduled run at {next_slot} {tz_label} (in {hours_left:.2f} hours / {delay_s:.0f}s)...")
         # Sleep in chunks to emit heartbeat every 15 minutes
@@ -3251,7 +3257,13 @@ async def _async_static_scheduler_task(bot_app=None):
     while True:
         # Dynamically reload slots from .env on every check
         slots = parse_scraping_auto_input_times()
+        if not slots:
+            await asyncio.sleep(60)
+            continue
         next_slot, delay_s, tz_label = get_seconds_until_next_slot(slots)
+        if not next_slot:
+            await asyncio.sleep(60)
+            continue
         hours_left = delay_s / 3600.0
         logger.info(f"⏳ [ASYNC SCHEDULER] Next run scheduled at {next_slot} {tz_label} (in {hours_left:.2f} hours)...")
         # Sleep in chunks to emit heartbeat every 15 minutes so console logs remain alive

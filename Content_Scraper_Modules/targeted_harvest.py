@@ -73,8 +73,10 @@ class TargetedHarvest:
         now = datetime.utcnow()
         
         # Get publish times from env if available
-        env_times = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("PUBLISH_STATIC_TIMES") or "06:00,19:00"
-        scheduled_times = [t.strip() for t in env_times.split(",")]
+        env_times = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("PUBLISH_STATIC_TIMES") or ""
+        scheduled_times = [t.strip() for t in env_times.split(",") if t.strip()]
+        if not scheduled_times:
+            return now
         
         # Find next scheduled time
         for time_str in scheduled_times:

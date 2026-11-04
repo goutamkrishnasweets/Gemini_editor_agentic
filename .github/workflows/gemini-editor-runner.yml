@@ -33,16 +33,12 @@ on:
         default: ''
         type: string
 
-  push:
-    branches:
-      - main
-
   schedule:
-    # 2 clean 4-hour windows (Indian Standard Time — IST):
-    # Morning window: 04:20 AM IST trigger -> 08:20 AM IST stop (4 hours)
-    - cron: '50 22 * * *'
-    # Evening window: 04:20 PM IST trigger -> 08:20 PM IST stop (4 hours)
-    - cron: '50 10 * * *'
+    # 2 clean daytime windows (Indian Standard Time — IST = UTC + 5:30):
+    # Morning/Midday window: 09:30 AM IST trigger -> 01:27 PM IST stop (3.95 hours)
+    - cron: '0 4 * * *'
+    # Afternoon/Evening window: 03:30 PM IST trigger -> 07:27 PM IST stop (3.95 hours)
+    - cron: '0 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
 # Ongoing runs stay active until their full runtime completes.
@@ -134,6 +130,7 @@ jobs:
         FACEBOOK_PAGE_ACCESS_TOKEN: ${{ secrets.FACEBOOK_PAGE_ACCESS_TOKEN || secrets.META_PAGE_TOKEN }}
         TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
         BRAND_WATERMARK: ${{ secrets.BRAND_WATERMARK || secrets.BRAND_WATERMARK_TEXT }}
+        AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES || vars.AUTO_INPUT_SCHEDULE_TIMES || '' }}
       run: |
         mkdir -p Credentials
         rm -f .env Credentials/.env
@@ -173,6 +170,7 @@ jobs:
                 'META_PAGE_TOKEN': os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN'),
                 'TIKTOK_ACCESS_TOKEN': os.getenv('TIKTOK_ACCESS_TOKEN'),
                 'BRAND_WATERMARK_TEXT': os.getenv('BRAND_WATERMARK'),
+                'AUTO_INPUT_SCHEDULE_TIMES': os.getenv('AUTO_INPUT_SCHEDULE_TIMES'),
             }
             for k, v in mappings.items():
                 if v and v.strip():
@@ -233,6 +231,7 @@ jobs:
         TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH || vars.TELEGRAM_API_HASH }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
         MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL || vars.MAKE_WEBHOOK_URL }}
+        AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES || vars.AUTO_INPUT_SCHEDULE_TIMES || '' }}
         DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
         DISPATCH_PLATFORM: ${{ github.event.inputs.platform || 'all_available' }}
         DISPATCH_TARGET_ACCOUNTS: ${{ github.event.inputs.target_accounts || '' }}
