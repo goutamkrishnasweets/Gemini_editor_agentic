@@ -1109,8 +1109,10 @@ def exchange_meta_oauth_code(code: str, app_id: str, app_secret: str, redirect_u
 
 def save_and_sync_meta_credentials(auth_result: Dict[str, Any], user_id_str: Optional[str] = None) -> Tuple[bool, str]:
     """
-    Persists discovered Meta & Instagram credentials to .env, Credentials/.env,
-    telegram_users.json, and GitHub Secrets.
+    Persists discovered Meta & Instagram credentials:
+    - Admin users: updates root canonical .env, in-memory os.environ, and root GitHub Secrets.
+    - Non-admin users: strictly updates USER_<id>_ environment variables, personal telegram_users.json
+      record, and USER_<id>_ GitHub Secrets. NEVER touches root admin credentials.
     """
     if not auth_result.get("success"):
         return False, auth_result.get("error", "Unknown auth failure")
@@ -1123,27 +1125,44 @@ def save_and_sync_meta_credentials(auth_result: Dict[str, Any], user_id_str: Opt
     if not p_id or not p_token:
         return False, "Missing Page ID or Page Token in discovery result."
 
-    # Update in-memory runtime
-    os.environ["META_PAGE_ID"] = p_id
-    os.environ["META_PAGE_TOKEN"] = p_token
-    if ig_id:
-        os.environ["IG_BUSINESS_ID"] = ig_id
-        os.environ["IG_BUSINESS_TOKEN"] = ig_token
+    from Telegram_Storage_Modules.telegram_user_manager import (
+        _is_admin_user,
+        _persist_env_var_to_disk,
+        load_all_users,
+        save_all_users,
+        sync_user_secret_to_github,
+    )
 
-    # Persist to local .env and Credentials/.env
-    from Telegram_Storage_Modules.telegram_user_manager import _persist_env_var_to_disk
-    _persist_env_var_to_disk("META_PAGE_ID", p_id)
-    _persist_env_var_to_disk("META_PAGE_TOKEN", p_token)
-    if ig_id:
-        _persist_env_var_to_disk("IG_BUSINESS_ID", ig_id)
-        _persist_env_var_to_disk("IG_BUSINESS_TOKEN", ig_token)
+    clean_uid = str(user_id_str).strip() if user_id_str else ""
+    is_admin = _is_admin_user(clean_uid) if clean_uid else True
 
-    # Persist in telegram_users.json
+    # 1. Update in-memory runtime & disk
+    if is_admin:
+        os.environ["META_PAGE_ID"] = p_id
+        os.environ["META_PAGE_TOKEN"] = p_token
+        if ig_id:
+            os.environ["IG_BUSINESS_ID"] = ig_id
+            os.environ["IG_BUSINESS_TOKEN"] = ig_token
+
+        # Persist to local .env and Credentials/.env strictly for admin
+        _persist_env_var_to_disk("META_PAGE_ID", p_id)
+        _persist_env_var_to_disk("META_PAGE_TOKEN", p_token)
+        if ig_id:
+            _persist_env_var_to_disk("IG_BUSINESS_ID", ig_id)
+            _persist_env_var_to_disk("IG_BUSINESS_TOKEN", ig_token)
+    else:
+        # Non-admin: isolate to user-prefixed in-memory environment, NEVER touch root .env or root os.environ
+        os.environ[f"USER_{clean_uid}_META_PAGE_ID"] = p_id
+        os.environ[f"USER_{clean_uid}_META_PAGE_TOKEN"] = p_token
+        if ig_id:
+            os.environ[f"USER_{clean_uid}_IG_BUSINESS_ID"] = ig_id
+            os.environ[f"USER_{clean_uid}_IG_BUSINESS_TOKEN"] = ig_token
+
+    # 2. Persist in telegram_users.json under user's isolated record
     try:
-        from Telegram_Storage_Modules.telegram_user_manager import load_all_users, save_all_users
         users = load_all_users()
-        uid = str(user_id_str) if user_id_str else "admin"
-        u_rec = users.setdefault(uid, {})
+        uid_key = clean_uid if clean_uid else "admin"
+        u_rec = users.setdefault(uid_key, {})
         u_rec["meta_page_id"] = p_id
         u_rec["meta_page_token"] = p_token
         if ig_id:
@@ -1153,14 +1172,16 @@ def save_and_sync_meta_credentials(auth_result: Dict[str, Any], user_id_str: Opt
     except Exception as _e:
         logger.warning("Could not persist to telegram_users.json: %s", _e)
 
-    # Sync to GitHub Secrets
+    # 3. Sync to GitHub Secrets via sync_user_secret_to_github
+    # Admin -> updates root canonical secret (META_PAGE_ID, etc.)
+    # Non-admin -> updates USER_<id>_ prefixed secret (USER_7822881619_META_PAGE_ID, etc.)
     try:
-        from Utilities.github_secret_updater import sync_custom_secret_to_github
-        sync_custom_secret_to_github("META_PAGE_ID", p_id)
-        sync_custom_secret_to_github("META_PAGE_TOKEN", p_token)
+        target_uid = clean_uid if clean_uid else "admin"
+        sync_user_secret_to_github(target_uid, "META_PAGE_ID", p_id)
+        sync_user_secret_to_github(target_uid, "META_PAGE_TOKEN", p_token)
         if ig_id:
-            sync_custom_secret_to_github("IG_BUSINESS_ID", ig_id)
-            sync_custom_secret_to_github("IG_BUSINESS_TOKEN", ig_token)
+            sync_user_secret_to_github(target_uid, "IG_BUSINESS_ID", ig_id)
+            sync_user_secret_to_github(target_uid, "IG_BUSINESS_TOKEN", ig_token)
     except Exception as _ge:
         logger.warning("GitHub Secret sync notice: %s", _ge)
 

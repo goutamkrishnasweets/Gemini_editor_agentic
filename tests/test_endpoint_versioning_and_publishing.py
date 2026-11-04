@@ -213,6 +213,48 @@ class TestEndpointVersioning(unittest.TestCase):
             mock_yt.assert_called_once()
             mock_meta.assert_called_once()
 
+    def test_save_and_sync_meta_credentials_strict_isolation(self):
+        """Verifies that save_and_sync_meta_credentials isolates normal user credentials and never overwrites admin credentials."""
+        from Publishing_Modules.meta_uploader import save_and_sync_meta_credentials
+
+        fake_auth = {
+            "success": True,
+            "meta_page_id": "normal_page_111",
+            "meta_page_token": "normal_tok_222",
+            "ig_business_id": "normal_ig_333",
+            "ig_business_token": "normal_igtok_444",
+            "page_name": "Normal Page",
+            "ig_username": "normal_ig",
+        }
+
+        # Clear root environment variables
+        os.environ["META_PAGE_ID"] = "admin_page_999"
+        os.environ["META_PAGE_TOKEN"] = "admin_tok_999"
+
+        with patch("Telegram_Storage_Modules.telegram_user_manager._is_admin_user", return_value=False), \
+             patch("Telegram_Storage_Modules.telegram_user_manager._persist_env_var_to_disk") as mock_persist, \
+             patch("Telegram_Storage_Modules.telegram_user_manager.sync_user_secret_to_github") as mock_user_sync, \
+             patch("Telegram_Storage_Modules.telegram_user_manager.save_all_users") as mock_save_users:
+
+            ok, msg = save_and_sync_meta_credentials(fake_auth, user_id_str="normal_user_888")
+            self.assertTrue(ok)
+
+            # CRITICAL ASSERTION: Root admin environment was NOT overwritten
+            self.assertEqual(os.environ.get("META_PAGE_ID"), "admin_page_999")
+            self.assertEqual(os.environ.get("META_PAGE_TOKEN"), "admin_tok_999")
+
+            # CRITICAL ASSERTION: _persist_env_var_to_disk was NEVER called for non-admin
+            mock_persist.assert_not_called()
+
+            # CRITICAL ASSERTION: User-isolated runtime env WAS set
+            self.assertEqual(os.environ.get("USER_normal_user_888_META_PAGE_ID"), "normal_page_111")
+            self.assertEqual(os.environ.get("USER_normal_user_888_META_PAGE_TOKEN"), "normal_tok_222")
+
+            # CRITICAL ASSERTION: sync_user_secret_to_github was called with user ID
+            mock_user_sync.assert_any_call("normal_user_888", "META_PAGE_ID", "normal_page_111")
+            mock_user_sync.assert_any_call("normal_user_888", "META_PAGE_TOKEN", "normal_tok_222")
+            mock_user_sync.assert_any_call("normal_user_888", "IG_BUSINESS_ID", "normal_ig_333")
+
 
 if __name__ == "__main__":
     unittest.main()
