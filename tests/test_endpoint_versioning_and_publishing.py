@@ -607,3 +607,161 @@ class TestPlatformSEOTrailReelsIntegration(unittest.TestCase):
         )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Modular Instagram Features Unit Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCollaboratorsManager(unittest.TestCase):
+    """Unit tests for Publishing_Modules.instagram_features.collaborators.CollaboratorsManager"""
+
+    def _mgr(self):
+        from Publishing_Modules.instagram_features.collaborators import CollaboratorsManager
+        return CollaboratorsManager()
+
+    def test_extract_collaborators_single(self):
+        clean, collabs = self._mgr().extract_collaborators("My Tech Review /collab @tech_guru")
+        self.assertEqual(clean, "My Tech Review")
+        self.assertEqual(collabs, ["tech_guru"])
+        self.assertNotIn("/collab", clean)
+
+    def test_extract_collaborators_multiple(self):
+        clean, collabs = self._mgr().extract_collaborators("Podcast Episode /collab @host, @guest")
+        self.assertEqual(clean, "Podcast Episode")
+        self.assertEqual(collabs, ["host", "guest"])
+
+    def test_extract_collaborators_capped_at_three(self):
+        clean, collabs = self._mgr().extract_collaborators("Big Collab /collab @u1 @u2 @u3 @u4")
+        self.assertEqual(len(collabs), 3)
+
+    def test_apply_collaborators_json_injection(self):
+        import json
+        init_data = {"media_type": "REELS"}
+        res = self._mgr().apply_collaborators(init_data, ["user_a", "user_b"])
+        self.assertIn("collaborators", res)
+        parsed = json.loads(res["collaborators"])
+        self.assertEqual(parsed, ["user_a", "user_b"])
+
+    def test_collaborators_fallback(self):
+        init_data = {"media_type": "REELS", "collaborators": '["private_user"]'}
+        res = self._mgr().handle_collaborators_ineligible_fallback(init_data)
+        self.assertNotIn("collaborators", res)
+
+
+class TestUserTagsManager(unittest.TestCase):
+    """Unit tests for Publishing_Modules.instagram_features.user_tags.UserTagsManager"""
+
+    def _mgr(self):
+        from Publishing_Modules.instagram_features.user_tags import UserTagsManager
+        return UserTagsManager()
+
+    def test_extract_user_tags(self):
+        clean, tags = self._mgr().extract_user_tags("Interview Session /tag @featured_speaker")
+        self.assertEqual(clean, "Interview Session")
+        self.assertEqual(tags, ["featured_speaker"])
+        self.assertNotIn("/tag", clean)
+
+    def test_calculate_visual_coords_within_safe_zone(self):
+        tags = self._mgr().calculate_visual_coords(["speaker1", "speaker2"])
+        self.assertEqual(len(tags), 2)
+        for t in tags:
+            self.assertIn("username", t)
+            self.assertTrue(0.0 <= t["x"] <= 1.0)
+            self.assertTrue(0.0 <= t["y"] <= 1.0)
+            # Safe zone: must be in bottom area to avoid blocking faces
+            self.assertGreaterEqual(t["y"], 0.70)
+
+    def test_apply_user_tags_injection(self):
+        import json
+        init_data = {"media_type": "REELS"}
+        tags_payload = [{"username": "alex", "x": 0.5, "y": 0.85}]
+        res = self._mgr().apply_user_tags(init_data, tags_payload)
+        self.assertIn("user_tags", res)
+        parsed = json.loads(res["user_tags"])
+        self.assertEqual(parsed[0]["username"], "alex")
+
+    def test_user_tags_fallback(self):
+        init_data = {"media_type": "REELS", "user_tags": '[{"username": "bad"}]'}
+        res = self._mgr().handle_user_tags_fallback(init_data)
+        self.assertNotIn("user_tags", res)
+
+
+class TestFeedVisibilityManager(unittest.TestCase):
+    """Unit tests for Publishing_Modules.instagram_features.feed_visibility.FeedVisibilityManager"""
+
+    def _mgr(self):
+        from Publishing_Modules.instagram_features.feed_visibility import FeedVisibilityManager
+        return FeedVisibilityManager()
+
+    def test_default_feed_visibility_is_true(self):
+        clean, share_to_feed = self._mgr().extract_feed_visibility("Just A Normal Title")
+        self.assertEqual(clean, "Just A Normal Title")
+        self.assertTrue(share_to_feed)
+
+    def test_no_grid_command_sets_share_to_feed_false(self):
+        clean, share_to_feed = self._mgr().extract_feed_visibility("Experimental Reel /no_grid")
+        self.assertEqual(clean, "Experimental Reel")
+        self.assertFalse(share_to_feed)
+        self.assertNotIn("/no_grid", clean)
+
+    def test_apply_feed_visibility(self):
+        init_data = {}
+        res = self._mgr().apply_feed_visibility(init_data, share_to_feed=False)
+        self.assertFalse(res["share_to_feed"])
+
+
+class TestAudioNamerManager(unittest.TestCase):
+    """Unit tests for Publishing_Modules.instagram_features.audio_namer.AudioNamerManager"""
+
+    def _mgr(self):
+        from Publishing_Modules.instagram_features.audio_namer import AudioNamerManager
+        return AudioNamerManager()
+
+    def test_generate_audio_name_with_brand(self):
+        name = self._mgr().generate_audio_name("Sony A7IV Hands On", brand_name="CameraLab")
+        self.assertIn("CameraLab", name)
+        self.assertIn("Sony A7IV", name)
+
+    def test_generate_audio_name_default_prefix(self):
+        name = self._mgr().generate_audio_name("Tech Review")
+        self.assertTrue(name.startswith("Original Audio -"))
+
+    def test_apply_audio_name(self):
+        init_data = {}
+        res = self._mgr().apply_audio_name(init_data, "Original Audio - My Track")
+        self.assertEqual(res.get("audio_name"), "Original Audio - My Track")
+
+
+class TestAllMetaFeaturesIntegration(unittest.TestCase):
+    """Integration tests verifying all modular Meta features work together seamlessly."""
+
+    def test_all_features_parsed_and_scrubbed_from_seo(self):
+        with patch("Gemini_Modules.platform_seo_generator._llm_json", return_value=None):
+            from Gemini_Modules.platform_seo_generator import generate_platform_seo
+            raw_input = "Sony FX3 Review https://amzn.to/example /collab @partner /tag @guest /no_grid /trail_reels"
+            result = generate_platform_seo(
+                video_context="Camera gear breakdown",
+                user_title=raw_input,
+                user_hint=raw_input,
+                platforms=["instagram"],
+            )
+
+        ig_plat = result.get("platforms", {}).get("instagram", {})
+        title_text = (ig_plat.get("title") or "").lower()
+        desc_text = (ig_plat.get("description") or "").lower()
+
+        # Commands must be completely absent from public copy
+        for cmd in ["/collab", "/tag", "/no_grid", "/trail_reels"]:
+            self.assertNotIn(cmd, title_text)
+            self.assertNotIn(cmd, desc_text)
+
+        # Meta features dictionary must be properly populated
+        m_feat = result.get("meta_features", {})
+        self.assertTrue(m_feat.get("trail_reels"))
+        self.assertFalse(m_feat.get("share_to_feed"))
+        self.assertEqual(m_feat.get("collaborators"), ["partner"])
+        self.assertEqual(len(m_feat.get("user_tags", [])), 1)
+        self.assertEqual(m_feat["user_tags"][0]["username"], "guest")
+        self.assertTrue(m_feat.get("audio_name"))
+
+
+

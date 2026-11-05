@@ -317,35 +317,101 @@ class AsyncMetaUploader:
                 "access_token": ig_token
             }
 
-            # ── Trail Reels: inject trial_params when flagged ──────────────────
-            # trial_params is applied only when the caller explicitly passes
-            # meta_config["trail_reels"] = True (set by TrailReelsManager).
-            # Graduation strategy is always MANUAL — user graduates on their phone.
-            _is_trial = bool(meta_config.get("trail_reels", False)) if isinstance(meta_config, dict) else False
+            # ── Meta Features: Inject modular features (Trail Reels, Collabs, Tags, Feed Visibility, Audio Name) ──
+            m_feat = meta_config.get("meta_features", {}) if isinstance(meta_config, dict) else {}
+            _is_trial = bool(meta_config.get("trail_reels", m_feat.get("trail_reels", False)))
+            _collabs = meta_config.get("collaborators", m_feat.get("collaborators", []))
+            _tags = meta_config.get("user_tags", m_feat.get("user_tags", []))
+            _share_feed = meta_config.get("share_to_feed", m_feat.get("share_to_feed", True))
+            _audio_name = meta_config.get("audio_name", m_feat.get("audio_name", ""))
+
+            # 1. Trail Reels
             if _is_trial:
                 try:
                     from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
-                    _tr_mgr = TrailReelsManager()
-                    init_data = _tr_mgr.apply_trial_params(init_data, is_trial=True)
+                    init_data = TrailReelsManager().apply_trial_params(init_data, is_trial=True)
                 except Exception as _tr_err:
                     logger.warning("[TrailReels] Could not inject trial_params: %s", _tr_err)
+
+            # 2. Feed Visibility
+            try:
+                from Publishing_Modules.instagram_features.feed_visibility import FeedVisibilityManager
+                init_data = FeedVisibilityManager().apply_feed_visibility(init_data, share_to_feed=_share_feed)
+            except Exception as _fv_err:
+                logger.warning("[FeedVisibility] Could not set share_to_feed: %s", _fv_err)
+
+            # 3. Collaborators
+            if _collabs:
+                try:
+                    from Publishing_Modules.instagram_features.collaborators import CollaboratorsManager
+                    init_data = CollaboratorsManager().apply_collaborators(init_data, _collabs)
+                except Exception as _cl_err:
+                    logger.warning("[Collaborators] Could not inject collaborators: %s", _cl_err)
+
+            # 4. User Tags
+            if _tags:
+                try:
+                    from Publishing_Modules.instagram_features.user_tags import UserTagsManager
+                    init_data = UserTagsManager().apply_user_tags(init_data, _tags)
+                except Exception as _ut_err:
+                    logger.warning("[UserTags] Could not inject user_tags: %s", _ut_err)
+
+            # 5. Audio Name
+            if _audio_name:
+                try:
+                    from Publishing_Modules.instagram_features.audio_namer import AudioNamerManager
+                    init_data = AudioNamerManager().apply_audio_name(init_data, _audio_name)
+                except Exception as _an_err:
+                    logger.warning("[AudioNamer] Could not inject audio_name: %s", _an_err)
             # ──────────────────────────────────────────────────────────────────
 
             req_init = await AsyncMetaUploader._retry_request("POST", url, data=init_data)
             if "uri" not in req_init:
-                # ── Auto-fallback: If Meta rejected init due to trial_params ineligibility ──
-                if _is_trial and "trial" in json.dumps(req_init).lower():
-                    logger.warning(
-                        "⚠️ [TRIAL REELS] Meta rejected trial_params (account ineligible). "
-                        "Falling back to standard Reel upload automatically."
-                    )
+                # ── Auto-fallback recovery loop: strip rejected optional features and re-submit ──
+                err_str = json.dumps(req_init).lower()
+                retry_needed = False
+
+                # Check Trial Reels rejection
+                if "trial_params" in init_data and ("trial" in err_str or "2804003" in err_str):
+                    logger.warning("⚠️ [TRIAL REELS] Meta rejected trial_params (account ineligible). Stripping and retrying...")
                     try:
                         from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
                         init_data = TrailReelsManager().handle_trial_ineligible_fallback(init_data)
-                    except Exception as _fb_err:
-                        logger.warning("[TrailReels] Fallback handler error: %s", _fb_err)
+                    except Exception:
                         init_data.pop("trial_params", None)
-                    _is_trial = False
+                    retry_needed = True
+
+                # Check Collaborators rejection
+                if "collaborators" in init_data and ("collaborator" in err_str or "collab" in err_str):
+                    logger.warning("⚠️ [COLLABORATORS] Meta rejected collaborators. Stripping and retrying...")
+                    try:
+                        from Publishing_Modules.instagram_features.collaborators import CollaboratorsManager
+                        init_data = CollaboratorsManager().handle_collaborators_ineligible_fallback(init_data)
+                    except Exception:
+                        init_data.pop("collaborators", None)
+                    retry_needed = True
+
+                # Check User Tags rejection
+                if "user_tags" in init_data and ("user_tag" in err_str or "tagged user" in err_str or "tagging" in err_str):
+                    logger.warning("⚠️ [USER TAGS] Meta rejected user_tags. Stripping and retrying...")
+                    try:
+                        from Publishing_Modules.instagram_features.user_tags import UserTagsManager
+                        init_data = UserTagsManager().handle_user_tags_fallback(init_data)
+                    except Exception:
+                        init_data.pop("user_tags", None)
+                    retry_needed = True
+
+                # Check Audio Name rejection
+                if "audio_name" in init_data and "audio_name" in err_str:
+                    logger.warning("⚠️ [AUDIO NAMER] Meta rejected audio_name. Stripping and retrying...")
+                    try:
+                        from Publishing_Modules.instagram_features.audio_namer import AudioNamerManager
+                        init_data = AudioNamerManager().handle_audio_name_fallback(init_data)
+                    except Exception:
+                        init_data.pop("audio_name", None)
+                    retry_needed = True
+
+                if retry_needed:
                     req_init = await AsyncMetaUploader._retry_request("POST", url, data=init_data)
 
                 if "uri" not in req_init:

@@ -170,6 +170,7 @@ async def publish_to_meta(
     niche: Optional[str] = None,
     user_id: Optional[str] = None,
     trail_reels: bool = False,
+    meta_features: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Uploads video reel to Instagram & Facebook via Meta Graph API using dynamic META_GRAPH_VERSION."""
     logger.info("📸 [PUBLISHER 2/4] Uploading to Meta Instagram & Facebook (user_id=%s, trial_reel=%s)...", user_id or "admin", trail_reels)
@@ -186,13 +187,18 @@ async def publish_to_meta(
                 "facebook": {"status": "skipped", "message": "Personal Facebook credentials not configured for user"}
             }
 
+        m_feat = dict(meta_features or {})
+        if trail_reels:
+            m_feat["trail_reels"] = True
+
         if token or ig_user_id:
             meta_config_override = {
                 "IG_BUSINESS_ID": ig_user_id or "",
                 "IG_BUSINESS_TOKEN": token or "",
                 "META_PAGE_ID": user_creds.get("meta_page_id") or "",
                 "META_PAGE_TOKEN": user_creds.get("meta_page_token") or token or "",
-                "trail_reels": trail_reels,   # passed into _upload_to_instagram → trial_params injection
+                "trail_reels": m_feat.get("trail_reels", False),
+                "meta_features": m_feat,
             }
             logger.info("[META CRED] Using user-resolved config: IG_ID=%s", (ig_user_id or "")[:8] + "...")
         else:
@@ -394,12 +400,14 @@ async def run_phase4_publishing_async(
             ig_caption += "\n\n" + " ".join(ig_payload.get("hashtags", []))
 
         try:
+            _meta_feats = (seo_data.get("meta_features", {}) if isinstance(seo_data, dict) else {}) or {}
             meta_res = await publish_to_meta(
                 video_path=video_path,
                 caption=ig_caption,
                 niche=niche,
                 user_id=user_id,
                 trail_reels=trail_reels,
+                meta_features=_meta_feats,
             )
             ig_result = meta_res.get("instagram", {})
             if ig_result.get("status") == "success":

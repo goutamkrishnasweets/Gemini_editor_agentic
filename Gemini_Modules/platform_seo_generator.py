@@ -1725,18 +1725,51 @@ def generate_platform_seo(
         return {"generated_at": _now(), "platforms": {}, "_source": "no_platforms"}
     content_origin = (content_origin or os.getenv("SEO_CONTENT_ORIGIN", "reused")).lower()
 
-    # ── Trail Reels: strip /trail_reels command token before ANY processing ───
-    # The /trail_reels token must NEVER reach YouTube title, IG caption, or SEO
-    # output — strip it immediately from both user_title and user_hint.
-    _trail_token_re = re.compile(r"\s*/tr(?:ai|ia)l_reels\b", re.IGNORECASE)
-    is_trial_reel: bool = bool(
-        _trail_token_re.search(user_title or "")
-        or _trail_token_re.search(user_hint or "")
-    )
+    # ── Meta Features: Parse and scrub all command tokens before ANY processing ───
+    # Tokens (/trail_reels, /collab, /tag, /no_grid) must NEVER reach YouTube title,
+    # IG caption, or SEO output — strip them immediately from user_title and user_hint.
+    try:
+        from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
+        from Publishing_Modules.instagram_features.collaborators import CollaboratorsManager
+        from Publishing_Modules.instagram_features.user_tags import UserTagsManager
+        from Publishing_Modules.instagram_features.feed_visibility import FeedVisibilityManager
+        from Publishing_Modules.instagram_features.audio_namer import AudioNamerManager
+
+        _tr_mgr = TrailReelsManager()
+        _collab_mgr = CollaboratorsManager()
+        _tag_mgr = UserTagsManager()
+        _feed_mgr = FeedVisibilityManager()
+        _audio_mgr = AudioNamerManager()
+
+        user_title, _, is_trial_reel = _tr_mgr.extract_trail_command(user_title or "")
+        user_hint, _, _ = _tr_mgr.extract_trail_command(user_hint or "")
+
+        user_title, collaborators_list = _collab_mgr.extract_collaborators(user_title)
+        user_hint, _ = _collab_mgr.extract_collaborators(user_hint)
+
+        user_title, raw_tags_list = _tag_mgr.extract_user_tags(user_title)
+        user_hint, _ = _tag_mgr.extract_user_tags(user_hint)
+
+        user_title, share_to_feed = _feed_mgr.extract_feed_visibility(user_title)
+        user_hint, _ = _feed_mgr.extract_feed_visibility(user_hint)
+
+        user_tags_payload = _tag_mgr.calculate_visual_coords(raw_tags_list)
+    except Exception as _feat_err:
+        logger.warning("[PlatformSEO] Meta features parsing notice: %s", _feat_err)
+        is_trial_reel = False
+        collaborators_list = []
+        user_tags_payload = []
+        share_to_feed = True
+        _audio_mgr = None
+
     if is_trial_reel:
-        user_title = _trail_token_re.sub("", user_title or "").strip()
-        user_hint = _trail_token_re.sub("", user_hint or "").strip()
         logger.info("[PlatformSEO] Trial Reels mode activated — cold-audience viral optimizer engaged.")
+    if collaborators_list:
+        logger.info("[PlatformSEO] Collaborators active: %s", collaborators_list)
+    if user_tags_payload:
+        logger.info("[PlatformSEO] User tags active: %d accounts", len(user_tags_payload))
+    if not share_to_feed:
+        logger.info("[PlatformSEO] Feed grid hidden — Reel will publish to Reels tab only.")
     # ─────────────────────────────────────────────────────────────────────────
 
     links = _extract_links(affiliate_link)
@@ -1818,7 +1851,14 @@ def generate_platform_seo(
         finals = {p: fin(p, heur[p], analysis, backfill) for p in platforms}
         _hfb = _assemble(finals, analysis, evidence, links, subject, "heuristic_fallback", seo_id, content_origin, modes,
                          {"llm_calls": 0, "rounds_run": 0, "accepted_rewrites": 0}, {}, guard)
-        _hfb["meta_features"] = {"trail_reels": is_trial_reel}
+        _hfb["meta_features"] = {
+            "trail_reels": is_trial_reel,
+            "collaborators": collaborators_list,
+            "user_tags": user_tags_payload,
+            "share_to_feed": share_to_feed,
+            "audio_name": (_audio_mgr.generate_audio_name(subject or user_title, brand_name=brand_info)
+                           if _audio_mgr else f"Original Audio - {subject}"),
+        }
         return _hfb
 
     analysis = _as_dict(draft.get("analysis"))
@@ -1888,10 +1928,17 @@ def generate_platform_seo(
                        {"llm_calls": calls, "rounds_run": rounds_run, "accepted_rewrites": accepted},
                        {"content_category": draft.get("content_category"), "target_audience": draft.get("target_audience")},
                        guard)
-    # Stamp meta_features so downstream publishing modules know trial mode was active
-    result["meta_features"] = {"trail_reels": is_trial_reel}
-    logger.info("✅ [PlatformSEO] %s | calls=%d accepted=%d scores=%s | trial_reel=%s", subject, calls, accepted,
-                {p: f["seo_score"] for p, f in finals.items()}, is_trial_reel)
+    # Stamp complete meta_features so downstream publishing modules know all flags
+    result["meta_features"] = {
+        "trail_reels": is_trial_reel,
+        "collaborators": collaborators_list,
+        "user_tags": user_tags_payload,
+        "share_to_feed": share_to_feed,
+        "audio_name": (_audio_mgr.generate_audio_name(subject or user_title, brand_name=brand_info)
+                       if _audio_mgr else f"Original Audio - {subject}"),
+    }
+    logger.info("✅ [PlatformSEO] %s | calls=%d accepted=%d scores=%s | meta_features=%s", subject, calls, accepted,
+                {p: f["seo_score"] for p, f in finals.items()}, result["meta_features"])
     return result
 
 

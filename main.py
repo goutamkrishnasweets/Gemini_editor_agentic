@@ -879,14 +879,17 @@ async def handle_telegram_callback(update, context):
             "My Viral Video Title\n\n"
             "Option 2   Title with Affiliate Link\n"
             "My Product Review https://amzn.to/example\n\n"
-            "Option 3   Title with Affiliate Link and Trial Reels\n"
-            "My Product Review https://amzn.to/example /trail_reels\n\n"
-            "Meta Feature Command\n"
-            "👉 /trail_reels   Publishes as a trial reel to test with non followers first\n\n"
+            "Option 3   Title with Meta Features\n"
+            "My Review https://amzn.to/example /collab @partner /tag @guest /trail_reels\n\n"
+            "Available Meta Feature Commands\n"
+            "👉 /trail_reels   Test with non followers first\n"
+            "👉 /collab @user   Co author reel to appear on both profile grids\n"
+            "👉 /tag @user   Tag account with AI safe visual placement\n"
+            "👉 /no_grid   Publish to Reels tab only without main feed grid\n\n"
             "Important Rules\n"
             "• A user title is compulsory\n"
             "• Never send direct links alone\n"
-            "• Add /trail_reels at the end only if you want trial mode"
+            "• Add feature commands at the end of your message"
         )
         awaiting_kbd = build_awaiting_title_keyboard(session_id)
 
@@ -2367,17 +2370,29 @@ async def handle_telegram_incoming_msg(update, context):
             sess_id = pending_sess["session_id"]
             sess = session_manager.get_session(sess_id)
 
-            # ── 0. Parse /trail_reels command and extract clean title + URLs ──────
-            # TrailReelsManager handles both /trail_reels and typo /trial_reels.
-            # It strips the command token BEFORE anything else touches the text —
-            # so it NEVER leaks into YouTube title, SEO output, or IG caption.
+            # ── 0. Parse modular Meta features (/trail_reels, /collab, /tag, /no_grid) ──
+            # Each feature is handled by its own individual callable module in
+            # Publishing_Modules/instagram_features/ and tokens are completely stripped
+            # so they NEVER leak into YouTube titles, IG captions, or public SEO.
             try:
                 from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager as _TRM
+                from Publishing_Modules.instagram_features.collaborators import CollaboratorsManager as _CLM
+                from Publishing_Modules.instagram_features.user_tags import UserTagsManager as _UTM
+                from Publishing_Modules.instagram_features.feed_visibility import FeedVisibilityManager as _FVM
+
                 _tr_mgr = _TRM()
+                _cl_mgr = _CLM()
+                _ut_mgr = _UTM()
+                _fv_mgr = _FVM()
+
                 _clean_text, _first_aff_url, _is_trial = _tr_mgr.extract_trail_command(user_input_raw)
-            except Exception as _tr_parse_err:
-                logger.warning("[TrailReels] Parser error: %s", _tr_parse_err)
+                _clean_text, _collabs = _cl_mgr.extract_collaborators(_clean_text)
+                _clean_text, _raw_tags = _ut_mgr.extract_user_tags(_clean_text)
+                _clean_text, _share_feed = _fv_mgr.extract_feed_visibility(_clean_text)
+            except Exception as _feat_parse_err:
+                logger.warning("[MetaFeatures] Parser error: %s", _feat_parse_err)
                 _clean_text, _first_aff_url, _is_trial = user_input_raw, None, False
+                _collabs, _raw_tags, _share_feed = [], [], True
 
             # Re-extract all URLs from cleaned text for multi-link support
             extracted_urls = re.findall(r'https?://[^\s<>"]+', _clean_text)
@@ -2392,13 +2407,22 @@ async def handle_telegram_incoming_msg(update, context):
 
             affiliate_url = "\n".join(extracted_urls) if extracted_urls else None
 
-            # Store trial flag into the session for Phase 4 to consume
+            # Store feature flags into the session for Phase 4 to consume
             if sess is not None:
                 sess["trail_reels"] = _is_trial
+                sess["collaborators"] = _collabs
+                sess["user_tags"] = _raw_tags
+                sess["share_to_feed"] = _share_feed
                 session_manager._save_sessions()
 
             if _is_trial:
                 logger.info("[TrailReels] Trial Reels mode active for session %s.", sess_id)
+            if _collabs:
+                logger.info("[Collaborators] Collaborators for session %s: %s", sess_id, _collabs)
+            if _raw_tags:
+                logger.info("[UserTags] User tags for session %s: %s", sess_id, _raw_tags)
+            if not _share_feed:
+                logger.info("[FeedVisibility] Share to feed is FALSE for session %s.", sess_id)
 
             # ── Velocity warning (non-blocking — user always has bypass) ──────────
             if _is_trial:
@@ -2580,12 +2604,24 @@ async def handle_telegram_incoming_msg(update, context):
             else:
                 aff_status = ""
 
+            active_feats = []
+            if _is_trial:
+                active_feats.append("🧪 Trial Reels")
+            if _collabs:
+                active_feats.append(f"👥 Collab ({len(_collabs)})")
+            if _raw_tags:
+                active_feats.append(f"🏷️ Tags ({len(_raw_tags)})")
+            if not _share_feed:
+                active_feats.append("📴 Reels-Tab Only")
+            feats_line = f"\n✨ **Meta Features**: {', '.join(active_feats)}" if active_feats else ""
+
             await msg.reply_text(
-                f"🚀 **Commercial AI Title Saved!** Starting 4-Platform Broadcasting...{' 🧪 Trial Reels Mode' if _is_trial else ''}...\n\n"
+                f"🚀 **Commercial AI Title Saved!** Starting 4-Platform Broadcasting...\n\n"
                 f"⭐ **Main Subject**: `{main_subject}`\n"
                 f"📌 **YouTube Title**: `{approved_title}`\n"
                 f"🏷️ **Hashtags**: `{tags_str[:80]}`"
-                f"{aff_status}\n"
+                f"{aff_status}"
+                f"{feats_line}\n"
                 f"📁 **Reel**: `{os.path.basename(v_path)}`"
             )
 
