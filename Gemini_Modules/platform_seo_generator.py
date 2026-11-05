@@ -1725,6 +1725,20 @@ def generate_platform_seo(
         return {"generated_at": _now(), "platforms": {}, "_source": "no_platforms"}
     content_origin = (content_origin or os.getenv("SEO_CONTENT_ORIGIN", "reused")).lower()
 
+    # ── Trail Reels: strip /trail_reels command token before ANY processing ───
+    # The /trail_reels token must NEVER reach YouTube title, IG caption, or SEO
+    # output — strip it immediately from both user_title and user_hint.
+    _trail_token_re = re.compile(r"\s*/tr(?:ai|ia)l_reels\b", re.IGNORECASE)
+    is_trial_reel: bool = bool(
+        _trail_token_re.search(user_title or "")
+        or _trail_token_re.search(user_hint or "")
+    )
+    if is_trial_reel:
+        user_title = _trail_token_re.sub("", user_title or "").strip()
+        user_hint = _trail_token_re.sub("", user_hint or "").strip()
+        logger.info("[PlatformSEO] Trial Reels mode activated — cold-audience viral optimizer engaged.")
+    # ─────────────────────────────────────────────────────────────────────────
+
     links = _extract_links(affiliate_link)
     slot_to_url = {f"[[AFF_LINK_{i}]]": u for i, u in enumerate(links, 1)}
     modes = {p: _link_mode(p, link_modes) for p in platforms}
@@ -1752,14 +1766,60 @@ def generate_platform_seo(
         learned = {p: c for p, c in learned.items() if c}
         if learned:
             gen_evidence["learned"] = learned
+
+        # ── Trail Reels: inject Cold-Audience Viral Optimizer directive ────────
+        # When is_trial_reel=True, Gemini is the viral manipulator.
+        # It must craft content for STRANGERS on the Explore page — not existing fans.
+        # The directive is embedded in the evidence so it reaches the LLM prompt.
+        if is_trial_reel:
+            past_perf = {}
+            if cache:
+                past_perf = {
+                    "past_avg_views": cache.get("videoViewCount") or cache.get("avg_views"),
+                    "past_avg_likes": cache.get("likesCount") or cache.get("avg_likes"),
+                    "past_top_hook_type": cache.get("top_hook_type"),
+                    "past_flop_hook_type": cache.get("flop_hook_type"),
+                }
+                past_perf = {k: v for k, v in past_perf.items() if v is not None}
+            gen_evidence["trial_reels_optimizer"] = {
+                "mode": "COLD_AUDIENCE_VIRAL",
+                "graduation_strategy": "MANUAL",
+                "instruction": (
+                    "This reel will be shown ONLY to non-followers on the Explore page (Instagram Trial Reels). "
+                    "Your audience is total strangers with zero brand loyalty. "
+                    "Optimize EVERY output field for maximum cold-audience retention: "
+                    "(1) VIRAL PACING — write hook and title using open-loop psychology "
+                    "(MrBeast-style incomplete statement), pattern interrupts every 2–3 seconds in description pacing cues, "
+                    "and a dopamine-spiking first-frame reference in the on_screen_text. "
+                    "(2) TREND HIJACKING — prioritize trending topics, controversies, and formats "
+                    "that the Instagram search algorithm is actively surfacing this week; "
+                    "choose discovery hashtags over niche community tags. "
+                    "(3) CLOSED-LOOP LEARNING — use past_performance_signals below to avoid "
+                    "patterns that previously flopped and double-down on winning patterns. "
+                    "(4) EDITING DIRECTIVES — in edit_directives, instruct FFmpeg to: "
+                    "cut dead air at start, speed up intro by 1.15x if content is slow, "
+                    "and burn animated subtitles at high word-frequency to prevent scroll-away. "
+                    "NEVER use existing-fan greeting phrases like 'Hey guys' or 'Welcome back'. "
+                    "Write as if the viewer has never seen this creator before."
+                ),
+                "past_performance_signals": past_perf,
+                "hashtag_strategy": "discovery_first",   # prioritize broad Explore hashtags
+                "title_style": "open_loop_curiosity",    # incomplete tension, not a summary
+                "hook_target": "stranger_retention",     # 1.5-second scroll-stop for cold audience
+            }
+            logger.info("[PlatformSEO] [TrialReels] Cold-audience viral optimizer directive injected into Gemini evidence.")
+        # ─────────────────────────────────────────────────────────────────────
+
         draft = _llm_json(_build_generation_prompt(gen_evidence, platforms, modes), GEN_TEMPERATURE, "generate")
 
     if draft is None:
         analysis: Dict[str, Any] = {"primary_keyword": subject}
         backfill = _backfill_tags(analysis, evidence)
         finals = {p: fin(p, heur[p], analysis, backfill) for p in platforms}
-        return _assemble(finals, analysis, evidence, links, subject, "heuristic_fallback", seo_id, content_origin, modes,
+        _hfb = _assemble(finals, analysis, evidence, links, subject, "heuristic_fallback", seo_id, content_origin, modes,
                          {"llm_calls": 0, "rounds_run": 0, "accepted_rewrites": 0}, {}, guard)
+        _hfb["meta_features"] = {"trail_reels": is_trial_reel}
+        return _hfb
 
     analysis = _as_dict(draft.get("analysis"))
     if isinstance(analysis.get("subject_override"), str) and analysis["subject_override"].strip():
@@ -1828,8 +1888,10 @@ def generate_platform_seo(
                        {"llm_calls": calls, "rounds_run": rounds_run, "accepted_rewrites": accepted},
                        {"content_category": draft.get("content_category"), "target_audience": draft.get("target_audience")},
                        guard)
-    logger.info("✅ [PlatformSEO] %s | calls=%d accepted=%d scores=%s", subject, calls, accepted,
-                {p: f["seo_score"] for p, f in finals.items()})
+    # Stamp meta_features so downstream publishing modules know trial mode was active
+    result["meta_features"] = {"trail_reels": is_trial_reel}
+    logger.info("✅ [PlatformSEO] %s | calls=%d accepted=%d scores=%s | trial_reel=%s", subject, calls, accepted,
+                {p: f["seo_score"] for p, f in finals.items()}, is_trial_reel)
     return result
 
 

@@ -860,6 +860,35 @@ def get_user_meta_app_secret(user_id_str: str) -> Optional[str]:
     return None
 
 
+def get_user_field(user_id_str: str, field_key: str, default: Any = None) -> Any:
+    """
+    Generic per-user field reader from telegram_users.json.
+    Does NOT fall back to env vars — suitable for lightweight internal flags
+    such as daily velocity counters that are local-only.
+    """
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    return users.get(user_id_str, {}).get(field_key, default)
+
+
+def set_user_field(user_id_str: str, field_key: str, value: Any) -> bool:
+    """
+    Generic per-user field writer to telegram_users.json (local only, no vault sync).
+    Suitable for lightweight ephemeral flags such as daily velocity counters.
+    """
+    try:
+        users = load_all_users()
+        user_id_str = str(user_id_str).strip()
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec[field_key] = value
+        # sync_to_vault=False — velocity counters are ephemeral, skip vault upload overhead
+        save_all_users(users, sync_to_vault=False)
+        return True
+    except Exception as _e:
+        logger.warning("set_user_field(%s, %s): %s", user_id_str, field_key, _e)
+        return False
+
+
 def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
     """Saves user TikTok Access Token and syncs to TIKTOK_ACCESS_TOKEN in GitHub Secrets."""
     users = load_all_users()

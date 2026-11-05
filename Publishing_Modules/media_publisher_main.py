@@ -168,10 +168,11 @@ async def publish_to_meta(
     video_path: str,
     caption: str,
     niche: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    trail_reels: bool = False,
 ) -> Dict[str, Any]:
     """Uploads video reel to Instagram & Facebook via Meta Graph API using dynamic META_GRAPH_VERSION."""
-    logger.info("📸 [PUBLISHER 2/4] Uploading to Meta Instagram & Facebook (user_id=%s)...", user_id or "admin")
+    logger.info("📸 [PUBLISHER 2/4] Uploading to Meta Instagram & Facebook (user_id=%s, trial_reel=%s)...", user_id or "admin", trail_reels)
     try:
         from Publishing_Modules.meta_uploader import AsyncMetaUploader
         user_creds = _resolve_user_credentials(user_id)
@@ -191,6 +192,7 @@ async def publish_to_meta(
                 "IG_BUSINESS_TOKEN": token or "",
                 "META_PAGE_ID": user_creds.get("meta_page_id") or "",
                 "META_PAGE_TOKEN": user_creds.get("meta_page_token") or token or "",
+                "trail_reels": trail_reels,   # passed into _upload_to_instagram → trial_params injection
             }
             logger.info("[META CRED] Using user-resolved config: IG_ID=%s", (ig_user_id or "")[:8] + "...")
         else:
@@ -286,7 +288,8 @@ async def run_phase4_publishing_async(
     tags: str = "#viral #shorts #trending",
     niche: Optional[str] = None,
     user_id: Optional[str] = None,
-    seo_data: Optional[Dict[str, Any]] = None
+    seo_data: Optional[Dict[str, Any]] = None,
+    trail_reels: bool = False,
 ) -> Dict[str, Any]:
     """
     Asynchronous master multi-platform publishing orchestrator:
@@ -312,6 +315,12 @@ async def run_phase4_publishing_async(
     }
 
     platforms_payload = (seo_data.get("platforms", {}) if isinstance(seo_data, dict) else {}) or {}
+
+    # ── Resolve trail_reels flag (may come from caller arg or seo_data.meta_features) ──
+    if not trail_reels and isinstance(seo_data, dict):
+        trail_reels = bool(seo_data.get("meta_features", {}).get("trail_reels", False))
+    if trail_reels:
+        logger.info("📸 [PHASE 4] Trail Reels mode active — will inject trial_params for Instagram.")
 
     # ── Gateway Strategy: Waterfall Failover ─────────────────────────────────
     # Primary: Make.com Webhook (if configured & active)
@@ -389,7 +398,8 @@ async def run_phase4_publishing_async(
                 video_path=video_path,
                 caption=ig_caption,
                 niche=niche,
-                user_id=user_id
+                user_id=user_id,
+                trail_reels=trail_reels,
             )
             ig_result = meta_res.get("instagram", {})
             if ig_result.get("status") == "success":
@@ -451,7 +461,8 @@ def run_phase4_publishing(
     tags: str = "#viral #shorts #trending",
     niche: Optional[str] = None,
     user_id: Optional[str] = None,
-    seo_data: Optional[Dict[str, Any]] = None
+    seo_data: Optional[Dict[str, Any]] = None,
+    trail_reels: bool = False,
 ) -> Dict[str, Any]:
     """
     Synchronous Master Orchestration Entry Point for Phase 4 Publishing.
@@ -474,7 +485,8 @@ def run_phase4_publishing(
                     tags=tags,
                     niche=niche,
                     user_id=user_id,
-                    seo_data=seo_data
+                    seo_data=seo_data,
+                    trail_reels=trail_reels,
                 )
             )
             return future.result()
@@ -487,7 +499,8 @@ def run_phase4_publishing(
                 tags=tags,
                 niche=niche,
                 user_id=user_id,
-                seo_data=seo_data
+                seo_data=seo_data,
+                trail_reels=trail_reels,
             )
         )
 

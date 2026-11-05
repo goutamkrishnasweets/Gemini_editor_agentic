@@ -383,3 +383,227 @@ class TestEndpointVersioning(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Trail Reels Feature Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTrailReelsManager(unittest.TestCase):
+    """Unit tests for Publishing_Modules.instagram_features.trail_reels.TrailReelsManager"""
+
+    def setUp(self):
+        self._orig_env = dict(os.environ)
+        self._vault_patcher = patch(
+            "Telegram_Storage_Modules.telegram_user_manager.sync_users_json_to_telegram_vault"
+        )
+        self._vault_patcher.start()
+
+    def tearDown(self):
+        self._vault_patcher.stop()
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+
+    def _mgr(self):
+        from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
+        return TrailReelsManager()
+
+    # ── Command Parsing ──────────────────────────────────────────────────────
+
+    def test_trail_command_basic(self):
+        """Clean title with /trail_reels → is_trial=True, token stripped."""
+        clean, aff, is_trial = self._mgr().extract_trail_command("My Viral Video /trail_reels")
+        self.assertTrue(is_trial)
+        self.assertEqual(clean, "My Viral Video")
+        self.assertIsNone(aff)
+        self.assertNotIn("/trail_reels", clean)
+
+    def test_trail_command_with_affiliate_url(self):
+        """Title + URL + /trail_reels → all three parsed correctly."""
+        clean, aff, is_trial = self._mgr().extract_trail_command(
+            "My Product Review https://amzn.to/example /trail_reels"
+        )
+        self.assertTrue(is_trial)
+        self.assertEqual(clean, "My Product Review")
+        self.assertEqual(aff, "https://amzn.to/example")
+        self.assertNotIn("/trail_reels", clean)
+        self.assertNotIn("/trail_reels", aff or "")
+
+    def test_trail_command_typo_alias(self):
+        """/trial_reels (typo) is accepted as an alias for /trail_reels."""
+        clean, aff, is_trial = self._mgr().extract_trail_command("Cool Title /trial_reels")
+        self.assertTrue(is_trial, "Typo /trial_reels must be treated as /trail_reels")
+        self.assertEqual(clean, "Cool Title")
+
+    def test_trail_command_no_command(self):
+        """Plain title without /trail_reels → is_trial=False."""
+        clean, aff, is_trial = self._mgr().extract_trail_command("Just A Normal Title")
+        self.assertFalse(is_trial)
+        self.assertEqual(clean, "Just A Normal Title")
+
+    def test_trail_command_case_insensitive(self):
+        """/TRAIL_REELS in uppercase is also accepted."""
+        clean, aff, is_trial = self._mgr().extract_trail_command("Title /TRAIL_REELS")
+        self.assertTrue(is_trial)
+
+    def test_trail_command_token_never_in_seo_output(self):
+        """/trail_reels must be completely stripped — never in clean_title."""
+        for variant in ["/trail_reels", "/trial_reels", "/TRAIL_REELS"]:
+            clean, _, _ = self._mgr().extract_trail_command(f"Test Title {variant}")
+            self.assertNotIn("trail_reels", clean.lower(),
+                             f"Command token leaked into clean_title for variant: {variant}")
+            self.assertNotIn("trial_reels", clean.lower(),
+                             f"Command token leaked into clean_title for variant: {variant}")
+
+    # ── Meta Container Injection ─────────────────────────────────────────────
+
+    def test_apply_trial_params_when_trial(self):
+        """apply_trial_params injects trial_params with MANUAL strategy when is_trial=True."""
+        import json
+        init_data = {"media_type": "REELS", "caption": "test", "access_token": "tok"}
+        result = self._mgr().apply_trial_params(init_data, is_trial=True)
+        self.assertIn("trial_params", result)
+        parsed = json.loads(result["trial_params"])
+        self.assertEqual(parsed.get("graduation_strategy"), "MANUAL")
+
+    def test_apply_trial_params_skipped_when_not_trial(self):
+        """apply_trial_params does NOT modify init_data when is_trial=False."""
+        init_data = {"media_type": "REELS", "caption": "test", "access_token": "tok"}
+        result = self._mgr().apply_trial_params(init_data, is_trial=False)
+        self.assertNotIn("trial_params", result)
+
+    # ── Ineligible Account Fallback ──────────────────────────────────────────
+
+    def test_trial_ineligible_fallback_removes_trial_params(self):
+        """handle_trial_ineligible_fallback removes trial_params from init_data."""
+        import json
+        init_data = {
+            "media_type": "REELS",
+            "trial_params": json.dumps({"graduation_strategy": "MANUAL"}),
+            "access_token": "tok",
+        }
+        result = self._mgr().handle_trial_ineligible_fallback(init_data)
+        self.assertNotIn("trial_params", result,
+                         "trial_params must be removed on ineligible fallback")
+        # Remaining fields must still be present (safe for re-submit)
+        self.assertIn("media_type", result)
+        self.assertIn("access_token", result)
+
+    def test_trial_ineligible_fallback_no_error_on_clean_dict(self):
+        """handle_trial_ineligible_fallback is safe even if trial_params was never present."""
+        init_data = {"media_type": "REELS", "access_token": "tok"}
+        result = self._mgr().handle_trial_ineligible_fallback(init_data)
+        self.assertEqual(result.get("media_type"), "REELS")
+
+    def test_is_trial_rejection_error_detects_trial_in_message(self):
+        """_is_trial_rejection_error returns True for typical Meta trial rejection shape."""
+        from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
+        err_response = {
+            "error": {
+                "message": "trial_params not supported for this account type",
+                "code": 100
+            }
+        }
+        self.assertTrue(TrailReelsManager._is_trial_rejection_error(err_response))
+
+    def test_is_trial_rejection_error_false_for_unrelated_errors(self):
+        """_is_trial_rejection_error returns False for unrelated Meta errors."""
+        from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
+        err_response = {
+            "error": {
+                "message": "Invalid OAuth access token.",
+                "code": 190
+            }
+        }
+        self.assertFalse(TrailReelsManager._is_trial_rejection_error(err_response))
+
+    # ── Daily Velocity Tracking ──────────────────────────────────────────────
+
+    def test_velocity_check_returns_no_warning_below_threshold(self):
+        """check_daily_velocity returns is_warning=False when count < 10."""
+        with patch(
+            "Publishing_Modules.instagram_features.trail_reels.TrailReelsManager._load_daily_count",
+            return_value=5
+        ):
+            count, warned = self._mgr().check_daily_velocity("99999")
+        self.assertEqual(count, 5)
+        self.assertFalse(warned)
+
+    def test_velocity_check_returns_warning_at_threshold(self):
+        """check_daily_velocity returns is_warning=True when count >= 10."""
+        with patch(
+            "Publishing_Modules.instagram_features.trail_reels.TrailReelsManager._load_daily_count",
+            return_value=10
+        ):
+            count, warned = self._mgr().check_daily_velocity("99999")
+        self.assertEqual(count, 10)
+        self.assertTrue(warned)
+
+    def test_velocity_check_bypass_is_non_blocking(self):
+        """Velocity check never raises or hard-blocks — only warns."""
+        with patch(
+            "Publishing_Modules.instagram_features.trail_reels.TrailReelsManager._load_daily_count",
+            side_effect=Exception("simulated DB failure")
+        ):
+            # Must not raise — returns (0, False) on any error
+            try:
+                count, warned = self._mgr().check_daily_velocity("99999")
+                self.assertFalse(warned, "Must not warn on error — safe default")
+            except Exception as e:
+                self.fail(f"check_daily_velocity raised unexpectedly: {e}")
+
+
+class TestPlatformSEOTrailReelsIntegration(unittest.TestCase):
+    """Integration tests: /trail_reels token is stripped before Gemini SEO call."""
+
+    def test_trail_token_stripped_from_seo_inputs(self):
+        """generate_platform_seo must strip /trail_reels before calling Gemini."""
+        # We only test that the SEO function does NOT crash and the token is gone
+        # from the returned result. We mock the LLM call to avoid network.
+        with patch(
+            "Gemini_Modules.platform_seo_generator._llm_json",
+            return_value=None
+        ):
+            from Gemini_Modules.platform_seo_generator import generate_platform_seo
+            result = generate_platform_seo(
+                video_context="A product review reel.",
+                user_title="My Product Review /trail_reels",
+                user_hint="My Product Review /trail_reels",
+                platforms=["instagram"],
+            )
+        # The /trail_reels slash-command token must NOT appear anywhere in the result
+        result_str = str(result)
+        self.assertNotIn("/trail_reels", result_str.lower(),
+                         "/trail_reels slash command token must never appear in SEO output")
+        self.assertNotIn("/trial_reels", result_str.lower(),
+                         "/trial_reels alias token must never appear in SEO output")
+
+        # Specific user-facing fields must not contain the command
+        ig_plat = result.get("platforms", {}).get("instagram", {})
+        self.assertNotIn("trail_reels", (ig_plat.get("title") or "").lower())
+        self.assertNotIn("trail_reels", (ig_plat.get("description") or "").lower())
+        self.assertNotIn("trail_reels", (result.get("main_subject") or "").lower())
+
+        # meta_features.trail_reels must be True
+        self.assertTrue(
+            result.get("meta_features", {}).get("trail_reels"),
+            "meta_features.trail_reels must be True when /trail_reels was in input"
+        )
+
+    def test_no_trail_command_no_trial_meta_feature(self):
+        """When /trail_reels is absent, meta_features.trail_reels must be False."""
+        with patch(
+            "Gemini_Modules.platform_seo_generator._llm_json",
+            return_value=None
+        ):
+            from Gemini_Modules.platform_seo_generator import generate_platform_seo
+            result = generate_platform_seo(
+                video_context="A lifestyle reel.",
+                user_title="Just A Normal Title",
+                platforms=["instagram"],
+            )
+        self.assertFalse(
+            result.get("meta_features", {}).get("trail_reels"),
+            "meta_features.trail_reels must be False for standard (non-trial) reel"
+        )
+
+

@@ -873,11 +873,20 @@ async def handle_telegram_callback(update, context):
 
         new_text = (
             f"{curr_text}\n\n"
-            f"✅ **Approved!**\n"
-            f"✏️ **Send your custom title below:**\n"
-            f"📌 **Compulsory Format**: `<User Title> <Affiliate URL>` (or just `<User Title>`)\n"
-            f"*(Example: `My Product Review https://amzn.to/example`)*\n\n"
-            f"⚠️ *Note: Direct links alone are strictly rejected! A user title is compulsory.*"
+            "✅ Reel Approved\n\n"
+            "Send your title in the chat using one of the formats below\n\n"
+            "Option 1   Clean Title\n"
+            "My Viral Video Title\n\n"
+            "Option 2   Title with Affiliate Link\n"
+            "My Product Review https://amzn.to/example\n\n"
+            "Option 3   Title with Affiliate Link and Trial Reels\n"
+            "My Product Review https://amzn.to/example /trail_reels\n\n"
+            "Meta Feature Command\n"
+            "👉 /trail_reels   Publishes as a trial reel to test with non followers first\n\n"
+            "Important Rules\n"
+            "• A user title is compulsory\n"
+            "• Never send direct links alone\n"
+            "• Add /trail_reels at the end only if you want trial mode"
         )
         awaiting_kbd = build_awaiting_title_keyboard(session_id)
 
@@ -928,6 +937,73 @@ async def handle_telegram_callback(update, context):
                 chat_id=chat_id,
                 text=f"↩️ **Returned to Review Options for `{bname}`:**",
                 reply_markup=review_keyboard
+            )
+        return
+
+    # ── bypass_velocity_: User chose to post anyway despite daily velocity warning ──
+    if data.startswith("bypass_velocity_"):
+        session_id = data.replace("bypass_velocity_", "").strip()
+        sess = session_manager.get_session(session_id)
+        if sess:
+            sess["_velocity_pending"] = False
+            session_manager._save_sessions()
+        await query.answer("⚡ Bypassing velocity limit — posting now!", show_alert=False)
+        # Clear the warning message and let the user know we're proceeding
+        try:
+            await query.edit_message_text(
+                "⚡ Velocity limit bypassed.\n\nProceeding with Trial Reels upload now.\n"
+                "Watch your Instagram app for the trial reel notification."
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚡ Velocity limit bypassed. Trial Reels upload in progress."
+            )
+        # Trigger publishing if session has all required data
+        if sess:
+            _v_path = sess.get("video_path")
+            _approved_title = sess.get("approved_title") or sess.get("title")
+            _seo_res = sess.get("seo_result", {})
+            _creator_niche = sess.get("creator", "General")
+            _trail_reels_flag = sess.get("trail_reels", True)
+            if _v_path and _approved_title:
+                try:
+                    from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager as _TRMV
+                    _TRMV().increment_daily_publish_count(str(chat_id))
+                except Exception as _iv_err:
+                    logger.warning("[TrailReels] Velocity increment on bypass: %s", _iv_err)
+                import asyncio
+                _bg_loop = asyncio.get_running_loop()
+                _dispatch_phase4_publishing_in_background(
+                    bot_obj=context.bot,
+                    chat_id=chat_id,
+                    loop=_bg_loop,
+                    video_path=_v_path,
+                    title=_approved_title,
+                    niche=_creator_niche,
+                    user_id=user_id,
+                    seo_data=_seo_res,
+                    trail_reels=_trail_reels_flag,
+                )
+        return
+
+    # ── schedule_tomorrow_: User chose to schedule for tomorrow instead ──────────
+    if data.startswith("schedule_tomorrow_"):
+        session_id = data.replace("schedule_tomorrow_", "").strip()
+        sess = session_manager.get_session(session_id)
+        if sess:
+            sess["_velocity_pending"] = False
+            session_manager._save_sessions()
+        await query.answer("⏸️ Noted — velocity limit respected.", show_alert=False)
+        try:
+            await query.edit_message_text(
+                "⏸️ Upload paused to respect Meta daily velocity limit.\n\n"
+                "Your reel is saved. Come back tomorrow and approve it again to publish."
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⏸️ Upload paused. Your reel is saved — publish it tomorrow to protect reach."
             )
         return
 
@@ -1468,7 +1544,8 @@ def _dispatch_phase4_publishing_in_background(
     tags: str = "#viral #shorts #trending",
     description: str = "",
     user_id: Optional[str] = None,
-    seo_data: Optional[Dict[str, Any]] = None
+    seo_data: Optional[Dict[str, Any]] = None,
+    trail_reels: bool = False,
 ):
     """Spawns non-blocking daemon thread for Phase 4 publishing so the Telegram bot asyncio event loop never freezes."""
     def _worker():
@@ -1482,7 +1559,8 @@ def _dispatch_phase4_publishing_in_background(
                 niche=niche,
                 description=description,
                 user_id=pub_user_id,
-                seo_data=seo_data
+                seo_data=seo_data,
+                trail_reels=trail_reels,
             )
             status_lines = []
             for p_name, p_info in pub_res.get("platforms", {}).items():
@@ -2289,14 +2367,72 @@ async def handle_telegram_incoming_msg(update, context):
             sess_id = pending_sess["session_id"]
             sess = session_manager.get_session(sess_id)
 
-            # 1. Detect and extract all optional affiliate URLs from user input format <User Title> <url1> <url2>...
-            extracted_urls = re.findall(r'https?://[^\s<>"]+', user_input_raw)
-            user_hint_text = user_input_raw
+            # ── 0. Parse /trail_reels command and extract clean title + URLs ──────
+            # TrailReelsManager handles both /trail_reels and typo /trial_reels.
+            # It strips the command token BEFORE anything else touches the text —
+            # so it NEVER leaks into YouTube title, SEO output, or IG caption.
+            try:
+                from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager as _TRM
+                _tr_mgr = _TRM()
+                _clean_text, _first_aff_url, _is_trial = _tr_mgr.extract_trail_command(user_input_raw)
+            except Exception as _tr_parse_err:
+                logger.warning("[TrailReels] Parser error: %s", _tr_parse_err)
+                _clean_text, _first_aff_url, _is_trial = user_input_raw, None, False
+
+            # Re-extract all URLs from cleaned text for multi-link support
+            extracted_urls = re.findall(r'https?://[^\s<>"]+', _clean_text)
+            user_hint_text = _clean_text
             for u in extracted_urls:
                 user_hint_text = user_hint_text.replace(u, "")
             user_hint_text = re.sub(r'\s+', ' ', user_hint_text).strip()
 
+            # Merge first_aff_url from TrailReelsManager if URL list is otherwise empty
+            if not extracted_urls and _first_aff_url:
+                extracted_urls = [_first_aff_url]
+
             affiliate_url = "\n".join(extracted_urls) if extracted_urls else None
+
+            # Store trial flag into the session for Phase 4 to consume
+            if sess is not None:
+                sess["trail_reels"] = _is_trial
+                session_manager._save_sessions()
+
+            if _is_trial:
+                logger.info("[TrailReels] Trial Reels mode active for session %s.", sess_id)
+
+            # ── Velocity warning (non-blocking — user always has bypass) ──────────
+            if _is_trial:
+                try:
+                    _vel_count, _vel_warned = _tr_mgr.check_daily_velocity(str(chat_id))
+                    if _vel_warned:
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        _vel_kbd = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "⚡ Bypass and Post Anyway",
+                                callback_data=f"bypass_velocity_{sess_id}"
+                            ),
+                            InlineKeyboardButton(
+                                "⏸️ Schedule for Tomorrow",
+                                callback_data=f"schedule_tomorrow_{sess_id}"
+                            ),
+                        ]])
+                        await msg.reply_text(
+                            f"⚠️ Velocity Warning\n\n"
+                            f"You have already published {_vel_count} reels today.\n"
+                            f"Meta tracks upload intervals and may throttle reach on accounts\n"
+                            f"that publish more than 10 reels in a single day.\n\n"
+                            f"This is your choice. The program only warns — it never hard-blocks.\n\n"
+                            f"What would you like to do?",
+                            reply_markup=_vel_kbd
+                        )
+                        # Store pending velocity state so the bypass callback can resume
+                        if sess is not None:
+                            sess["_velocity_pending"] = True
+                            session_manager._save_sessions()
+                        return
+                except Exception as _vel_err:
+                    logger.warning("[TrailReels] Velocity check error: %s", _vel_err)
+            # ─────────────────────────────────────────────────────────────────────
 
             # 🛑 COMPULSORY RULE: Direct links alone are strictly forbidden! User title is compulsory.
             if not user_hint_text or len(user_hint_text) < 2:
@@ -2445,7 +2581,7 @@ async def handle_telegram_incoming_msg(update, context):
                 aff_status = ""
 
             await msg.reply_text(
-                f"🚀 **Commercial AI Title Saved!** Starting 4-Platform Broadcasting...\n\n"
+                f"🚀 **Commercial AI Title Saved!** Starting 4-Platform Broadcasting...{' 🧪 Trial Reels Mode' if _is_trial else ''}...\n\n"
                 f"⭐ **Main Subject**: `{main_subject}`\n"
                 f"📌 **YouTube Title**: `{approved_title}`\n"
                 f"🏷️ **Hashtags**: `{tags_str[:80]}`"
@@ -2455,6 +2591,15 @@ async def handle_telegram_incoming_msg(update, context):
 
             import asyncio
             loop = asyncio.get_running_loop()
+
+            # Increment daily publish velocity counter for trial reels
+            if _is_trial:
+                try:
+                    from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager as _TRM2
+                    _TRM2().increment_daily_publish_count(str(chat_id))
+                except Exception as _inc_err:
+                    logger.warning("[TrailReels] Could not increment velocity count: %s", _inc_err)
+
             _dispatch_phase4_publishing_in_background(
                 bot_obj=context.bot,
                 chat_id=chat_id,
@@ -2465,7 +2610,8 @@ async def handle_telegram_incoming_msg(update, context):
                 tags=tags_str,
                 description=ig_desc,
                 user_id=user_id,
-                seo_data=seo_res
+                seo_data=seo_res,
+                trail_reels=_is_trial,
             )
             return
 

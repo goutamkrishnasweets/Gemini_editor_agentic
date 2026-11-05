@@ -317,10 +317,40 @@ class AsyncMetaUploader:
                 "access_token": ig_token
             }
 
+            # ── Trail Reels: inject trial_params when flagged ──────────────────
+            # trial_params is applied only when the caller explicitly passes
+            # meta_config["trail_reels"] = True (set by TrailReelsManager).
+            # Graduation strategy is always MANUAL — user graduates on their phone.
+            _is_trial = bool(meta_config.get("trail_reels", False)) if isinstance(meta_config, dict) else False
+            if _is_trial:
+                try:
+                    from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
+                    _tr_mgr = TrailReelsManager()
+                    init_data = _tr_mgr.apply_trial_params(init_data, is_trial=True)
+                except Exception as _tr_err:
+                    logger.warning("[TrailReels] Could not inject trial_params: %s", _tr_err)
+            # ──────────────────────────────────────────────────────────────────
+
             req_init = await AsyncMetaUploader._retry_request("POST", url, data=init_data)
             if "uri" not in req_init:
-                logger.error(f"IG Init Failed (400/error response): {req_init}")
-                return {"status": "failed_init", "error": str(req_init)}
+                # ── Auto-fallback: If Meta rejected init due to trial_params ineligibility ──
+                if _is_trial and "trial" in json.dumps(req_init).lower():
+                    logger.warning(
+                        "⚠️ [TRIAL REELS] Meta rejected trial_params (account ineligible). "
+                        "Falling back to standard Reel upload automatically."
+                    )
+                    try:
+                        from Publishing_Modules.instagram_features.trail_reels import TrailReelsManager
+                        init_data = TrailReelsManager().handle_trial_ineligible_fallback(init_data)
+                    except Exception as _fb_err:
+                        logger.warning("[TrailReels] Fallback handler error: %s", _fb_err)
+                        init_data.pop("trial_params", None)
+                    _is_trial = False
+                    req_init = await AsyncMetaUploader._retry_request("POST", url, data=init_data)
+
+                if "uri" not in req_init:
+                    logger.error(f"IG Init Failed (400/error response): {req_init}")
+                    return {"status": "failed_init", "error": str(req_init)}
 
             upload_url = req_init["uri"]
             container_id_from_init = req_init.get("id")
