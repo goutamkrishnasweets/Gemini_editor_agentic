@@ -46,6 +46,7 @@ class Route:
     kind: str                                   # url|handle|batch|upload|reedit|freeform
     goal: str = ""
     url: Optional[str] = None
+    custom_audio_url: Optional[str] = None      # user-provided custom audio URL
     handles: List[str] = field(default_factory=list)
     platform: str = "instagram"
     session_id: Optional[str] = None
@@ -96,7 +97,18 @@ def classify_goal(text: str) -> Route:
     # 2) Uploaded local video
     m = _UPLOAD_RE.search(goal)
     if m:
-        return Route(kind="upload", goal=goal, path=m.group(1).strip())
+        audio_m = re.search(r"/audio\s+([^\s<>\"']+)", goal, re.IGNORECASE)
+        ca_url = None
+        if audio_m:
+            cand = audio_m.group(1).rstrip(".,;)")
+            if _URL_RE.match(cand):
+                ca_url = cand
+        return Route(
+            kind="upload",
+            goal=goal,
+            path=m.group(1).strip(),
+            custom_audio_url=ca_url,
+        )
 
     # 3) Scheduled-pool batch trigger (menu button)
     if _SCHEDULED_BATCH_RE.search(goal):
@@ -110,16 +122,53 @@ def classify_goal(text: str) -> Route:
         if handles:
             return Route(kind="batch", goal=goal, handles=handles)
 
-    # 5) URL (optionally followed by free-text editing instructions -> becomes directive)
+    # 5) URL(s) - single video URL or dual URLs / /audio URL (plus optional directive)
     urls = _URL_RE.findall(goal)
-    if len(urls) == 1:
-        url = urls[0].rstrip(".,;)")
-        extra = _URL_RE.sub("", goal).strip(" \t\r\n-:,")
+    if urls:
+        video_url = None
+        custom_audio_url = None
+
+        # Check for explicit /audio <url>
+        audio_m = re.search(r"/audio\s+([^\s<>\"']+)", goal, re.IGNORECASE)
+        if audio_m:
+            cand_audio = audio_m.group(1).rstrip(".,;)")
+            if _URL_RE.match(cand_audio):
+                custom_audio_url = cand_audio
+
+        if custom_audio_url:
+            # video_url is the first URL that is not custom_audio_url
+            for u in urls:
+                clean_u = u.rstrip(".,;)")
+                if clean_u != custom_audio_url:
+                    video_url = clean_u
+                    break
+            if not video_url:
+                video_url = urls[0].rstrip(".,;)")
+        elif len(urls) >= 2:
+            # First URL is video, second URL is custom audio
+            video_url = urls[0].rstrip(".,;)")
+            custom_audio_url = urls[1].rstrip(".,;)")
+        else:
+            video_url = urls[0].rstrip(".,;)")
+
+        # Clean directive: remove URLs and /audio command
+        extra = goal
+        if custom_audio_url:
+            extra = re.sub(r"/audio\s+" + re.escape(custom_audio_url), "", extra, flags=re.IGNORECASE)
+            extra = extra.replace(custom_audio_url, "")
+        if video_url:
+            extra = extra.replace(video_url, "")
+        for u in urls:
+            extra = extra.replace(u, "")
+        extra = re.sub(r"/audio\b", "", extra, flags=re.IGNORECASE)
+        extra = extra.strip(" \t\r\n-:,")
+
         return Route(
             kind="url",
             goal=goal,
-            url=url,
-            platform=detect_platform(url),
+            url=video_url,
+            custom_audio_url=custom_audio_url,
+            platform=detect_platform(video_url),
             directive=extra,
         )
 

@@ -60,6 +60,7 @@ def run_phase2_orchestration(
     excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
     requestor_chat_id: Optional[Union[int, str]] = None,
     user_gemini_key: Optional[str] = None,
+    custom_audio_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Delegates Phase 2 Master AI Editing Pipeline to Phase_2.phase2_orchestrator.
@@ -76,6 +77,7 @@ def run_phase2_orchestration(
         excluded_audio=excluded_audio,
         requestor_chat_id=requestor_chat_id,
         user_gemini_key=user_gemini_key,
+        custom_audio_path=custom_audio_path,
     )
 
 

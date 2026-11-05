@@ -68,3 +68,4 @@ class FeedVisibilityManager:
         init_data["share_to_feed"] = share_to_feed
         logger.info("[FeedVisibility] Injected share_to_feed=%s into container init_data.", share_to_feed)
         return init_data
+

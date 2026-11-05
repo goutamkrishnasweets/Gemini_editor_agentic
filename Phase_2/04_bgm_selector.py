@@ -27,9 +27,15 @@ def select_clip_bgm(
     audio_dir: Optional[str] = None,
     intent_vector: Optional[Dict[str, Any]] = None,
     exclude_filenames: Optional[set] = None,
+    custom_audio_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes Gemini Call 2 BGM Selector.
+
+    Tier 0 User Custom Audio Bypass:
+        If custom_audio_path is supplied or user_custom_audio.wav exists in
+        clip_folder, returns the custom audio track immediately. Gemini Call 2
+        is bypassed entirely (zero tokens wasted, 100% respecting user selection).
 
     Stage 2 Cache Lock:
         If intent_vector.preserve_music == True AND a cached BGM track is found
@@ -41,6 +47,26 @@ def select_clip_bgm(
     """
     _intent = intent_vector or {}
     preserve_music = _intent.get("preserve_music", False)
+
+    # ── TIER 0: USER CUSTOM AUDIO BYPASS (Zero Token Cost) ──────────────────
+    cand_custom_audio = custom_audio_path or _intent.get("custom_audio_path")
+    if not cand_custom_audio and clip_folder:
+        auto_custom = os.path.join(clip_folder, "user_custom_audio.wav")
+        if os.path.isfile(auto_custom) and os.path.getsize(auto_custom) > 10_000:
+            cand_custom_audio = auto_custom
+
+    if cand_custom_audio and os.path.isfile(cand_custom_audio) and os.path.getsize(cand_custom_audio) > 10_000:
+        logger.info(
+            f"🎯 [STEP 04] USER CUSTOM AUDIO DETECTED: '{cand_custom_audio}'! "
+            f"Bypassing Gemini BGM selector (saving 2500+ tokens & 100% respecting user audio selection)."
+        )
+        return {
+            "selected_audio_track": os.path.basename(cand_custom_audio),
+            "physical_path": os.path.abspath(cand_custom_audio),
+            "status": "user_provided",
+            "is_user_custom_audio": True,
+            "alignment_score": 1.0,
+        }
 
     # ── STATEFUL CACHE LOCK (Stage 2 Cache-First BGM) ────────────────────────
     try:

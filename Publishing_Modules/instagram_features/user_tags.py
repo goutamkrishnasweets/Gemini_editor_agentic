@@ -163,3 +163,4 @@ class UserTagsManager:
         """Heuristic to detect if Meta failed due to user_tags."""
         flat = json.dumps(error_response).lower() if isinstance(error_response, (dict, list)) else str(error_response).lower()
         return "user_tags" in flat or "tagged user" in flat or "tagging" in flat
+

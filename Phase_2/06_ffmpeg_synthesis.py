@@ -90,6 +90,7 @@ def synthesize_editing_plan(
     forensic_context: Optional[Dict[str, Any]] = None,
     micro_shots: Optional[List[Dict[str, Any]]] = None,
     target_duration: float = 15.0,
+    audio_start_offset: float = 0.0,
     user_edit_directive: Optional[str] = None,
     intent_vector: Optional[Dict[str, Any]] = None,
     requestor_chat_id: Optional[Union[int, str]] = None,
@@ -170,6 +171,11 @@ def synthesize_editing_plan(
             )
 
     extra_inputs = {}
+    extra_inputs["target_duration"] = target_duration
+    if audio_start_offset > 0.0:
+        extra_inputs["audio_start_offset"] = audio_start_offset
+        extra_inputs["audio_start_time"] = audio_start_offset
+        logger.info(f"🎧 [STEP 06] Cueing BGM start offset: {audio_start_offset:.2f}s")
     clean_uid = None
     if requestor_chat_id is not None and str(requestor_chat_id).strip():
         clean_uid = str(requestor_chat_id).strip()

@@ -2096,8 +2096,13 @@ def _dispatch_direct_route(route, chat_id: int) -> str:
         kwargs = dict(mode="manual", url=route.url, platform=route.platform, requestor_chat_id=chat_id)
         if route.directive:
             kwargs["user_edit_directive"] = route.directive
+        if getattr(route, "custom_audio_url", None):
+            kwargs["custom_audio_url"] = route.custom_audio_url
         _dispatch_pipeline_in_background(**kwargs)
-        return f"URL pipeline started ({route.platform})" + (f" with directive: {route.directive[:120]}" if route.directive else "")
+        extra_desc = f" with directive: {route.directive[:120]}" if route.directive else ""
+        if getattr(route, "custom_audio_url", None):
+            extra_desc += f" [Custom Audio: {route.custom_audio_url[:60]}]"
+        return f"URL pipeline started ({route.platform}){extra_desc}"
     if kind in ("handle", "batch") and route.handles:
         _dispatch_pipeline_in_background(mode="auto", target_accounts=route.handles, platform=route.platform, requestor_chat_id=chat_id)
         return "Creator pipeline started for " + ", ".join("@" + h for h in route.handles)
@@ -2107,7 +2112,10 @@ def _dispatch_direct_route(route, chat_id: int) -> str:
     if kind == "upload":
         if not (route.path and os.path.isfile(route.path)):
             raise FileNotFoundError(f"Uploaded video not found on disk: {route.path}")
-        _dispatch_pipeline_in_background(mode="manual", input_path=route.path, platform=route.platform, requestor_chat_id=chat_id)
+        kwargs = dict(mode="manual", input_path=route.path, platform=route.platform, requestor_chat_id=chat_id)
+        if getattr(route, "custom_audio_url", None):
+            kwargs["custom_audio_url"] = route.custom_audio_url
+        _dispatch_pipeline_in_background(**kwargs)
         return "Uploaded-video pipeline started"
     raise ValueError(f"Not a direct route: {kind}")
 
@@ -2744,6 +2752,7 @@ def run_master_pipeline(
     excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
     user_gemini_key: Optional[str] = None,
     user_apify_token: Optional[str] = None,
+    custom_audio_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes End-to-End Master Pipeline across all 4 Phases.
@@ -2863,6 +2872,38 @@ def run_master_pipeline(
             )
             send_telegram_text_sync(requestor_chat_id, fail_msg)
         return {"success": False, "rendered_files": [], "error": "No valid clip directories or input file found"}
+
+    # ── CUSTOM USER AUDIO INGESTION (Multi-Tier Ingestion & Transcode) ───────
+    custom_audio_path = None
+    if custom_audio_url:
+        logger.info(f"🎧 [CUSTOM AUDIO] Ingesting user audio track: {custom_audio_url}")
+        dest_clip_dir = target_clip_dirs[0] if target_clip_dirs else (os.path.dirname(input_path) if input_path else None)
+        try:
+            from Audio_Modules.custom_audio_extractor import CustomAudioExtractor
+            extractor = CustomAudioExtractor(dest_dir=dest_clip_dir)
+            custom_audio_path = extractor.extract_custom_audio(
+                audio_url=custom_audio_url,
+                target_clip_dir=dest_clip_dir,
+                custom_filename="user_custom_audio.wav"
+            )
+            if custom_audio_path and os.path.exists(custom_audio_path) and os.path.getsize(custom_audio_path) > 10_000:
+                logger.info(f"✅ [CUSTOM AUDIO READY] Ingested user audio -> {custom_audio_path}")
+            else:
+                logger.warning("⚠️ [CUSTOM AUDIO FAIL] Extraction returned None. Falling back to Gemini audio pool.")
+                custom_audio_path = None
+                if requestor_chat_id:
+                    try:
+                        send_telegram_text_sync(
+                            requestor_chat_id,
+                            "⚠️ **Custom Audio Notice**\n\n"
+                            "Could not extract audio from your provided link (may be restricted or private).\n"
+                            "✨ Gemini will autonomously select the best matching viral audio track from our vault instead!"
+                        )
+                    except Exception as _tn_err:
+                        logger.debug(f"Telegram notice error: {_tn_err}")
+        except Exception as _cae_err:
+            logger.warning(f"⚠️ [CUSTOM AUDIO ERROR] {_cae_err}. Falling back to Gemini audio pool.")
+            custom_audio_path = None
 
     # Phase 2 & 3: Master AI Perception & Render Orchestrator
     active_clips_registered = []
@@ -3146,6 +3187,7 @@ def run_master_pipeline(
             excluded_audio=excluded_audio,
             requestor_chat_id=requestor_chat_id,
             user_gemini_key=user_gemini_key,
+            custom_audio_path=custom_audio_path,
         )
         rendered_master_reels = phase2_res.get("rendered_files", [])
 

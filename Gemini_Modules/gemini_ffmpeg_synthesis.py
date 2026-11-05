@@ -941,9 +941,12 @@ class FFmpegCommandGenerator:
                     audio_start_time = max(0.0, float(mix_op.get("audio_start_time")))
                 except (TypeError, ValueError):
                     pass
-        elif extra_inputs and extra_inputs.get("audio_start_time") is not None:
+        elif extra_inputs and (extra_inputs.get("audio_start_time") is not None or extra_inputs.get("audio_start_offset") is not None):
             try:
-                audio_start_time = max(0.0, float(extra_inputs.get("audio_start_time")))
+                raw_offset = extra_inputs.get("audio_start_time")
+                if raw_offset is None:
+                    raw_offset = extra_inputs.get("audio_start_offset")
+                audio_start_time = max(0.0, float(raw_offset))
             except (TypeError, ValueError):
                 pass
 
@@ -1022,7 +1025,8 @@ class FFmpegCommandGenerator:
         total_visual_dur = 0.0
         if shots:
             shots_dur = sum(max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0))) for s in shots)
-            if shots_dur < 5.0 and real_src_dur >= 5.0:
+            target_dur_hint = float((extra_inputs or {}).get("target_duration", 15.0) or 15.0)
+            if shots_dur < 5.0 and real_src_dur >= 5.0 and target_dur_hint >= 5.0:
                 logger.warning(
                     f"⚠️ [SINGLE-PASS] Provided shots total only {shots_dur:.2f}s (<5.0s) for a {real_src_dur:.2f}s clip. "
                     f"Preserving full organic source duration to prevent artificial truncation."

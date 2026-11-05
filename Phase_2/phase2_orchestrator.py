@@ -50,6 +50,7 @@ def run_phase2_pipeline(
     excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
     requestor_chat_id: Optional[Union[int, str]] = None,
     user_gemini_key: Optional[str] = None,
+    custom_audio_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes Phase 2 Pipeline through indexed steps 01 -> 07.
@@ -495,11 +496,18 @@ def run_phase2_pipeline(
                     except Exception as _ex_err:
                         logger.debug(f"Exclusion lookup notice: {_ex_err}")
 
+            effective_custom_audio = custom_audio_path
+            if not effective_custom_audio and clip_dir:
+                cand_ca = os.path.join(clip_dir, "user_custom_audio.wav")
+                if os.path.isfile(cand_ca) and os.path.getsize(cand_ca) > 10_000:
+                    effective_custom_audio = cand_ca
+
             bgm_res = step04.select_clip_bgm(
                 clip_id=folder_name,
                 clip_folder=clip_dir,
-                intent_vector={"preserve_music": not force_new_music},
+                intent_vector={"preserve_music": not force_new_music, "custom_audio_path": effective_custom_audio},
                 exclude_filenames=exclude_bgm if exclude_bgm else None,
+                custom_audio_path=effective_custom_audio,
             )
             selected_bgm_path = bgm_res.get("physical_path")
             selected_track_name = bgm_res.get("selected_audio_track")
@@ -513,18 +521,23 @@ def run_phase2_pipeline(
             # Step 5: Rhythm & Micro-Shot Timeline Builder
             _emit("step_05", "running", {"message": "Building rhythm & micro-shot timeline..."})
             forensic_res["route_params"] = forensic_res.get("route_params", {})
+            if bgm_res.get("is_user_custom_audio"):
+                forensic_res["is_user_custom_audio"] = True
+
             timeline_res = step05.build_rhythm_timeline(
                 video_path=working_video_path,
                 selected_bgm_path=selected_bgm_path,
                 forensic_context=forensic_res,
             )
             micro_shots = timeline_res.get("micro_shots", [])
+            target_duration = float(timeline_res.get("target_duration", 15.0) or 15.0)
+            audio_start_offset = float(timeline_res.get("audio_start_offset", 0.0) or 0.0)
             forensic_res["lyric_intel"] = timeline_res.get("lyric_intel", {})
             if timeline_res.get("route_params"):
                 forensic_res["route_params"] = timeline_res["route_params"]
             if timeline_res.get("selected_bgm_path"):
                 selected_bgm_path = timeline_res["selected_bgm_path"]
-            _emit("step_05", "success", {"message": f"Built {len(micro_shots)} micro-shot takes (2.0s-3.5s)."})
+            _emit("step_05", "success", {"message": f"Built {len(micro_shots)} micro-shot takes ({target_duration:.1f}s target)."})
 
             atomic_target_output = os.path.join(
                 master_edits_dir,
@@ -532,14 +545,15 @@ def run_phase2_pipeline(
             )
 
             # Step 6: Gemini Call 3 FFmpeg Synthesis
-            _emit("step_06", "running", {"message": "Synthesizing FFmpeg Master Filtergraph Editing Plan..."})
+            _emit("step_06", "running", {"message": f"Synthesizing FFmpeg Master Filtergraph Editing Plan ({target_duration:.1f}s)..."})
             synthesis_res = step06.synthesize_editing_plan(
                 video_path=working_video_path,
                 output_path=atomic_target_output,
                 selected_bgm_path=selected_bgm_path,
                 forensic_context=forensic_res,
                 micro_shots=micro_shots,
-                target_duration=15.0,
+                target_duration=target_duration,
+                audio_start_offset=audio_start_offset,
                 user_edit_directive=user_edit_directive,
                 requestor_chat_id=clip_owner_id,
                 api_key=owner_gemini_key,

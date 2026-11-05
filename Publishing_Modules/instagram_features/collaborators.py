@@ -127,3 +127,4 @@ class CollaboratorsManager:
         """Heuristic to detect if Meta failed due to collaborator permissions/validity."""
         flat = json.dumps(error_response).lower() if isinstance(error_response, (dict, list)) else str(error_response).lower()
         return "collaborator" in flat or "collab" in flat or "coauthor" in flat
+

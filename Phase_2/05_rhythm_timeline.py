@@ -23,6 +23,65 @@ except ImportError:
     from rhythm_timeline_builder import RhythmTimelineBuilder
 
 
+def _calculate_optimal_audio_window(
+    lyric_intel: Dict[str, Any],
+    bgm_duration: float,
+    target_duration: float,
+) -> float:
+    """
+    Finds the golden audio sliding window [T_start, T_start + target_duration]
+    maximizing energy, chorus, or beat drop alignment instead of blindly starting at 00:00.
+    """
+    if bgm_duration <= target_duration or not lyric_intel:
+        return 0.0
+
+    max_offset = max(0.0, bgm_duration - target_duration)
+    if max_offset <= 0.5:
+        return 0.0
+
+    # 1. Check sections for chorus, hook, or drop
+    sections = lyric_intel.get("sections") or []
+    for sec in sections:
+        sec_type = str(sec.get("type", "")).lower()
+        sec_start = float(sec.get("start", 0.0))
+        if any(kw in sec_type for kw in ("chorus", "hook", "drop")) and sec_start <= max_offset:
+            logger.info(f"🎵 [GOLDEN WINDOW] Selected section '{sec_type}' start at {sec_start:.2f}s")
+            return round(sec_start, 2)
+
+    # 2. Check beat drops / emotional peak moments
+    drops = lyric_intel.get("drops") or lyric_intel.get("emotional_peak_moments") or []
+    valid_drops = [float(d) for d in drops if float(d) <= bgm_duration]
+    if valid_drops:
+        # If there is a drop that can land inside our window (e.g. 2.0s to 3.0s build-up before drop)
+        for d in valid_drops:
+            lead_in = 2.5
+            cand_offset = max(0.0, d - lead_in)
+            if cand_offset <= max_offset:
+                logger.info(f"💥 [GOLDEN WINDOW] Selected drop lead-in at {cand_offset:.2f}s (drop hits at {d:.2f}s)")
+                return round(cand_offset, 2)
+
+    # 3. Check tension arc for highest average energy window
+    tension_arc = lyric_intel.get("tension_arc") or []
+    if len(tension_arc) >= 3:
+        best_offset = 0.0
+        best_score = -1.0
+        step = 1.0
+        curr = 0.0
+        while curr <= max_offset:
+            window_end = curr + target_duration
+            pts = [p.get("tension", 0.5) for p in tension_arc if curr <= p.get("time", 0.0) <= window_end]
+            avg_score = sum(pts) / len(pts) if pts else 0.0
+            if avg_score > best_score:
+                best_score = avg_score
+                best_offset = curr
+            curr += step
+        if best_score > 0.0:
+            logger.info(f"⚡ [GOLDEN WINDOW] Selected highest tension arc window at {best_offset:.2f}s (score={best_score:.2f})")
+            return round(best_offset, 2)
+
+    return 0.0
+
+
 def build_rhythm_timeline(
     video_path: str,
     selected_bgm_path: Optional[str] = None,
@@ -59,6 +118,11 @@ def build_rhythm_timeline(
         is_bad_audio = False
         reject_reason = ""
 
+        is_user_custom = bool(
+            (forensic_context or {}).get("is_user_custom_audio", False)
+            or (active_bgm_path and "user_custom_audio" in os.path.basename(active_bgm_path).lower())
+        )
+
         if active_bgm_path and os.path.isfile(active_bgm_path):
             bgm_dur = 0.0
             try:
@@ -66,13 +130,13 @@ def build_rhythm_timeline(
             except Exception:
                 pass
 
-            if lyric_intel.get("is_unusable", False):
+            if lyric_intel.get("is_unusable", False) and not is_user_custom:
                 is_bad_audio = True
                 reject_reason = lyric_intel.get("unusable_reason") or "Audio is non-music noise / distortion"
-            elif lyric_intel.get("is_speech_only", False):
+            elif lyric_intel.get("is_speech_only", False) and not is_user_custom:
                 is_bad_audio = True
                 reject_reason = "Audio is spoken dialogue / chatter without musical backing"
-            elif 0 < bgm_dur < 10.0:
+            elif 0 < bgm_dur < 10.0 and not is_user_custom:
                 is_bad_audio = True
                 reject_reason = f"Audio snippet too short ({bgm_dur:.1f}s < 10s minimum)"
 
@@ -141,11 +205,57 @@ def build_rhythm_timeline(
         logger.warning(f"Audio strategy routing notice: {_as_err}")
 
     # Full psycho-acoustic timeline construction using RhythmTimelineBuilder
+    v_dur = 0.0
+    bgm_dur = 0.0
     try:
         v_dur = builder._get_duration(video_path)
+    except Exception:
+        pass
+    if active_bgm_path and os.path.isfile(active_bgm_path):
+        try:
+            bgm_dur = builder._get_duration(active_bgm_path)
+        except Exception:
+            pass
+
+    is_user_custom = bool(
+        (forensic_context or {}).get("is_user_custom_audio", False)
+        or (active_bgm_path and "user_custom_audio" in os.path.basename(active_bgm_path).lower())
+    )
+
+    # ── DYNAMIC DURATION & GOLDEN SLIDING WINDOW CALCULATION ──────────────────
+    audio_start_offset = 0.0
+    if bgm_dur > 0 and v_dur > 0:
+        if bgm_dur < v_dur:
+            # Scenario A: Audio < Video (e.g. Audio 9s, Video 24s) -> Condense video to audio duration
+            target_duration = bgm_dur
+            audio_start_offset = 0.0
+            logger.info(
+                f"⚡ [SCENARIO A: MICRO-REEL CONDENSATION] Audio ({bgm_dur:.2f}s) < Video ({v_dur:.2f}s). "
+                f"Dynamically condensing video to {target_duration:.2f}s hyper-dense micro-reel (100-200% retention)."
+            )
+        else:
+            # Scenario B: Audio >= Video (e.g. Audio 45s, Video 15s) -> Golden sliding window
+            target_duration = min(v_dur, 15.0) if v_dur > 15.0 else v_dur
+            audio_start_offset = _calculate_optimal_audio_window(
+                lyric_intel=lyric_intel,
+                bgm_duration=bgm_dur,
+                target_duration=target_duration,
+            )
+            logger.info(
+                f"🎧 [SCENARIO B: GOLDEN SLIDING WINDOW] Audio ({bgm_dur:.2f}s) >= Video ({v_dur:.2f}s). "
+                f"Selected peak audio offset={audio_start_offset:.2f}s for target duration {target_duration:.2f}s."
+            )
+    elif bgm_dur > 0:
+        target_duration = bgm_dur
+    elif v_dur > 0:
+        target_duration = min(v_dur, 15.0)
+    else:
+        target_duration = 15.0
+
+    try:
         if v_dur > 0:
-            builder.min_duration = 2.0
-            builder.max_duration = 4.0
+            builder.min_duration = min(2.0, target_duration / 3.0) if target_duration < 6.0 else 2.0
+            builder.max_duration = min(4.0, target_duration)
 
             target_audio = active_bgm_path if (active_bgm_path and os.path.isfile(active_bgm_path)) else video_path
             bgm_beats = lyric_intel.get("emotional_peak_moments", [])
@@ -154,20 +264,19 @@ def build_rhythm_timeline(
 
             raw_scenes = [{"clip_id": 0, "start": 0.0, "end": v_dur, "score": 0.85}]
 
-            target_hint = min(15.0, v_dur) if v_dur > 0 else 15.0
             full_timeline = builder.build_timeline(
                 scenes=raw_scenes,
                 beat_grid=bgm_beats,
                 vibe=route_params.get("recommended_editing_mode", "hype"),
                 music_intelligence=lyric_intel if lyric_intel else None,
-                target_duration_hint=target_hint,
+                target_duration_hint=target_duration,
             )
             micro_shots = full_timeline if full_timeline else []
     except Exception as rte:
         logger.warning(f"⚠️ [STEP 05] Rhythm timeline builder fallback notice: {rte}")
 
     logger.info(
-        f"✓ [STEP 05 SUCCESS] Built {len(micro_shots)} human-scale micro-shots (2.0s-3.5s takes) | "
+        f"✓ [STEP 05 SUCCESS] Built {len(micro_shots)} human-scale micro-shots (target={target_duration:.1f}s, offset={audio_start_offset:.1f}s) | "
         f"speed={route_params.get('speed_factor', 1.0)}x | "
         f"ducking={route_params.get('bgm_ducking_db', -6.0)}dB | "
         f"verified_bgm='{os.path.basename(active_bgm_path) if active_bgm_path else 'none'}'"
@@ -178,4 +287,7 @@ def build_rhythm_timeline(
         "lyric_intel": lyric_intel,
         "micro_shots": micro_shots,
         "selected_bgm_path": active_bgm_path,
+        "target_duration": target_duration,
+        "audio_start_offset": audio_start_offset,
+        "is_user_custom_audio": is_user_custom,
     }
