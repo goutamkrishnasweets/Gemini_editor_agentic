@@ -49,6 +49,7 @@ class CollaboratorsManager:
     def extract_collaborators(self, raw_text: str) -> Tuple[str, List[str]]:
         """
         Extract collaborator usernames and return the cleaned text.
+        Supports /collab anywhere: in front, middle, or end.
 
         Returns:
             (clean_text, list_of_clean_usernames)
@@ -57,37 +58,56 @@ class CollaboratorsManager:
             • /collab token and arguments are stripped completely from clean_text.
             • Leading '@' symbols are removed.
             • Capped at MAX_COLLABORATORS (3 accounts).
+            • Non-greedy: Never swallows title words (e.g. 'disha patani') following handles.
         """
         if not raw_text or not isinstance(raw_text, str):
             return ("", [])
 
-        match = _COLLAB_PATTERN.search(raw_text)
-        if not match:
+        m = re.search(r"/(?:collab|collaborators)\b", raw_text, re.IGNORECASE)
+        if not m:
             return (raw_text.strip(), [])
 
-        matched_segment = match.group(0)
-        args_segment = match.group(1)
+        pre = raw_text[:m.start()]
+        post = raw_text[m.end():].lstrip()
 
-        # Extract usernames from the arguments segment
-        raw_names = _USERNAME_EXTRACT.findall(args_segment)
-        clean_collabs: List[str] = []
-        for name in raw_names:
-            clean_name = name.lstrip("@").strip()
-            # Prevent accidental match of subsequent commands or empty strings
-            if clean_name and not clean_name.startswith("/") and clean_name not in clean_collabs:
-                clean_collabs.append(clean_name)
-            if len(clean_collabs) >= self.MAX_COLLABORATORS:
+        tokens = re.split(r"(\s+)", post)
+        handles: List[str] = []
+        consumed: List[str] = []
+        prev_had_comma = False
+
+        for i in range(0, len(tokens), 2):
+            tok = tokens[i].strip()
+            if not tok:
+                continue
+            if tok.startswith("/") or tok.startswith("http://") or tok.startswith("https://"):
                 break
 
-        # Strip the full /collab command from the text
-        clean_text = raw_text.replace(matched_segment, "").strip()
+            is_at = tok.startswith("@")
+            has_comma = tok.endswith(",")
+            clean = tok.strip(",").lstrip("@")
+
+            if is_at or prev_had_comma or len(handles) == 0:
+                handles.append(clean)
+                consumed.append(tokens[i])
+                if i + 1 < len(tokens):
+                    consumed.append(tokens[i + 1])
+                prev_had_comma = has_comma
+                if not is_at and not has_comma and not prev_had_comma:
+                    break
+                if len(handles) >= self.MAX_COLLABORATORS:
+                    break
+            else:
+                break
+
+        matched_len = len("".join(consumed))
+        clean_text = (pre + " " + post[matched_len:]).strip()
         clean_text = re.sub(r"\s+", " ", clean_text).strip()
 
         logger.info(
             "[Collaborators] Extracted: %s | clean_text='%s'",
-            clean_collabs, clean_text[:60],
+            handles, clean_text[:60],
         )
-        return (clean_text, clean_collabs)
+        return (clean_text, handles)
 
     def apply_collaborators(
         self, init_data: Dict[str, Any], collaborators: List[str]

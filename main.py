@@ -1565,28 +1565,31 @@ def _dispatch_phase4_publishing_in_background(
                 seo_data=seo_data,
                 trail_reels=trail_reels,
             )
+            import html as _html_mod
             status_lines = []
             for p_name, p_info in pub_res.get("platforms", {}).items():
                 st = p_info.get("status")
                 icon = "✅" if st == "success" else ("⏸️" if st == "skipped" else "❌")
                 detail = p_info.get("url") or p_info.get("link") or p_info.get("message") or st
-                if detail and (str(detail).startswith("http://") or str(detail).startswith("https://")):
-                    status_lines.append(f"• {icon} **{p_name.upper()}**:\n{detail}")
+                detail_str = str(detail or "")
+                if detail_str.startswith("http://") or detail_str.startswith("https://"):
+                    status_lines.append(f"• {icon} <b>{p_name.upper()}</b>:\n{detail_str}")
                 else:
-                    status_lines.append(f"• {icon} **{p_name.upper()}**: `{detail}`")
+                    status_lines.append(f"• {icon} <b>{p_name.upper()}</b>: <code>{_html_mod.escape(detail_str)}</code>")
 
             if bot_obj and chat_id and loop:
                 import asyncio
+                safe_title = _html_mod.escape(str(title or "Untitled Reel"))
                 msg_text = (
-                    f"🎉 **Phase 4 Multi-Platform Broadcasting Complete!**\n\n"
-                    f"📌 **Title**: `{title}`\n\n"
+                    f"🎉 <b>Phase 4 Multi-Platform Broadcasting Complete!</b>\n\n"
+                    f"📌 <b>Title</b>: <code>{safe_title}</code>\n\n"
                     + "\n".join(status_lines)
                 )
                 async def _send_completion():
                     try:
-                        await bot_obj.send_message(chat_id=int(chat_id), text=msg_text, parse_mode="Markdown")
-                    except Exception as _md_err:
-                        logger.warning(f"Markdown send failed for Phase 4 summary ({_md_err}), retrying plain text...")
+                        await bot_obj.send_message(chat_id=int(chat_id), text=msg_text, parse_mode="HTML")
+                    except Exception as _html_err:
+                        logger.warning(f"HTML send failed for Phase 4 summary ({_html_err}), retrying plain text...")
                         await bot_obj.send_message(chat_id=int(chat_id), text=msg_text)
 
                 asyncio.run_coroutine_threadsafe(_send_completion(), loop)
@@ -4462,9 +4465,19 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("back", _cmd_cancel))
         app.add_handler(CommandHandler("setstoragechat", handle_telegram_incoming_msg))
 
+        # Whitelist dynamic prompt commands so they route directly to handle_telegram_incoming_msg
+        _DIRECT_PROMPT_COMMANDS = {
+            "trail_reels", "trial_reels", "collab", "tag", "no_grid", "audio", "title"
+        }
+        for _pcmd in _DIRECT_PROMPT_COMMANDS:
+            app.add_handler(CommandHandler(_pcmd, handle_telegram_incoming_msg))
+
         async def _cmd_unknown(update, context):
             if update.message:
                 cmd = update.message.text.split()[0] if update.message.text else "command"
+                clean_cmd = cmd.lstrip("/").split("@")[0].lower()
+                if clean_cmd in _DIRECT_PROMPT_COMMANDS:
+                    return await handle_telegram_incoming_msg(update, context)
                 uid = update.effective_user.id if update.effective_user else "unknown"
                 logger.warning(f"🛡️ [SECURITY GUARD] Unknown command '{cmd}' blocked from User {uid}")
                 await update.message.reply_text(
@@ -4473,7 +4486,7 @@ def start_telegram_bot_service():
                 )
 
         app.add_handler(MessageHandler(filters.COMMAND, _cmd_unknown))
-        app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
+        app.add_handler(MessageHandler(filters.TEXT | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
         try:
             from Core_Modules.disk_cleaner import sweep_all_stale_storage, check_storage_circuit_breaker

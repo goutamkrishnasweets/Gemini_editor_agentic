@@ -48,6 +48,7 @@ class UserTagsManager:
     def extract_user_tags(self, raw_text: str) -> Tuple[str, List[str]]:
         """
         Extract tagged usernames from raw text and strip the /tag command.
+        Supports /tag anywhere: in front, middle, or end.
 
         Returns:
             (clean_text, list_of_clean_usernames)
@@ -55,30 +56,51 @@ class UserTagsManager:
         if not raw_text or not isinstance(raw_text, str):
             return ("", [])
 
-        match = _TAG_PATTERN.search(raw_text)
-        if not match:
+        m = re.search(r"/(?:user_)?tag(?:s)?\b", raw_text, re.IGNORECASE)
+        if not m:
             return (raw_text.strip(), [])
 
-        matched_segment = match.group(0)
-        args_segment = match.group(1)
+        pre = raw_text[:m.start()]
+        post = raw_text[m.end():].lstrip()
 
-        raw_names = _USERNAME_EXTRACT.findall(args_segment)
-        clean_tags: List[str] = []
-        for name in raw_names:
-            clean_name = name.lstrip("@").strip()
-            if clean_name and not clean_name.startswith("/") and clean_name not in clean_tags:
-                clean_tags.append(clean_name)
-            if len(clean_tags) >= self.MAX_TAGS:
+        tokens = re.split(r"(\s+)", post)
+        handles: List[str] = []
+        consumed: List[str] = []
+        prev_had_comma = False
+
+        for i in range(0, len(tokens), 2):
+            tok = tokens[i].strip()
+            if not tok:
+                continue
+            if tok.startswith("/") or tok.startswith("http://") or tok.startswith("https://"):
                 break
 
-        clean_text = raw_text.replace(matched_segment, "").strip()
+            is_at = tok.startswith("@")
+            has_comma = tok.endswith(",")
+            clean = tok.strip(",").lstrip("@")
+
+            if is_at or prev_had_comma or len(handles) == 0:
+                handles.append(clean)
+                consumed.append(tokens[i])
+                if i + 1 < len(tokens):
+                    consumed.append(tokens[i + 1])
+                prev_had_comma = has_comma
+                if not is_at and not has_comma and not prev_had_comma:
+                    break
+                if len(handles) >= self.MAX_TAGS:
+                    break
+            else:
+                break
+
+        matched_len = len("".join(consumed))
+        clean_text = (pre + " " + post[matched_len:]).strip()
         clean_text = re.sub(r"\s+", " ", clean_text).strip()
 
         logger.info(
             "[UserTags] Extracted: %s | clean_text='%s'",
-            clean_tags, clean_text[:60],
+            handles, clean_text[:60],
         )
-        return (clean_text, clean_tags)
+        return (clean_text, handles)
 
     def calculate_visual_coords(
         self,

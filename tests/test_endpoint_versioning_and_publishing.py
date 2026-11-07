@@ -185,12 +185,14 @@ class TestEndpointVersioning(unittest.TestCase):
              patch.object(mpm, "publish_to_meta", new_callable=AsyncMock) as mock_meta, \
              patch.object(mpm, "publish_to_telegram", new_callable=AsyncMock) as mock_tg:
             
+            mock_yt.return_value = {"status": "success", "video_id": "yt_123"}
+            mock_meta.return_value = {"instagram": {"status": "success", "id": "ig_456"}}
             mock_tg.return_value = {"status": "success"}
             res = _run_coro(mpm.run_phase4_publishing_async(video_path=__file__, title="Test Title"))
             self.assertTrue(res["success"])
             self.assertEqual(res["platforms"]["make"]["status"], "success")
-            mock_yt.assert_not_called()
-            mock_meta.assert_not_called()
+            mock_yt.assert_called_once()
+            mock_meta.assert_called_once()
 
     def test_waterfall_failover_to_local(self):
         import Publishing_Modules.media_publisher_main as mpm
@@ -206,7 +208,7 @@ class TestEndpointVersioning(unittest.TestCase):
 
             res = _run_coro(mpm.run_phase4_publishing_async(video_path=__file__, title="Test Title"))
             self.assertTrue(res["success"])
-            self.assertEqual(res["platforms"]["make"]["status"], "fallback_triggered")
+            self.assertEqual(res["platforms"]["make"]["status"], "skipped")
             mock_yt.assert_called_once()
             mock_meta.assert_called_once()
 
