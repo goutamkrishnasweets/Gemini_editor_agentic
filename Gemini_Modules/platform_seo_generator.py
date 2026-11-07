@@ -96,8 +96,8 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "description_max": 5000,
         "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 15,
         "hashtag_placement": "Put the first 3 in the first line of the description; YouTube shows them above the title.",
-        "disclosure": "(Disclosure: #ad #affiliate — qualifying purchases earn commission)",
-        "disclosure_placement": "line2",
+        "disclosure": "(Paid link · qualifying purchases earn commission #ad)",
+        "disclosure_placement": "after_links",
         "links_label": "🛍️ FEATURED PRODUCTS / LINKS:",
         "link_mode_default": "inline",
         "caption_links_clickable": False,
@@ -108,8 +108,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
             "Title: primary keyword in the first ~40 chars + a curiosity/value element; mirror a real buyer search "
             "(X review, X vs Y, is X worth it, best X for <use-case>). Price words ONLY if the price is in EVIDENCE. Ends with #Shorts.",
             "Description line 1 = ONE natural sentence containing the primary keyword (this is the search snippet, ~150 chars).",
-            "Line 2 = the disclosure line exactly as given (when product slots exist).",
-            "Then 1-2 short blocks selling the specific value props shown in the video, then the links block or pointer, "
+            "Then 1-2 short blocks selling the specific value props shown in the video, then the links block with compliant disclosure placed after links.",
             "then ONE genuine question. Keywords live inside sentences; never a visible keyword list.",
         ],
     },
@@ -117,11 +116,11 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "label": "Instagram Reels (caption/spoken/on-screen text search + sends)",
         "title_max": 80,
         "description_max": 2200, "hook_visible_chars": 125,
-        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 5,
-        "hashtag_placement": "End of caption. The cap of 5 counts every # in caption + comments, including #ad.",
+        "hashtags_min": 5, "hashtags_max": 15, "hashtags_total_max": 15,
+        "hashtag_placement": "End of caption. 5-15 high-ranking niche search hashtags.",
         "disclosure": "#ad",
-        "disclosure_placement": "prefix",
-        "links_label": "🔗 FEATURED ITEM / SHOP LINK:",
+        "disclosure_placement": "after_links",
+        "links_label": "🛍️ FEATURED ITEMS / SHOP LINKS:",
         "link_mode_default": "dm_keyword",
         "caption_links_clickable": False,
         "caption_link_note": "Caption (and comment) URLs are not clickable. Working routes: DM auto-reply, bio link, "
@@ -129,11 +128,11 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "cta_re": r"(save|share|send|comment|rate|thoughts|👇|\?)",
         "rules": [
             "Title = the hook: a sharp curiosity gap tied to a buyer problem; no corporate summary.",
-            "Caption line 1 (starts with '#ad ' when product slots exist) must work ALONE: only ~125 chars show before '… more'. "
+            "Caption line 1 must be a captivating organic hook that works ALONE: only ~125 chars show before '… more'. Never put #ad on line 1.",
             "Primary keyword in the first sentence.",
             "Instagram search reads caption text, spoken words and on-screen text: keep them aligned. Short, scannable, "
             "keywords inside natural sentences, never a keyword list.",
-            "Hashtags are categories, not reach: 3-5 max INCLUDING #ad. Never write #affiliate on Instagram.",
+            "Hashtags are searchable categories: 5-15 high-ranking niche tags at the end of the caption.",
             "End with ONE save/send trigger that fits the video.",
         ],
     },
@@ -144,7 +143,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 5,
         "hashtag_placement": "End of caption (Meta: no more than 5).",
         "disclosure": "#ad",
-        "disclosure_placement": "prefix",
+        "disclosure_placement": "after_links",
         "links_label": "🛍️ Featured Items:",
         "link_mode_default": "first_comment",
         "caption_links_clickable": True,
@@ -152,7 +151,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "cta_re": r"(which|would you|comment|below|thoughts|👇|\?)",
         "rules": [
             "Title: conversational and specific; the video must pay it off.",
-            "Caption: short, relevant, minimal CAPITAL LETTERS, no links in the caption. Starts with '#ad ' when product slots exist.",
+            "Caption: short, relevant, minimal CAPITAL LETTERS. Clear disclosure placed below links or at post end (never as first word).",
             "Close with a genuine either/or or opinion question. No engagement bait ('like if', 'tag a friend', 'comment YES').",
         ],
     },
@@ -162,16 +161,16 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "description_max": 1000, "soft_text_max": 300,
         "hashtags_min": 2, "hashtags_max": 5, "hashtags_total_max": 8,
         "hashtag_placement": "End of post. Use 2-5 stable category tags; they are navigation labels, not a reach hack.",
-        "disclosure": "(#ad #affiliate)",
-        "disclosure_placement": "line2",
-        "links_label": "",
+        "disclosure": "(Paid affiliate link · #ad)",
+        "disclosure_placement": "after_links",
+        "links_label": "🛍️ Featured Items:",
         "link_mode_default": "inline",
         "caption_links_clickable": True,
         "caption_link_note": "Links are clickable in Telegram captions.",
         "cta_re": None,
         "rules": [
-            "Format: line 1 = bold headline with the primary keyword (🔥 **Title**); line 2 = the disclosure; then ONE punchy "
-            "takeaway sentence naming the concrete benefit; then product slots one per line. Zero filler.",
+            "Format: line 1 = bold headline with the primary keyword (🔥 **Title**); then ONE punchy "
+            "takeaway sentence naming the concrete benefit; then product slots with compliant disclosure. Zero filler.",
         ],
     },
 }
@@ -737,7 +736,8 @@ def extract_main_subject_and_context(
 
 
 _MERCHANTS = (("amazon", "Amazon"), ("amzn", "Amazon"), ("meesho", "Meesho"), ("myntra", "Myntra"),
-              ("ajio", "Ajio"), ("flipkart", "Flipkart"), ("fkrt", "Flipkart"), ("nykaa", "Nykaa"))
+              ("ajio", "Ajio"), ("flipkart", "Flipkart"), ("fkrt", "Flipkart"), ("nykaa", "Nykaa"),
+              ("earnkaro", "EarnKaro"), ("ekaro", "EarnKaro"))
 
 
 def _merchant(url: str) -> str:
@@ -748,14 +748,101 @@ def _merchant(url: str) -> str:
     return "Product"
 
 
-def _extract_links(affiliate_link: Any) -> List[str]:
+def detect_affiliate_provider(links_or_urls: Any) -> str:
+    """
+    Detect affiliate network provider from URLs, dicts, or strings.
+    Supported: amazon, flipkart, earnkaro, myntra, meesho, ajio, nykaa, generic.
+    """
+    if isinstance(links_or_urls, (list, tuple)):
+        combined = " ".join(str(x) for x in links_or_urls).lower()
+    elif isinstance(links_or_urls, dict):
+        combined = " ".join(f"{k} {v}" for k, v in links_or_urls.items()).lower()
+    else:
+        combined = str(links_or_urls or "").lower()
+
+    if any(k in combined for k in ("amazon.", "amzn.to", "amzn.in", "link.amazon", "amzlinks")):
+        return "amazon"
+    if any(k in combined for k in ("flipkart.", "fkrt.it", "flipkart")):
+        return "flipkart"
+    if any(k in combined for k in ("earnkaro.", "ekaro.in", "earnkaro")):
+        return "earnkaro"
+    if any(k in combined for k in ("myntra.", "myntr.it", "myntra")):
+        return "myntra"
+    if any(k in combined for k in ("meesho.", "meesho.com", "meesho")):
+        return "meesho"
+    if any(k in combined for k in ("ajio.", "ajio")):
+        return "ajio"
+    if any(k in combined for k in ("nykaa.", "nykaa")):
+        return "nykaa"
+    return "generic"
+
+
+def get_provider_disclosure(links_or_urls: Any) -> str:
+    """
+    Returns exact, compliant commercial disclosure based on affiliate network operating agreement.
+    - Amazon Associates: strictly mandates 'As an Amazon Associate I earn from qualifying purchases'
+    - Flipkart: '(Paid Flipkart affiliate link · qualifying purchases earn commission #ad)'
+    - EarnKaro: '(Paid EarnKaro affiliate link · qualifying purchases earn commission #ad)'
+    - Myntra / Meesho / Ajio: Provider-verified disclosure
+    - Generic: '(Paid affiliate link · qualifying purchases earn commission #ad)'
+    """
+    provider = detect_affiliate_provider(links_or_urls)
+    if provider == "amazon":
+        return "(Paid link · As an Amazon Associate I earn from qualifying purchases #ad)"
+    elif provider == "flipkart":
+        return "(Paid Flipkart affiliate link · qualifying purchases earn commission #ad)"
+    elif provider == "earnkaro":
+        return "(Paid EarnKaro affiliate link · qualifying purchases earn commission #ad)"
+    elif provider == "myntra":
+        return "(Paid Myntra affiliate link · qualifying purchases earn commission #ad)"
+    elif provider == "meesho":
+        return "(Paid Meesho affiliate link · qualifying purchases earn commission #ad)"
+    elif provider == "ajio":
+        return "(Paid Ajio affiliate link · qualifying purchases earn commission #ad)"
+    elif provider == "nykaa":
+        return "(Paid Nykaa affiliate link · qualifying purchases earn commission #ad)"
+    return "(Paid affiliate link · qualifying purchases earn commission #ad)"
+
+
+def parse_affiliate_items(affiliate_link: Any) -> List[Dict[str, str]]:
+    """
+    Parse affiliate links preserving product labels. Supports:
+    - Multiline text with 'Label : URL' or 'Label - URL'
+    - Lists of dicts [{'label': '...', 'url': '...'}]
+    - Raw URL strings or lists of URLs
+    """
     if not affiliate_link:
         return []
-    items = affiliate_link if isinstance(affiliate_link, (list, tuple)) else [affiliate_link]
-    found: List[str] = []
-    for item in items:
-        found.extend(_URL_RE.findall(str(item)))
-    return list(dict.fromkeys(u.strip() for u in found if u.strip()))
+    if isinstance(affiliate_link, list):
+        out = []
+        for x in affiliate_link:
+            if isinstance(x, dict) and "url" in x:
+                out.append({"label": (x.get("label") or "").strip(), "url": str(x["url"]).strip()})
+            else:
+                out.extend(parse_affiliate_items(str(x)))
+        return out
+
+    lines = str(affiliate_link).splitlines()
+    items: List[Dict[str, str]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        urls = _URL_RE.findall(line)
+        if urls:
+            label = _URL_RE.sub("", line).strip(" :-—\t\r\n👉•*")
+            for u in urls:
+                items.append({"label": label, "url": u.strip()})
+    if not items:
+        for u in _URL_RE.findall(str(affiliate_link)):
+            items.append({"label": "", "url": u.strip()})
+    return items
+
+
+def _extract_links(affiliate_link: Any) -> List[str]:
+    parsed = parse_affiliate_items(affiliate_link)
+    urls = [it["url"] for it in parsed if it.get("url")]
+    return list(dict.fromkeys(u.strip() for u in urls if u.strip()))
 
 
 def _compact(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -785,6 +872,7 @@ def build_evidence(
     previous: Optional[Dict[str, Any]] = None,
     guard: Optional[ProvenanceGuard] = None,
     content_origin: str = "reused",
+    labeled_items: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """One compact, source-scrubbed packet of everything the pipeline knows about this clip."""
     md = _as_dict(metadata)
@@ -797,6 +885,14 @@ def build_evidence(
     subject = guard.scrub_text(ex["main_subject"]) or "Featured Reel"
     tags = md_clean.get("hashtags") or []
     hint_txt = re.sub(r"\s+", " ", _URL_RE.sub("", user_hint or "")).strip()
+
+    p_links = []
+    if labeled_items:
+        for i, it in enumerate(labeled_items, 1):
+            p_links.append({"slot": f"[[AFF_LINK_{i}]]", "name": it.get("label", ""), "merchant": _merchant(it["url"])})
+    elif links:
+        for i, u in enumerate(links, 1):
+            p_links.append({"slot": f"[[AFF_LINK_{i}]]", "merchant": _merchant(u)})
 
     ev = {
         "content_origin": content_origin,
@@ -820,7 +916,7 @@ def build_evidence(
         "audio_math": _clip_obj(rc["audio_math"], 400),
         "analytics": _compact({"likes": md.get("likesCount"), "views": md.get("videoViewCount")}),
         "brand": _clip(brand_info, 300),
-        "product_links": [{"slot": f"[[AFF_LINK_{i}]]", "merchant": _merchant(u)} for i, u in enumerate(links or [], 1)],
+        "product_links": p_links,
         "past_performance": _clip_obj(performance_hints[:6] if performance_hints else None, 900),
         "previous_attempt": _clip_obj(previous, 900),
     }
@@ -1080,9 +1176,9 @@ STYLE
 - Keywords live inside natural sentences. NEVER a visible keyword list. The "keywords" array is metadata only.
 - Never write "link in bio", "in my bio", "check bio".
 LINKS & DISCLOSURE
-- Product slots like [[AFF_LINK_1]] are copied verbatim, never altered, never in a title, never invent a URL.
-- If product_links exist, the affiliate relationship exists in EVERY link mode, so the disclosure line is always required,
-  at the position the platform brief states. Follow each platform's link mode exactly.
+- Product slots like [[AFF_LINK_1]] are copied verbatim, never altered, never in a title, never invent a URL. When product_links contains names/labels (e.g. 'Aafiya casual trackpants'), include that product name right before the slot: '👉 Product Name: [[AFF_LINK_1]]'.
+- If product_links exist, the affiliate relationship exists in EVERY link mode, so the disclosure line is always required, placed strictly AFTER the product links (never on line 1).
+- If product_links is empty (no affiliate links provided), NEVER include #ad, #affiliate, or any commercial disclosure line anywhere in title, caption, or hashtags! This is pure organic content.
 HASHTAGS
 - Only tags that describe THIS video's niche/topic/intent. Never #viral #trending #reels #fyp #foryou #explore.
 """
@@ -1170,6 +1266,7 @@ def _link_instruction(mode: str) -> str:
 
 
 _PLACEMENT_TEXT = {
+    "after_links": "the disclosure sits directly below the featured product links (never on line 1).",
     "prefix": "the caption's FIRST LINE starts with the disclosure ('#ad ' + hook).",
     "line2": "the disclosure is line 2 (directly under line 1), so it is within the first two lines.",
 }
@@ -1360,12 +1457,33 @@ def _fit_hashtags(platform: str, tags: Any, backfill: List[str], budget: int,
     return out
 
 
-def _ensure_links(platform: str, desc: str, links: List[str]) -> str:
-    missing = [u for u in links if u not in desc]
+def _format_link_line(item: Dict[str, str]) -> str:
+    lbl = (item.get("label") or "").strip()
+    u = (item.get("url") or "").strip()
+    if lbl and lbl.lower() not in ("featured item", "link", "product"):
+        return f"👉 {lbl}: {u}"
+    return f"👉 {u}"
+
+
+def _ensure_links(platform: str, desc: str, links: List[str], labeled_items: Optional[List[Dict[str, str]]] = None) -> str:
+    if not links:
+        return desc
+    items = labeled_items or [{"label": "", "url": u} for u in links]
+    url_to_label = {it["url"]: it.get("label", "").strip() for it in items if it.get("url")}
+
+    # Upgrade any bare URL already present in desc with its label if available
+    for u, lbl in url_to_label.items():
+        if lbl and lbl.lower() not in ("featured item", "link", "product") and u in desc:
+            if lbl not in desc:
+                bare_pat = rf"(?:👉\s*)?{re.escape(u)}"
+                desc = re.sub(bare_pat, f"👉 {lbl}: {u}", desc, count=1)
+
+    missing = [it for it in items if it["url"] not in desc]
     if not missing:
         return desc
-    label = PLATFORM_SPECS[platform].get("links_label") or ""
-    new_lines = [f"👉 {u}" for u in missing]
+
+    label = PLATFORM_SPECS[platform].get("links_label") or "🛍️ FEATURED PRODUCTS / LINKS:"
+    new_lines = [_format_link_line(it) for it in missing]
     if label and label in desc:
         lines = desc.split("\n")
         last = max((i for i, ln in enumerate(lines) if _URL_RE.search(ln) or label in ln), default=len(lines) - 1)
@@ -1387,27 +1505,42 @@ def _ensure_pointer(desc: str, mode: str) -> str:
     return desc
 
 
-def _place_disclosure(platform: str, desc: str, has_links: bool) -> str:
-    """ASCI: the label must sit within the first two lines (no 'see more'). v2 appended it at the END."""
-    if not has_links:
-        return desc
-    spec = PLATFORM_SPECS[platform]
-    disc = spec["disclosure"]
+def _place_disclosure(platform: str, desc: str, has_links: bool, links: Optional[List[str]] = None) -> str:
+    """Places compliant affiliate disclosure. NEVER on line 1."""
+    # Always scrub existing or duplicate disclosure tags first
     desc = _DISC_ANY.sub("", desc)
     desc = re.sub(r"\(\s*\)", "", desc)
     desc = "\n".join(re.sub(r"[ \t]{2,}", " ", ln).rstrip() for ln in desc.split("\n")).lstrip("\n")
-    if spec["disclosure_placement"] == "prefix":
+    if not has_links:
+        return re.sub(r"\n{3,}", "\n\n", desc).strip()
+
+    spec = PLATFORM_SPECS[platform]
+    disc = get_provider_disclosure(links or [])
+    placement = spec.get("disclosure_placement", "after_links")
+
+    if placement == "prefix":
         head, sep, rest = desc.partition("\n")
         return f"{disc} {head}".strip() + (sep + rest if sep else "")
-    head, _, rest = desc.partition("\n")
-    rest = rest.lstrip("\n")
-    return head + "\n" + disc + ("\n\n" + rest if rest else "")
+    elif placement == "line2":
+        head, _, rest = desc.partition("\n")
+        rest = rest.lstrip("\n")
+        return head + "\n" + disc + ("\n\n" + rest if rest else "")
+    else:  # "after_links" or default
+        lines = desc.split("\n")
+        last_url_idx = max(
+            (i for i, ln in enumerate(lines) if _URL_RE.search(ln) or "DM you the link" in ln or "first comment" in ln or "FEATURED" in ln.upper()),
+            default=-1
+        )
+        if last_url_idx != -1:
+            lines.insert(last_url_idx + 1, disc)
+            return "\n".join(lines)
+        return desc.rstrip() + f"\n\n{disc}"
 
 
 def _disclosure_ok(platform: str, desc: str) -> bool:
     if PLATFORM_SPECS[platform]["disclosure_placement"] == "prefix":
         return bool(re.match(r"\s*#ad\b", desc, re.I))
-    return bool(re.search(r"#ad\b", "\n".join(desc.split("\n")[:2]), re.I))
+    return bool(re.search(r"#ad\b", desc, re.I))
 
 
 def _count_desc_tags(desc: str) -> int:
@@ -1492,8 +1625,10 @@ def lint_platform(platform: str, content: Dict[str, Any], links: Optional[List[s
         if not re.search(pat, desc, re.I):
             add("pointer_missing", "soft", "Caption lacks the pointer line for this link mode.")
     if links and not _disclosure_ok(platform, desc):
-        where = "the first line" if spec["disclosure_placement"] == "prefix" else "the first two lines"
-        add("disclosure_position", "hard", f"Affiliate disclosure must be in {where} (ASCI: no 'see more'). Use exactly {spec['disclosure']}.")
+        where = "the first line" if spec["disclosure_placement"] == "prefix" else "after the links block"
+        add("disclosure_position", "hard", f"Affiliate disclosure must be included {where}. Use compliant provider disclosure with #ad.")
+    if not links and re.search(r"#ad\b|#affiliate\b", both, re.I):
+        add("unwanted_ad_tag", "hard", "No affiliate links provided: #ad and #affiliate must not appear in organic posts.")
 
     # source privacy
     if guard:
@@ -1562,19 +1697,21 @@ def lint_platform(platform: str, content: Dict[str, Any], links: Optional[List[s
     return max(0, 100 - 25 * hard - 8 * (len(issues) - hard)), issues
 
 
-def _build_link_delivery(platform: str, mode: str, links: List[str]) -> Dict[str, Any]:
+def _build_link_delivery(platform: str, mode: str, links: List[str], labeled_items: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     spec = PLATFORM_SPECS[platform]
     d: Dict[str, Any] = {"mode": mode, "recommended_mode": spec["link_mode_default"],
                          "clickable_in_caption": spec["caption_links_clickable"], "note": spec["caption_link_note"],
                          "urls": links}
     if not links:
         return d
-    block = "\n".join(f"👉 {u}" for u in links)
+    items = labeled_items or [{"label": "", "url": u} for u in links]
+    block = "\n".join(_format_link_line(it) for it in items)
+    disc = get_provider_disclosure(links)
     if mode == "first_comment":
-        d["first_comment"] = f"🛍️ Featured items:\n{block}\n\n(#ad #affiliate)"
+        d["first_comment"] = f"🛍️ Featured items:\n{block}\n\n{disc}"
     elif mode == "dm_keyword":
         d["dm_keyword"] = _dm_keyword()
-        d["dm_reply"] = f"Here you go 👇\n{block}\n\n(#ad #affiliate)"
+        d["dm_reply"] = f"Here you go 👇\n{block}\n\n{disc}"
     return d
 
 
@@ -1582,6 +1719,7 @@ def _finalize_platform(
     platform: str, raw: Dict[str, Any], *, links: List[str], slot_to_url: Dict[str, str], backfill_tags: List[str],
     fallback_title: str = "Untitled Video", primary_keyword: str = "", mode: str = "inline",
     guard: Optional[ProvenanceGuard] = None, ctx: Optional[Dict[str, Any]] = None,
+    labeled_items: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Raw model/heuristic output -> publishable content. Everything here is deterministic."""
     spec = PLATFORM_SPECS[platform]
@@ -1601,10 +1739,13 @@ def _finalize_platform(
     desc, title = strip_system_and_tracking_tokens(desc), strip_system_and_tracking_tokens(title)
 
     if mode == "inline":
-        desc = _ensure_links(platform, desc, links)
+        desc = _ensure_links(platform, desc, links, labeled_items=labeled_items)
     else:
         desc = _ensure_pointer(desc, mode) if links else desc
-    desc = _place_disclosure(platform, desc, bool(links))
+    desc = _place_disclosure(platform, desc, bool(links), links=links)
+    if not links:
+        desc = _DISC_ANY.sub("", desc)
+        desc = re.sub(r"\(\s*\)", "", desc)
     desc = _URL_THEN_TEXT.sub(r"\1\n", desc)
     desc = re.sub(r"\n{3,}", "\n\n", desc).strip()
 
@@ -1617,6 +1758,7 @@ def _finalize_platform(
 
     tags = strip_system_and_tracking_tokens(
         _fit_hashtags(platform, raw.get("hashtags"), backfill_tags, spec["hashtags_total_max"] - _count_desc_tags(desc), guard))
+    tags = [t for t in tags if str(t).lower() not in ("#ad", "#affiliate")]
 
     alts: List[str] = []
     for a in (raw.get("title_alternates") or []):
@@ -1654,7 +1796,16 @@ def _backfill_tags(analysis: Dict[str, Any], evidence: Dict[str, Any]) -> List[s
     for kw in [analysis.get("primary_keyword"), *(analysis.get("secondary_keywords") or []), subject]:
         if isinstance(kw, str) and kw.strip():
             cands.append(_to_tag(kw))
+            # Also derive component tags for multi-word phrases
+            words = [w for w in re.findall(r"[A-Za-z0-9]+", kw) if len(w) > 3]
+            for w in words:
+                cands.append(_to_tag(w))
     cands.extend(evidence.get("source_hashtags") or [])
+    brand = evidence.get("brand")
+    if brand:
+        for b in re.findall(r"[A-Za-z0-9]+", brand):
+            if len(b) > 3:
+                cands.append(_to_tag(b))
     return [c for c in dict.fromkeys(cands) if c]
 
 
@@ -1772,13 +1923,14 @@ def generate_platform_seo(
         logger.info("[PlatformSEO] Feed grid hidden — Reel will publish to Reels tab only.")
     # ─────────────────────────────────────────────────────────────────────────
 
-    links = _extract_links(affiliate_link)
+    labeled_items = parse_affiliate_items(affiliate_link)
+    links = [it["url"] for it in labeled_items if it.get("url")]
     slot_to_url = {f"[[AFF_LINK_{i}]]": u for i, u in enumerate(links, 1)}
     modes = {p: _link_mode(p, link_modes) for p in platforms}
     md = _as_dict(metadata)
     guard = ProvenanceGuard.from_inputs(md, video_context, cache, user_title, user_hint or "", links)
     evidence = build_evidence(video_context, user_title, brand_info, cache, md, links, user_hint,
-                              performance_hints, previous, guard, content_origin)
+                              performance_hints, previous, guard, content_origin, labeled_items=labeled_items)
     subject = evidence["subject"]["value"]
     seo_id = str(md.get("clip_id") or md.get("shortcode") or md.get("session_id") or "") or uuid.uuid4().hex[:12]
     seo_id = f"{_slug(seo_id)}-{uuid.uuid4().hex[:6]}"
@@ -1788,7 +1940,7 @@ def generate_platform_seo(
         return _finalize_platform(
             platform, raw, links=links, slot_to_url=slot_to_url, backfill_tags=backfill, fallback_title=subject,
             primary_keyword=str(analysis.get("primary_keyword") or subject), mode=modes[platform], guard=guard,
-            ctx={"evidence_text": ev_text, "content_origin": content_origin})
+            ctx={"evidence_text": ev_text, "content_origin": content_origin}, labeled_items=labeled_items)
 
     offline = _env_flag("FAST_OFFLINE_SEO")
     heur = _heuristic_draft(evidence, platforms)
@@ -1850,7 +2002,8 @@ def generate_platform_seo(
         backfill = _backfill_tags(analysis, evidence)
         finals = {p: fin(p, heur[p], analysis, backfill) for p in platforms}
         _hfb = _assemble(finals, analysis, evidence, links, subject, "heuristic_fallback", seo_id, content_origin, modes,
-                         {"llm_calls": 0, "rounds_run": 0, "accepted_rewrites": 0}, {}, guard)
+                         {"llm_calls": 0, "rounds_run": 0, "accepted_rewrites": 0}, {}, guard,
+                         labeled_items=labeled_items)
         _hfb["meta_features"] = {
             "trail_reels": is_trial_reel,
             "collaborators": collaborators_list,
@@ -1927,7 +2080,7 @@ def generate_platform_seo(
     result = _assemble(finals, analysis, evidence, links, subject, "gemini_semantic", seo_id, content_origin, modes,
                        {"llm_calls": calls, "rounds_run": rounds_run, "accepted_rewrites": accepted},
                        {"content_category": draft.get("content_category"), "target_audience": draft.get("target_audience")},
-                       guard)
+                       guard, labeled_items=labeled_items)
     # Stamp complete meta_features so downstream publishing modules know all flags
     result["meta_features"] = {
         "trail_reels": is_trial_reel,
@@ -1944,7 +2097,8 @@ def generate_platform_seo(
 
 def _assemble(finals: Dict[str, Dict[str, Any]], analysis: Dict[str, Any], evidence: Dict[str, Any], links: List[str],
               subject: str, source: str, seo_id: str, content_origin: str, modes: Dict[str, str],
-              opt: Dict[str, Any], llm_meta: Dict[str, Any], guard: ProvenanceGuard) -> Dict[str, Any]:
+              opt: Dict[str, Any], llm_meta: Dict[str, Any], guard: ProvenanceGuard,
+              labeled_items: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     scores = [f["seo_score"] for f in finals.values()]
     avg = round(sum(scores) / len(scores)) if scores else 0
     level = "high" if avg >= 90 else "medium" if avg >= 75 else "low"
@@ -1974,7 +2128,7 @@ def _assemble(finals: Dict[str, Dict[str, Any]], analysis: Dict[str, Any], evide
         "analysis": clean_analysis, "niche": niche, "content_origin": content_origin,
         "edit_directives": edit_directives, "link_modes": modes,
         "rules_researched": RULES_RESEARCHED,
-        "_affiliate_links": links, "_optimization": opt, "_source": source,
+        "_affiliate_links": links, "_labeled_links": labeled_items, "_optimization": opt, "_source": source,
     }
     for k in ("main_subject", "applicable_context", "content_category", "target_audience"):
         if isinstance(result.get(k), str):
@@ -2001,12 +2155,13 @@ def approve_and_finalize(seo_data: Dict[str, Any], approved_title: str, platform
             if k in custom_edits:
                 pdata[k] = custom_edits[k]
     mode = _as_dict(seo_data.get("link_modes")).get(platform, "inline")
-    kept = [u for u in (seo_data.get("_affiliate_links") or []) if u in str(pdata.get("description", ""))]
-    links = kept if mode == "inline" else list(seo_data.get("_affiliate_links") or [])
+    links = list(seo_data.get("_affiliate_links") or [])
+    labeled_items = list(seo_data.get("_labeled_links") or [])
     keyword = str(_as_dict(seo_data.get("analysis")).get("primary_keyword") or seo_data.get("main_subject") or "")
     final = _finalize_platform(platform, pdata, links=links, slot_to_url={}, backfill_tags=[],
                                fallback_title=approved_title or "Untitled Video", primary_keyword=keyword, mode=mode,
-                               ctx={"content_origin": seo_data.get("content_origin", "reused")})
+                               ctx={"content_origin": seo_data.get("content_origin", "reused")},
+                               labeled_items=labeled_items)
     final["approved_at"] = _now()
     final["status"] = "approved"
     final["seo_id"] = seo_data.get("seo_id")

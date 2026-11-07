@@ -2402,18 +2402,51 @@ async def handle_telegram_incoming_msg(update, context):
                 _clean_text, _first_aff_url, _is_trial = user_input_raw, None, False
                 _collabs, _raw_tags, _share_feed = [], [], True
 
-            # Re-extract all URLs from cleaned text for multi-link support
-            extracted_urls = re.findall(r'https?://[^\s<>"]+', _clean_text)
-            user_hint_text = _clean_text
-            for u in extracted_urls:
-                user_hint_text = user_hint_text.replace(u, "")
-            user_hint_text = re.sub(r'\s+', ' ', user_hint_text).strip()
+            # ── 1. Robust Multi-Link & Product Label Parser ─────────────────────
+            labeled_links = []
+            raw_urls = re.findall(r'https?://[^\s<>"]+', user_input_raw)
+            hint_lines = []
 
-            # Merge first_aff_url from TrailReelsManager if URL list is otherwise empty
+            for raw_line in user_input_raw.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                # Strip slash commands from line
+                c_line = re.sub(r'/(?:trail|trial)_reels\b', '', line, flags=re.I)
+                c_line = re.sub(r'/collab\s+@[^\s]+', '', c_line, flags=re.I)
+                c_line = re.sub(r'/tag\s+@[^\s]+', '', c_line, flags=re.I)
+                c_line = re.sub(r'/no_grid\b', '', c_line, flags=re.I)
+                
+                line_urls = re.findall(r'https?://[^\s<>"]+', c_line)
+                if line_urls:
+                    label = re.sub(r'https?://[^\s<>"]+', '', c_line).strip(" :-—\t\r\n")
+                    for u in line_urls:
+                        labeled_links.append({"label": label or "Featured Item", "url": u})
+                else:
+                    text_part = c_line.strip(" :-—\t\r\n")
+                    if text_part:
+                        hint_lines.append(text_part)
+
+            extracted_urls = [l["url"] for l in labeled_links] if labeled_links else raw_urls
             if not extracted_urls and _first_aff_url:
                 extracted_urls = [_first_aff_url]
+                labeled_links = [{"label": "Featured Item", "url": _first_aff_url}]
 
-            affiliate_url = "\n".join(extracted_urls) if extracted_urls else None
+            # Determine title hint
+            if hint_lines:
+                user_hint_text = " ".join(hint_lines)
+            elif labeled_links and labeled_links[0]["label"] != "Featured Item":
+                user_hint_text = labeled_links[0]["label"]
+            else:
+                user_hint_text = _clean_text.strip()
+            user_hint_text = re.sub(r'\s+', ' ', user_hint_text).strip()
+
+            if labeled_links:
+                affiliate_url = "\n".join([f"{l['label']}: {l['url']}" if l['label'] != "Featured Item" else l['url'] for l in labeled_links])
+            elif extracted_urls:
+                affiliate_url = "\n".join(extracted_urls)
+            else:
+                affiliate_url = None
 
             # Store feature flags into the session for Phase 4 to consume
             if sess is not None:
@@ -2603,12 +2636,16 @@ async def handle_telegram_incoming_msg(update, context):
 
             logger.info(f"🚀 Custom Title & Affiliate SEO saved for session {sess_id}: '{approved_title}'. Triggering Phase 4...")
 
-            if extracted_urls:
-                if len(extracted_urls) == 1:
-                    aff_status = f"\n🛒 **Affiliate Promotion Link**: `{extracted_urls[0]}`\n⚖️ **Policy Disclosure**: Included (#ad #affiliate)"
+            if labeled_links:
+                if len(labeled_links) == 1:
+                    l = labeled_links[0]
+                    aff_status = f"\n🛒 **Affiliate Promotion Link**: `{l['label']}` — `{l['url']}`\n⚖️ **Policy Disclosure**: Included (Provider verified · #ad)"
                 else:
-                    links_fmt = "\n".join([f"  • `{u}`" for u in extracted_urls])
-                    aff_status = f"\n🛒 **Affiliate Promotion Links ({len(extracted_urls)})**:\n{links_fmt}\n⚖️ **Policy Disclosure**: Included (#ad #affiliate)"
+                    links_fmt = "\n".join([f"  • **{l['label']}**: `{l['url']}`" for l in labeled_links])
+                    aff_status = f"\n🛒 **Affiliate Promotion Links ({len(labeled_links)})**:\n{links_fmt}\n⚖️ **Policy Disclosure**: Included (Provider verified · #ad)"
+            elif extracted_urls:
+                links_fmt = "\n".join([f"  • `{u}`" for u in extracted_urls])
+                aff_status = f"\n🛒 **Affiliate Promotion Links ({len(extracted_urls)})**:\n{links_fmt}\n⚖️ **Policy Disclosure**: Included (Provider verified · #ad)"
             else:
                 aff_status = ""
 
@@ -4513,6 +4550,7 @@ if __name__ == "__main__":
         parser.add_argument("input", type=str, nargs="?", default=None, help="Target video URL, local .mp4 file, or clip folder")
         parser.add_argument("--mode", type=str, choices=["auto", "manual", "batch"], default=None, help="Ingestion mode ('auto', 'manual', or 'batch')")
         parser.add_argument("--url", "-u", type=str, default=None, help="Target video URL for manual ingestion")
+        parser.add_argument("--audio", "-a", type=str, default=None, help="Target audio URL or file path for custom BGM")
         parser.add_argument("--target-accounts", "-t", type=str, default=None, help="Target Instagram handle(s) to scrape (comma-separated, max 2)")
         parser.add_argument("--bot", action="store_true", help="Launch Telegram Bot polling listener mode + timed auto-input scheduler")
         parser.add_argument("--legacy", action="store_true", help="Force legacy procedural pipeline instead of Universal Agent")
@@ -4613,13 +4651,27 @@ if __name__ == "__main__":
             target_url = None
             target_file = None
             target_accs = None
+            target_audio_url = getattr(args, "audio", None)
+            user_directive = None
 
             raw_target_accs = args.target_accounts or env_target_accs
             if raw_target_accs:
                 target_accs = [a.strip().lstrip("@") for a in raw_target_accs.split(",") if a.strip()][:2]
             elif target_input:
                 clean_in = target_input.strip().strip("'").strip('"')
-                if clean_in.startswith("http://") or clean_in.startswith("https://") or "instagram.com" in clean_in:
+                from Agentic_Core.goal_router import classify_goal
+                route = classify_goal(clean_in)
+                if route.kind == "url":
+                    target_url = route.url
+                    if not target_audio_url and route.custom_audio_url:
+                        target_audio_url = route.custom_audio_url
+                    if route.directive:
+                        user_directive = route.directive
+                elif route.kind == "upload":
+                    target_file = route.path
+                    if not target_audio_url and route.custom_audio_url:
+                        target_audio_url = route.custom_audio_url
+                elif clean_in.startswith("http://") or clean_in.startswith("https://") or "instagram.com" in clean_in:
                     target_url = clean_in
                 elif os.path.exists(clean_in):
                     target_file = clean_in
@@ -4656,7 +4708,14 @@ if __name__ == "__main__":
                 logger.info(f"🤖 [CLI AGENT] Free-form goal -> LLM Director: '{target_input}'")
                 run_agentic_goal(target_input)
             else:
-                run_master_pipeline(mode=mode_to_use, url=target_url, input_path=target_file, target_accounts=target_accs)
+                run_master_pipeline(
+                    mode=mode_to_use,
+                    url=target_url,
+                    input_path=target_file,
+                    target_accounts=target_accs,
+                    user_edit_directive=user_directive,
+                    custom_audio_url=target_audio_url,
+                )
 
     except KeyboardInterrupt:
         logger.info("\n🛑 [SHUTDOWN] Ctrl+C / KeyboardInterrupt received. System stopped gracefully.")

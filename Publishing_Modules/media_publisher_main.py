@@ -11,6 +11,7 @@ Called directly after a user approves a reel title or taps 'Post Immediately' in
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -395,9 +396,13 @@ async def run_phase4_publishing_async(
 
         # 2. Meta (Instagram Reels & Facebook Pages)
         ig_payload = platforms_payload.get("instagram", {})
-        ig_caption = ig_payload.get("caption") or description or f"{title}\n\n{tags}"
-        if ig_payload.get("hashtags") and not any(h in ig_caption for h in ig_payload.get("hashtags", [])):
-            ig_caption += "\n\n" + " ".join(ig_payload.get("hashtags", []))
+        ig_caption = ig_payload.get("caption") or ig_payload.get("description") or description or f"{title}\n\n{tags}"
+        target_tags = ig_payload.get("hashtags") or (tags.split() if tags else [])
+        if target_tags:
+            existing_tags = set(re.findall(r"#\w+", ig_caption.lower()))
+            missing_tags = [t for t in target_tags if t.lower() not in existing_tags and t.lower() not in ("#ad", "#affiliate")]
+            if missing_tags:
+                ig_caption = ig_caption.rstrip() + "\n\n" + " ".join(missing_tags)
 
         try:
             _meta_feats = (seo_data.get("meta_features", {}) if isinstance(seo_data, dict) else {}) or {}

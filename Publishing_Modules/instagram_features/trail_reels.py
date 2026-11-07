@@ -86,7 +86,7 @@ class TrailReelsManager:
             text = text.replace(u, "")
         text = re.sub(r"\s+", " ", text).strip()
 
-        affiliate_url: Optional[str] = urls[0] if urls else None
+        affiliate_url: Optional[str] = "\n".join(urls) if len(urls) > 1 else (urls[0] if urls else None)
 
         logger.info(
             "[TrailReels] Parsed: is_trial=%s | clean_title='%s' | affiliate_url=%s",
