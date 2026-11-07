@@ -42,6 +42,16 @@ def clean_track_identifier(val: Optional[str]) -> str:
     """
     if not val:
         return ""
+    if isinstance(val, dict):
+        val = (
+            val.get("track_name")
+            or val.get("filename")
+            or val.get("shortcode")
+            or val.get("selected_audio_track")
+            or val.get("selected_bgm_track")
+        )
+        if not val:
+            return ""
     val_str = str(val).strip().strip("`").rstrip("/")
     if val_str.endswith("%60"):
         val_str = val_str[:-3].strip()
@@ -56,7 +66,7 @@ def clean_track_identifier(val: Optional[str]) -> str:
             val_str = m_yt.group(1)
 
     s = os.path.basename(val_str).lower().strip().split("?")[0]
-    for pfx in ("vault_bgm_", "bgm_", "extracted_", "audio_", "manual_"):
+    for pfx in ("vault_bgm_", "bgm_", "extracted_", "audio_", "manual_", "telegram_"):
         if s.startswith(pfx):
             s = s[len(pfx):]
     for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4", ".ogg", ".flac"):
@@ -103,7 +113,7 @@ _LAST_VAULT_SYNC = 0.0
 
 
 def add(
-    audio_filename: Optional[str],
+    audio_filename: Any,
     audio_shortcode: Optional[str] = None,
     telegram_file_id: Optional[str] = None,
     reason: str = "admin_rejected",
@@ -116,6 +126,18 @@ def add(
     Keyed by audio_filename (canonical). Also indexes by shortcode and file_id
     so is_blacklisted() can catch vault_bgm_*.wav mismatches.
     """
+    if isinstance(audio_filename, dict):
+        if not telegram_file_id:
+            telegram_file_id = audio_filename.get("telegram_file_id") or audio_filename.get("file_id")
+        if not audio_shortcode:
+            audio_shortcode = audio_filename.get("shortcode")
+        audio_filename = (
+            audio_filename.get("track_name")
+            or audio_filename.get("filename")
+            or audio_filename.get("selected_audio_track")
+            or audio_filename.get("selected_bgm_track")
+        )
+
     with _lock:
         data = _load()
         entries: Dict[str, Any] = data.setdefault("entries", {})
@@ -237,7 +259,7 @@ def merge_blacklist_from_file(remote_file_path: str) -> bool:
 
 
 def is_blacklisted(
-    audio_filename: Optional[str],
+    audio_filename: Any,
     audio_shortcode: Optional[str] = None,
     telegram_file_id: Optional[str] = None,
 ) -> bool:
@@ -245,6 +267,18 @@ def is_blacklisted(
     Returns True if any of the given identifiers matches a blacklisted entry.
     Called before any audio candidate is added to the selection set.
     """
+    if isinstance(audio_filename, dict):
+        if not telegram_file_id:
+            telegram_file_id = audio_filename.get("telegram_file_id") or audio_filename.get("file_id")
+        if not audio_shortcode:
+            audio_shortcode = audio_filename.get("shortcode")
+        audio_filename = (
+            audio_filename.get("track_name")
+            or audio_filename.get("filename")
+            or audio_filename.get("selected_audio_track")
+            or audio_filename.get("selected_bgm_track")
+        )
+
     with _lock:
         data = _load()
         entries: Dict[str, Any] = data.get("entries", {})

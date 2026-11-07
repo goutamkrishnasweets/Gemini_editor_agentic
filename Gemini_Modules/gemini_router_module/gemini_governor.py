@@ -348,21 +348,27 @@ class GeminiGovernor:
 
         self.TASK_PRIORITY = {
 
-            "watermark":  1,   # pixel-precise — must run
+            "watermark":    1,   # pixel-precise — must run
 
-            "caption":    2,   # creative output — must run
+            "caption":      2,   # creative output — must run
 
-            "narrative":  3,   # story quality — important
+            "bgm_selector": 3,   # creative director music selection — important
 
-            "price":      4,   # monetisation — medium
+            "music":        3,   # audio/bgm selection — important
 
-            "reasoning":  4,   # orchestration — medium
+            "audio":        3,   # audio intelligence — important
 
-            "master":     4,   # vision verify — medium
+            "narrative":    3,   # story quality — important
 
-            "vision":     5,   # semantic scene — low (OpenCV can handle)
+            "price":        4,   # monetisation — medium
 
-            "analysis":   5,   # content analysis — lowest
+            "reasoning":    4,   # orchestration — medium
+
+            "master":       4,   # vision verify — medium
+
+            "vision":       5,   # semantic scene — low (OpenCV can handle)
+
+            "analysis":     5,   # content analysis — lowest
 
         }
 
@@ -1506,7 +1512,12 @@ class GeminiGovernor:
 
         if self._video_session_id is not None:
 
-            task_priority = self.TASK_PRIORITY.get(task_type, 5)
+            if module_name == "bgm_selector" or "bgm" in str(module_name).lower():
+                task_priority = self.TASK_PRIORITY.get(task_type, 3)
+                if task_priority > 3:
+                    task_priority = 3
+            else:
+                task_priority = self.TASK_PRIORITY.get(task_type, 5)
 
             remaining = self._video_call_budget - self._video_call_count
 

@@ -1388,6 +1388,28 @@ class AudioPoolManager:
                                     telegram_file_id or t_meta.get("file_id")
                                 )
 
+                    # Also update the selected BGM track itself across social_media_id if it's a harvested track
+                    clean_track_sc = track_name.lower()
+                    for pfx in ("vault_bgm_", "bgm_", "extracted_", "telegram_"):
+                        if clean_track_sc.startswith(pfx):
+                            clean_track_sc = clean_track_sc[len(pfx):]
+                    for ext in (".wav", ".mp3", ".m4a", ".aac"):
+                        if clean_track_sc.endswith(ext):
+                            clean_track_sc = clean_track_sc[:-len(ext)]
+                    clean_track_sc = clean_track_sc.strip()
+
+                    if clean_track_sc:
+                        for key_url, t_entry in soc_clips.items():
+                            if not isinstance(t_entry, dict):
+                                continue
+                            t_sc = str(t_entry.get("shortcode", "")).lower()
+                            if clean_track_sc == t_sc or clean_track_sc in key_url.lower():
+                                t_entry["last_used"] = now
+                                t_entry["usage_count"] = new_usage_count
+                                t_aud = t_entry.setdefault("audio_data", {})
+                                t_aud["last_used"] = now
+                                t_aud["usage_count"] = new_usage_count
+
             self._save_metadata(sync_to_vault=True)
             logger.info(
                 f"✅ [POOL_AUDIO_RECORD] Track '{track_name}' recorded for clip '{social_url_or_shortcode}' "
@@ -1413,12 +1435,25 @@ class AudioPoolManager:
             meta["last_used"] = now
             self._set_file_metadata(filename, meta)
 
-            if social_url:
-                files_root = self.metadata.get("files", {})
-                soc_clips = files_root.get("social_media_id", {}) if isinstance(files_root, dict) else {}
-                if isinstance(soc_clips, dict) and social_url in soc_clips:
-                    c_entry = soc_clips[social_url]
-                    if isinstance(c_entry, dict):
+            files_root = self.metadata.get("files", {})
+            soc_clips = files_root.get("social_media_id", {}) if isinstance(files_root, dict) else {}
+            if isinstance(soc_clips, dict):
+                clean_sc = filename.lower()
+                for pfx in ("vault_bgm_", "bgm_", "extracted_", "telegram_"):
+                    if clean_sc.startswith(pfx):
+                        clean_sc = clean_sc[len(pfx):]
+                for ext in (".wav", ".mp3", ".m4a", ".aac"):
+                    if clean_sc.endswith(ext):
+                        clean_sc = clean_sc[:-len(ext)]
+                clean_sc = clean_sc.strip()
+
+                for url_k, c_entry in soc_clips.items():
+                    if not isinstance(c_entry, dict):
+                        continue
+                    sc_val = str(c_entry.get("shortcode", "")).lower().strip()
+                    if (social_url and social_url in url_k) or (clean_sc and (clean_sc == sc_val or clean_sc in url_k.lower())):
+                        c_entry["last_used"] = now
+                        c_entry["usage_count"] = new_count
                         a_data = c_entry.setdefault("audio_data", {})
                         a_data["last_used"] = now
                         a_data["usage_count"] = new_count
@@ -1893,18 +1928,23 @@ class AudioPoolManager:
             audio_sc = ""
             audio_fname = ""
             if resolved_audio:
-                audio_fname = os.path.basename(str(resolved_audio)).lower()
-                audio_sc = audio_fname
-                if audio_sc.startswith("vault_bgm_"):
-                    audio_sc = audio_sc[len("vault_bgm_"):]
-                elif audio_sc.startswith("bgm_"):
-                    audio_sc = audio_sc[len("bgm_"):]
-                elif audio_sc.startswith("extracted_"):
-                    audio_sc = audio_sc[len("extracted_"):]
-                for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4"):
-                    if audio_sc.endswith(ext):
-                        audio_sc = audio_sc[:-len(ext)]
-                audio_sc = audio_sc.strip()
+                if isinstance(resolved_audio, dict):
+                    resolved_audio = (
+                        resolved_audio.get("track_name")
+                        or resolved_audio.get("filename")
+                        or resolved_audio.get("selected_audio_track")
+                        or resolved_audio.get("selected_bgm_track")
+                    )
+                if resolved_audio:
+                    audio_fname = os.path.basename(str(resolved_audio)).lower()
+                    audio_sc = audio_fname
+                    for pfx in ("vault_bgm_", "bgm_", "extracted_", "telegram_"):
+                        if audio_sc.startswith(pfx):
+                            audio_sc = audio_sc[len(pfx):]
+                    for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4"):
+                        if audio_sc.endswith(ext):
+                            audio_sc = audio_sc[:-len(ext)]
+                    audio_sc = audio_sc.strip()
 
             try:
                 from Audio_Modules.rejected_audio_blacklist import add as _bl_add, sync_blacklist_to_vault

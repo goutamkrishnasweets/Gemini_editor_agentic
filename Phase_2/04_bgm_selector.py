@@ -245,9 +245,8 @@ def select_clip_bgm(
                 alignment_score=res.get("alignment_score", 0.85),
                 reasoning=res.get("reasoning", "")
             )
-            # Only increment usage counter if track physically exists on disk and is not harvested audio
-            if not selected_track_name.startswith("extracted_") and not selected_track_name.startswith("telegram_"):
-                pm.use_audio(selected_track_name)
+            # Increment usage counter and update last_used timestamp for fatigue scoring
+            pm.use_audio(selected_track_name)
         except Exception as _st_err:
             logger.warning(f"[STEP 04] ⚠️ Failed to record BGM selection in ClipIntelligenceStore / AudioPoolManager: {_st_err}")
 

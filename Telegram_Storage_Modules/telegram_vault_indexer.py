@@ -668,8 +668,20 @@ class TelegramVaultIndexer:
                                     "duration": float(a_data.get("duration") or a_data.get("audio_duration") or 15.0),
                                     "file_size": audio_fsize,
                                     "is_source_extract": True,
-                                    "usage_count": sm_entry.get("usage_count", 0),
-                                    "last_used": sm_entry.get("last_used", 0),
+                                    "usage_count": int(
+                                        sm_entry.get("usage_count")
+                                        or a_data.get("usage_count")
+                                        or (files_dict.get(track_key, {}).get("usage_count") if isinstance(files_dict.get(track_key), dict) else 0)
+                                        or (files_dict.get(f"telegram_{sc}.wav", {}).get("usage_count") if isinstance(files_dict.get(f"telegram_{sc}.wav"), dict) else 0)
+                                        or 0
+                                    ),
+                                    "last_used": float(
+                                        sm_entry.get("last_used")
+                                        or a_data.get("last_used")
+                                        or (files_dict.get(track_key, {}).get("last_used") if isinstance(files_dict.get(track_key), dict) else 0.0)
+                                        or (files_dict.get(f"telegram_{sc}.wav", {}).get("last_used") if isinstance(files_dict.get(f"telegram_{sc}.wav"), dict) else 0.0)
+                                        or 0.0
+                                    ),
                                     "transcript": transcript_str,
                                     "lyrics": lyrics_str,
                                     "caption": caption_str,

@@ -279,13 +279,22 @@ class TelegramSessionManager:
 
     def set_rejected(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Marks session REJECTED and returns session data."""
-        if session_id in self.sessions:
-            self.sessions[session_id]["status"] = "REJECTED"
-            self.sessions[session_id]["updated_at"] = time.time()
+        self._refresh_from_disk()
+        sid = str(session_id).strip()
+        target_s = self.sessions.get(sid)
+        if not target_s:
+            # Fallback search by clip_id or matching session
+            target_s = self.get_session(sid)
+            if target_s and target_s.get("session_id"):
+                sid = target_s["session_id"]
+
+        if target_s and sid in self.sessions:
+            self.sessions[sid]["status"] = "REJECTED"
+            self.sessions[sid]["updated_at"] = time.time()
             self._save_sessions()
-            logger.info(f"🗑️ Session {session_id} marked REJECTED.")
-            return self.sessions[session_id]
-        return None
+            logger.info(f"🗑️ Session {sid} marked REJECTED.")
+            return self.sessions[sid]
+        return target_s
 
     def record_rendered_attempt(self, chat_id_or_sess_id: Any, video_path: str, clip_id: Optional[str] = None):
         """Records rendered attempt path into active session attempt history matching the specific clip."""

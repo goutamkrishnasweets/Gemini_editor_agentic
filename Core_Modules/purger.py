@@ -92,35 +92,52 @@ def purge_full_clip_and_assets(
     logger.info(f"🗑️ Purger: Initiating full dual-input deep purge for clip '{clip_id}' (selected_audio={selected_audio})...")
 
     # 2. Recover selected_audio if not provided
+    if isinstance(selected_audio, dict):
+        selected_audio = (
+            selected_audio.get("track_name")
+            or selected_audio.get("filename")
+            or selected_audio.get("selected_audio_track")
+            or selected_audio.get("selected_bgm_track")
+        )
+
     if not selected_audio:
         try:
             store = ClipIntelligenceStore()
             c_intel = store.load(clip_id) or {}
-            selected_audio = (
+            sel_raw = (
                 c_intel.get("audio_data", {}).get("selected_bgm_track")
                 or c_intel.get("audio_data", {}).get("selected_audio_track")
                 or c_intel.get("selected_audio")
             )
+            if isinstance(sel_raw, dict):
+                selected_audio = sel_raw.get("track_name") or sel_raw.get("filename")
+            else:
+                selected_audio = sel_raw
         except Exception:
             pass
 
     if not selected_audio:
         try:
-            from Telegram_Storage_Modules.session_manager import SessionManager
+            from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager as SessionManager
             sm = SessionManager()
             sess = sm.get_session(clip_id)
             if not sess:
+                sm._refresh_from_disk()
                 for s in sm.sessions.values():
-                    if s.get("clip_id") == clip_id or clip_id in s.get("clip_id", "") or s.get("session_id") == clip_id:
+                    if s.get("clip_id") == clip_id or clip_id in str(s.get("clip_id", "")) or s.get("session_id") == clip_id:
                         sess = s
                         break
             if sess:
-                selected_audio = (
+                sel_cand = (
                     sess.get("selected_audio")
                     or sess.get("audio_candidate")
                     or sess.get("audio_track")
                     or sess.get("bgm_path")
                 )
+                if isinstance(sel_cand, dict):
+                    selected_audio = sel_cand.get("track_name") or sel_cand.get("filename")
+                else:
+                    selected_audio = sel_cand
         except Exception:
             pass
 
@@ -130,11 +147,15 @@ def purge_full_clip_and_assets(
             indexer = TelegramVaultIndexer()
             v_rec = indexer.lookup_processed_reel(session_id=clip_id) or indexer.find_entry_by_shortcode(clip_id)
             if v_rec:
-                selected_audio = (
+                v_cand = (
                     v_rec.get("selected_audio")
                     or v_rec.get("selected_audio_track")
                     or v_rec.get("audio_file_id")
                 )
+                if isinstance(v_cand, dict):
+                    selected_audio = v_cand.get("track_name") or v_cand.get("filename")
+                else:
+                    selected_audio = v_cand
         except Exception:
             pass
 
@@ -144,17 +165,23 @@ def purge_full_clip_and_assets(
             apm = get_pool_manager()
             pool_entry = apm.find_entry_by_shortcode(clip_id)
             if pool_entry:
-                selected_audio = (
+                p_cand = (
                     pool_entry.get("audio_data", {}).get("selected_audio")
                     or pool_entry.get("media_file_ids", {}).get("selected_audio_file_id")
                     or pool_entry.get("media_file_ids", {}).get("extracted_audio_file_id")
                 )
+                if isinstance(p_cand, dict):
+                    selected_audio = p_cand.get("track_name") or p_cand.get("filename")
+                else:
+                    selected_audio = p_cand
         except Exception:
             pass
 
     if not selected_audio:
         clean_cid = clip_id.replace("manual_", "").strip()
-        selected_audio = f"extracted_{clean_cid}.wav"
+        # Only fallback to extracted_<clean_cid>.wav if clean_cid is a genuine clip shortcode, not a raw session ID
+        if not clean_cid.startswith("sess_"):
+            selected_audio = f"extracted_{clean_cid}.wav"
 
     # 3. Gather paths to delete (ensuring absolute resolution via _REPO_ROOT)
     paths_to_delete = set()

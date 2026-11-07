@@ -1687,7 +1687,15 @@ def select_best_audio_for_clip(
         logger.warning(f"🚫 [BGM Selector] Zero clean candidates remaining for clip '{clip_id}'. Refusing blacklisted audio.")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "All candidate tracks are blacklisted."}
 
-    best_math_cand = top_candidates[0]
+    # For initial math baseline: if top candidates are closely clustered (within 0.05),
+    # use softmax/weighted selection so near-identical scores don't always pick track #0 statically.
+    near_ties = [c for c in top_candidates[:3] if abs(c["score"] - top_candidates[0]["score"]) <= 0.05]
+    if len(near_ties) > 1:
+        weights = [max(0.01, c["score"] ** 2) for c in near_ties]
+        best_math_cand = random.choices(near_ties, weights=weights, k=1)[0]
+    else:
+        best_math_cand = top_candidates[0]
+
     selected_track = best_math_cand["filename"]
     selected_file_id = best_math_cand["file_id"]
     alignment_score = float(best_math_cand["score"])
@@ -1821,7 +1829,7 @@ Return ONLY valid JSON:
         if gemini_router:
             logger.info("🎶 [BGM Selector] Querying Gemini Router across model vanguard...")
             raw_response = gemini_router.generate(
-                task_type="analysis",
+                task_type="bgm_selector",
                 prompt=prompt,
                 module_name="bgm_selector",
                 gen_config={"temperature": 0.3}

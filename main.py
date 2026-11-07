@@ -1282,7 +1282,12 @@ async def handle_telegram_callback(update, context):
 
     elif data.startswith("reject_"):
         session_id = data.replace("reject_", "").strip()
-        sess = session_manager.set_rejected(session_id)
+        sess = session_manager.get_session(session_id)
+        if not sess:
+            session_manager._refresh_from_disk()
+            sess = session_manager.get_session(session_id)
+        session_manager.set_rejected(session_id)
+
         curr_text = query.message.caption or query.message.text or "Master Reel"
         new_text = f"{curr_text}\n\n🗑️ **REJECTED & DISCARDED BY ADMIN.**\nAll audio, video assets, and metadata pool index purged!"
 
@@ -1298,6 +1303,13 @@ async def handle_telegram_callback(update, context):
         target_video_path = sess.get("video_path") if sess else None
         target_attempts = sess.get("attempt_history", []) if sess else []
         target_audio = sess.get("selected_audio") if sess else None
+        if isinstance(target_audio, dict):
+            target_audio = (
+                target_audio.get("track_name")
+                or target_audio.get("filename")
+                or target_audio.get("selected_audio_track")
+                or target_audio.get("selected_bgm_track")
+            )
 
         from Core_Modules import purge_full_clip_and_assets
         purge_res = purge_full_clip_and_assets(
