@@ -71,9 +71,9 @@ class TestCommercialSEOAffiliateAndDisclosure(unittest.TestCase):
         self.assertIn("#ad", ek_disc)
 
     def test_opening_hook_clean_no_ad_on_line_1(self):
-        # Ensure disclosure placement configuration is after_links
-        self.assertEqual(PLATFORM_SPECS["instagram"]["disclosure_placement"], "after_links")
-        self.assertEqual(PLATFORM_SPECS["youtube"]["disclosure_placement"], "after_links")
+        # Ensure disclosure placement configuration is line2 (ASCI compliance upfront before fold)
+        self.assertEqual(PLATFORM_SPECS["instagram"]["disclosure_placement"], "line2")
+        self.assertEqual(PLATFORM_SPECS["youtube"]["disclosure_placement"], "line2")
 
         raw_desc = "Effortlessly chic, these wide-leg trackpants redefine casual comfort."
         links = ["https://link.amazon/B0eYFOBtQ"]

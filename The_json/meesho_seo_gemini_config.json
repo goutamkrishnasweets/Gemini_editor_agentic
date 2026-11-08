@@ -1,0 +1,547 @@
+{
+  "module": {
+    "name": "Meesho Creator SEO and Monetisation Compliance Profile",
+    "version": "1.0.0",
+    "locale": "en-IN",
+    "currency": "INR",
+    "purpose": "Generate product-specific social captions, SEO keywords and hashtags while applying the Meesho Creator Club rules supplied by the user.",
+    "policy_basis": {
+      "primary_text": "Meesho Creator Club Terms & Conditions supplied by the user, stated publication date 2026-10-23, including Annexure A: MCC Monetisation Guidelines.",
+      "supporting_material": "Meesho Creator monetisation guideline screenshots supplied by the user.",
+      "important_limitation": "This configuration is based only on the material supplied in this conversation. It does not independently authenticate that material, replace the latest Creator Platform instructions, or guarantee payout eligibility. Meesho may revise requirements and determine eligibility at its discretion."
+    }
+  },
+  "routing": {
+    "default_profile": "general_product_seo",
+    "profiles": {
+      "meesho_creator": {
+        "activation_mode": "keyword_match_case_insensitive",
+        "match_any": [
+          "meesho",
+          "#meesho",
+          "#meeshoapp",
+          "@meeshoapp",
+          "meesho creator",
+          "meesho creator club",
+          "meesho affiliate",
+          "meesho affiliate commission"
+        ],
+        "match_sources": [
+          "user_instruction",
+          "campaign_keyword",
+          "product_context",
+          "caption_request",
+          "hashtag_request"
+        ],
+        "instruction": "When any activation term is present in the user's request or supplied SEO keywords, select the meesho_creator profile and apply all hard-coded Meesho rules. Do not wait for the user to explicitly say 'use Meesho SEO'.",
+        "priority": 100
+      }
+    },
+    "routing_safeguards": [
+      "A keyword match activates the Meesho SEO format; it does not prove that a product is enrolled, eligible, tagged or linked in the Creator Platform.",
+      "Do not infer that a hashtag or account handle is officially mandatory unless it appears in the hard-coded requirements or the user supplies a current official instruction.",
+      "If the user supplies another platform's keyword without a Meesho match, do not apply the Meesho-specific requirements."
+    ]
+  },
+  "meesho_creator_policy": {
+    "mandatory_caption_and_tag_rules": {
+      "required_account_mention": "@meeshoapp",
+      "required_account_mention_location": [
+        "caption",
+        "platform_tag_field"
+      ],
+      "instruction": "Include the exact @meeshoapp account mention in every Meesho Creator Reel caption or applicable platform tag field. Do not misspell, alter or invent the handle.",
+      "mandatory_meesho_hashtags": [],
+      "hashtag_caution": "The supplied screenshots and Terms require tagging @meeshoapp, but do not specify a mandatory Meesho hashtag. Do not present #MeeshoCreatorClub, #MeeshoContentCreator, #MeeshoApp or any other hashtag as a mandatory Meesho rule unless the user supplies a current official requirement. Product-relevant hashtags may still be generated as ordinary SEO suggestions."
+    },
+    "exact_product_matching": {
+      "required": true,
+      "rule": "The product linked/tagged in the Meesho Creator Platform must be the exact product shown and described in the content. Only colour variations are allowed where the supplied guideline screenshot says so.",
+      "do_not": [
+        "Tag a similar-looking or substitute product.",
+        "Tag a different seller's product merely because it looks similar.",
+        "Describe or promote a product that is not the product associated with the content."
+      ],
+      "required_manual_confirmation": "The creator must select and verify the exact product in the Creator Platform. Gemini cannot confirm product-tag identity from a product name alone."
+    },
+    "price_accuracy": {
+      "required": true,
+      "source_of_truth": "The current Meesho product listing checked by the creator immediately before publishing.",
+      "rules": [
+        "Use only a price explicitly supplied in the input and marked as checked against the current Meesho listing.",
+        "Never estimate, infer, remember, scrape from an old caption, or invent a product price.",
+        "Do not use outdated, misleading or inconsistent prices.",
+        "If the price is not supplied or is not marked as verified, omit the price from the generated caption and add a blocking manual-review flag.",
+        "If the product is a pack or combo, state the total combo price clearly.",
+        "If stating an individual item price for a pack/combo, explicitly label it as 'per item'.",
+        "Where the current listing displays a price range, reproduce the supplied verified range accurately rather than converting it into a single price."
+      ],
+      "required_input_fields": [
+        "price_display",
+        "price_verified",
+        "price_checked_at"
+      ]
+    },
+    "product_information": {
+      "required": true,
+      "rule": "The content itself must prominently identify the product and describe meaningful product features, design, functionality or use case. Merely mentioning the product or directing viewers to a link is insufficient.",
+      "use_only_provided_facts": true,
+      "allowed_information": [
+        "visible design and colour",
+        "user-supplied material or fabric information",
+        "user-supplied fit, dimensions, size or construction details",
+        "visible or user-supplied features",
+        "practical use cases supported by the supplied information",
+        "relevant styling suggestions that do not make unsupported product claims"
+      ],
+      "do_not_invent": [
+        "fabric or material composition",
+        "brand or seller identity",
+        "quality certifications",
+        "durability or performance claims",
+        "waterproof, skin-safe, hypoallergenic or similar technical claims",
+        "discounts, stock status, delivery dates or return terms",
+        "customer ratings or reviews",
+        "personal testing or ownership experience"
+      ]
+    },
+    "originality_and_video_quality": {
+      "required": true,
+      "rule": "Content must be the creator's own original and authentic content, clearly show or describe the exact product, and provide useful product information. The supplied screenshot states that the Reel should be an original video showing the real product and that screenshot-only or screen-recording-only Reels are not payout-eligible.",
+      "disallowed_or_high_risk": [
+        "Reels made only from screenshots or screen recordings",
+        "copied or reposted videos or images from another creator or account",
+        "static images or looping visuals with little or no original product information",
+        "generic, repetitive, templated or mass-produced AI content lacking originality",
+        "content where the actual linked product is absent or cannot be identified",
+        "content that only tries to generate clicks, likes, comments or link visits"
+      ],
+      "ai_content_rule": "AI use is not treated as automatically prohibited by the supplied Terms. However, generic or templated AI-generated content that lacks originality is expressly excluded. If AI-generated visuals are used, do not claim they are real filmed footage, a physical try-on, a real demonstration or proof of product performance. Flag the post for manual review where the real listed product is not clearly shown or its exact appearance cannot be verified. A caption cannot make a non-compliant visual eligible.",
+      "original_source_files": "Recommend retaining original video files, project/source files and the product reference used to create the content in case Meesho requests evidence."
+    },
+    "link_and_platform_rules": {
+      "required": true,
+      "rule": "Use the relevant, unedited and untampered product link generated by the Meesho Creator Platform, and associate it with the corresponding content as instructed by that platform.",
+      "do_not": [
+        "Invent a product link or tracking URL.",
+        "Modify, shorten, tamper with or replace a Creator Platform tracking link unless the platform expressly permits it.",
+        "Associate a link for a different product with the Reel.",
+        "Assume a link remains valid indefinitely; links may expire or become inactive.",
+        "Paste affiliate links directly into messaging apps without the corresponding Reel being posted on a platform where the video is visible, as stated in the supplied screenshot."
+      ],
+      "caption_link_behavior": "Do not fabricate or automatically paste a raw affiliate URL into the caption. The creator should attach/associate the actual Meesho Creator Platform link using the platform's link workflow. Mention a link in the caption only when the user confirms that the corresponding link has been correctly attached."
+    },
+    "comment_trigger_and_instagram_dm": {
+      "default_enabled": false,
+      "rule": "A trigger-word CTA may be generated only when the creator confirms that they are enrolled, has opted into the Instagram DM feature, and has selected a trigger word from the list currently provided by Meesho.",
+      "do_not": [
+        "Assume that the words LINK, DM or COMMENT are valid trigger words.",
+        "Claim an automatic DM will be sent when the feature has not been enabled and configured.",
+        "Invent a trigger word or claim that a product link is attached when it is not."
+      ],
+      "fallback_cta": "Use a neutral, non-misleading call to action that directs viewers to the product link associated with the published content, only when the creator confirms that link is attached."
+    },
+    "authentic_engagement_and_traffic": {
+      "required": true,
+      "prohibited": [
+        "bots or click farms",
+        "purchased or artificially inflated views, clicks, likes or comments",
+        "paid ads used to artificially inflate engagement for payout eligibility",
+        "coordinated or deceptive engagement",
+        "incentivising or paying users to make purchases through the creator link",
+        "spam, misleading claims or engagement bait unrelated to useful product information"
+      ],
+      "instruction": "Do not write calls to action that encourage fake, coordinated or incentivised engagement. A normal request for a genuine comment or question is not to be represented as a payout guarantee."
+    },
+    "purchase_eligibility": {
+      "qualifying_purchase_conditions": [
+        "The order is successfully completed and paid.",
+        "The necessary fulfilment requirements are completed.",
+        "The order is not cancelled or returned during the applicable return/cancellation window.",
+        "The purchase is properly attributed to the creator's content/link under Meesho's tracking rules.",
+        "The purchase complies with the programme and product-specific requirements."
+      ],
+      "prohibited_purchase_sources_or_purposes": [
+        "The creator purchasing through their own link for personal use.",
+        "Purchases for friends, relatives, associates or on behalf of customers through the creator's own link.",
+        "Purchases intended for resale or commercial use.",
+        "Purchases where the creator pays or rewards the end user to make the purchase.",
+        "Fraudulent, cancelled, returned, unfulfilled or non-attributable orders."
+      ],
+      "commission_basis": "Eligible earnings are calculated using the commission percentage communicated by Meesho and the net order value of qualifying purchases after applicable returns and cancellations. Do not invent a commission percentage or promise an earning amount."
+    },
+    "claims_copyright_and_legal_compliance": {
+      "rules": [
+        "Do not make false, misleading or unverifiable product claims.",
+        "Do not claim personal experience, testing or ownership unless the creator explicitly provides that fact.",
+        "Use only content, music, images, footage, logos and other assets for which the creator has the necessary rights or permissions.",
+        "Do not impersonate a brand, seller, creator or other person.",
+        "Ensure the content complies with applicable law, social platform rules and applicable advertising/disclosure requirements."
+      ]
+    },
+    "account_tax_and_program_integrity": {
+      "rules": [
+        "Creator eligibility in the supplied Terms requires an Indian resident aged 18 or older.",
+        "Provide accurate and updated registration, identity, bank and tax information when required by the Creator Platform.",
+        "Do not share Creator Platform login credentials or allow another person to operate the account as the creator.",
+        "Do not create or operate multiple accounts to manipulate the programme or evade its controls.",
+        "Comply with applicable PAN, income-tax withholding and GST requirements. Do not infer the creator's tax status."
+      ]
+    },
+    "payout_review_and_evidence": {
+      "important_terms": [
+        "Meesho may withhold or review payouts associated with content it considers potentially ineligible.",
+        "The supplied Annexure A states that a determination period may extend to 30 days.",
+        "If Meesho requests information for an eligibility review, the creator must respond within 48 hours.",
+        "The supplied Annexure A says Meesho will generally review submitted information within 10 business days.",
+        "Payout timing is communicated by Meesho and is not guaranteed by this configuration."
+      ],
+      "evidence_to_retain": [
+        "original video and source/project files",
+        "the exact product listing and product identifier/tag used",
+        "the verified Meesho price and the date/time it was checked",
+        "the Creator Platform product link and content association details",
+        "the published post URL and publication date",
+        "relevant post metrics and creator account details requested by Meesho"
+      ]
+    }
+  },
+  "input_contract": {
+    "instruction": "Populate fields from the user's supplied product details, screenshots, product listing information and content description. Unknown values must remain null or be listed as missing. Never guess.",
+    "fields": {
+      "request_keywords": {
+        "type": "array_of_strings",
+        "required": false,
+        "description": "Keywords, hashtags or instructions supplied with the SEO request. Used for profile routing."
+      },
+      "product_name": {
+        "type": "string",
+        "required": true
+      },
+      "product_category": {
+        "type": "string_or_null",
+        "required": false
+      },
+      "brand": {
+        "type": "string_or_null",
+        "required": false,
+        "description": "Use only when shown or supplied. Do not infer."
+      },
+      "seller_or_listing_name": {
+        "type": "string_or_null",
+        "required": false
+      },
+      "meesho_product_id_or_listing_reference": {
+        "type": "string_or_null",
+        "required": false
+      },
+      "exact_product_tag_confirmed": {
+        "type": "boolean_or_null",
+        "required": true,
+        "description": "Creator's manual confirmation that the exact product shown is the one selected/tagged in the Meesho Creator Platform."
+      },
+      "product_link_attached": {
+        "type": "boolean_or_null",
+        "required": true,
+        "description": "Creator's manual confirmation that the correct Creator Platform link is associated with this content."
+      },
+      "product_link": {
+        "type": "string_or_null",
+        "required": false,
+        "description": "Exact unmodified Creator Platform link, if the user supplies it. Never generate one."
+      },
+      "colour": {
+        "type": "string_or_null",
+        "required": false
+      },
+      "material_or_fabric": {
+        "type": "string_or_null",
+        "required": false
+      },
+      "design_details": {
+        "type": "array_of_strings",
+        "required": false
+      },
+      "features": {
+        "type": "array_of_strings",
+        "required": true,
+        "description": "Product features visible in the content or explicitly supplied by the user/listing."
+      },
+      "functionality_or_use_case": {
+        "type": "array_of_strings",
+        "required": false
+      },
+      "size_or_fit": {
+        "type": "string_or_null",
+        "required": false
+      },
+      "pack_or_combo": {
+        "type": "boolean_or_null",
+        "required": true
+      },
+      "pack_quantity": {
+        "type": "integer_or_null",
+        "required": false
+      },
+      "price_display": {
+        "type": "string_or_null",
+        "required": true,
+        "description": "Exact current displayed price or price range, including currency symbol if supplied."
+      },
+      "price_basis": {
+        "type": "enum_or_null",
+        "allowed_values": [
+          "total_combo_price",
+          "per_item_price",
+          "single_product_price",
+          "price_range"
+        ],
+        "required": true
+      },
+      "price_verified": {
+        "type": "boolean_or_null",
+        "required": true,
+        "description": "True only when the creator checked the current Meesho listing before publication."
+      },
+      "price_checked_at": {
+        "type": "string_or_null",
+        "required": false,
+        "description": "Date/time in ISO 8601 format, with timezone if known."
+      },
+      "occasion_or_styling_context": {
+        "type": "array_of_strings",
+        "required": false
+      },
+      "content_description": {
+        "type": "string_or_null",
+        "required": true,
+        "description": "Describe what viewers actually see and what the Reel demonstrates."
+      },
+      "content_asset_type": {
+        "type": "enum_or_null",
+        "allowed_values": [
+          "original_video_of_real_product",
+          "original_video_with_ai_assistance",
+          "ai_generated_visuals",
+          "seller_provided_video_with_permission",
+          "reposted_content",
+          "screenshots_or_screen_recording",
+          "static_images_or_slideshow",
+          "unknown"
+        ],
+        "required": true
+      },
+      "real_product_clearly_visible": {
+        "type": "boolean_or_null",
+        "required": true
+      },
+      "creator_owns_or_has_rights_to_assets": {
+        "type": "boolean_or_null",
+        "required": true
+      },
+      "social_platform": {
+        "type": "enum_or_null",
+        "allowed_values": [
+          "instagram",
+          "youtube",
+          "facebook",
+          "other"
+        ],
+        "required": false
+      },
+      "instagram_dm_feature_enabled": {
+        "type": "boolean_or_null",
+        "required": false
+      },
+      "meesho_approved_trigger_word": {
+        "type": "string_or_null",
+        "required": false,
+        "description": "Must be copied from the current trigger-word list in the Creator Platform, not invented by Gemini."
+      },
+      "requested_language": {
+        "type": "string",
+        "required": false,
+        "default": "English"
+      },
+      "user_keywords": {
+        "type": "array_of_strings",
+        "required": false
+      },
+      "user_hashtag_preferences": {
+        "type": "array_of_strings",
+        "required": false
+      }
+    }
+  },
+  "generation_instructions": {
+    "main_instruction": "Generate a clear, natural, product-specific SEO caption using only supplied facts. Follow the selected profile's hard-coded rules. Prioritise accurate product information over promotional language or engagement bait.",
+    "caption_order": [
+      "Short product-specific opening line or hook.",
+      "Accurate product name and category.",
+      "Two to five useful, supported product features/design details.",
+      "A practical use case or styling context where supported.",
+      "Correct verified price and explicit combo/per-item wording when applicable.",
+      "A neutral CTA consistent with the link/trigger configuration.",
+      "Required @meeshoapp mention for the Meesho profile.",
+      "A concise block of relevant product search keywords if appropriate for the requested platform.",
+      "Relevant product-specific hashtags."
+    ],
+    "writing_rules": [
+      "Do not make the caption sound like a generic mass-produced template.",
+      "Vary sentence structure naturally while preserving all mandatory requirements.",
+      "Do not repeat the same keyword unnaturally or stuff unrelated keywords.",
+      "Do not use unsupported claims such as best quality, premium fabric, guaranteed results, lowest price or 100 percent satisfaction unless verified and permissible.",
+      "Do not claim that the creator personally wore, tested, purchased or recommends the product unless the input explicitly confirms it.",
+      "Do not imply that the caption, SEO or hashtags guarantee Meesho commission or payout approval.",
+      "Do not add a fake product URL, fake price, fake discount, fake stock status or fake seller information.",
+      "Do not add @meeshocreatorclub or similar handles as mandatory tags unless the user supplies a current official instruction requiring them.",
+      "Do not add #MeeshoCreatorClub, #MeeshoContentCreator or similar hashtags as mandatory policy tags unless the user supplies a current official instruction requiring them."
+    ],
+    "cta_rules": {
+      "default": "Use a neutral CTA only if the correct product link is confirmed as attached to the content; otherwise omit link-related claims.",
+      "comment_to_dm": "Use only when instagram_dm_feature_enabled is true and meesho_approved_trigger_word is supplied. Use the exact supplied trigger word and do not invent one.",
+      "never_use_by_default": [
+        "Comment LINK and I will DM you",
+        "Link in bio",
+        "DM for link",
+        "Guaranteed commission",
+        "Buy now at this price"
+      ]
+    },
+    "hashtag_rules": {
+      "default_target_count": 5,
+      "count_is_seo_preference_not_meesho_policy": true,
+      "generate_from": [
+        "exact product type",
+        "verified design or feature",
+        "relevant fashion or product category",
+        "relevant occasion or use case"
+      ],
+      "avoid": [
+        "unrelated trending tags",
+        "competitor or unrelated brand tags",
+        "hashtags claiming official Meesho endorsement",
+        "unverified campaign hashtags"
+      ],
+      "mandatory_meesho_hashtags": []
+    },
+    "price_rendering": {
+      "single_product_price": "Price: {price_display}",
+      "total_combo_price": "Combo price: {price_display}",
+      "per_item_price": "{price_display} per item",
+      "price_range": "Price range: {price_display}",
+      "when_unverified": "Omit all price claims and raise a blocking manual-review flag."
+    }
+  },
+  "output_contract": {
+    "format": "json_only",
+    "return_valid_json": true,
+    "no_markdown_fences": true,
+    "required_keys": [
+      "selected_profile",
+      "caption",
+      "product_name",
+      "product_facts_used",
+      "price_callout",
+      "required_mentions",
+      "seo_keywords",
+      "hashtags",
+      "creator_platform_actions",
+      "missing_inputs",
+      "risk_flags",
+      "manual_review_required",
+      "compliance_notes"
+    ],
+    "field_definitions": {
+      "selected_profile": "The profile selected by routing; for a Meesho match use 'meesho_creator'.",
+      "caption": "The complete caption ready for creator review, containing @meeshoapp exactly as required for the Meesho profile.",
+      "product_name": "The supplied exact product name.",
+      "product_facts_used": "Array of only the factual features used in the caption.",
+      "price_callout": "The exact price phrase used, or null if price was not verified.",
+      "required_mentions": "Array containing @meeshoapp for the Meesho profile.",
+      "seo_keywords": "Relevant natural-language search phrases, grounded in the supplied product information.",
+      "hashtags": "Relevant hashtags. Do not falsely label any Meesho hashtag mandatory.",
+      "creator_platform_actions": "Actions the creator must perform outside the caption, including exact product tagging and correct link association.",
+      "missing_inputs": "Array of required or useful fields that were not supplied.",
+      "risk_flags": "Array of specific payout/compliance risks detected from the supplied inputs. Do not state that Meesho has approved or rejected the post.",
+      "manual_review_required": "Boolean. True when a required input is missing, unverified or a meaningful eligibility risk exists.",
+      "compliance_notes": "Concise explanations of why flags were raised and what the creator should manually verify."
+    },
+    "risk_flag_codes": [
+      "EXACT_PRODUCT_TAG_NOT_CONFIRMED",
+      "PRODUCT_LINK_NOT_CONFIRMED",
+      "PRICE_MISSING",
+      "PRICE_NOT_VERIFIED",
+      "COMBO_PRICING_UNCLEAR",
+      "PRODUCT_FEATURES_INSUFFICIENT",
+      "PRODUCT_NOT_CLEARLY_VISIBLE",
+      "SCREENSHOT_OR_SCREEN_RECORDING_ONLY",
+      "REPOSTED_OR_COPIED_CONTENT",
+      "AI_CONTENT_MAY_BE_GENERIC_OR_TEMPLATED",
+      "AI_VISUAL_DOES_NOT_VERIFY_REAL_PRODUCT",
+      "ASSET_RIGHTS_NOT_CONFIRMED",
+      "TRIGGER_WORD_NOT_VERIFIED",
+      "UNSUPPORTED_PRODUCT_CLAIM",
+      "TRACKING_LINK_NOT_SUPPLIED",
+      "OTHER_MANUAL_CHECK_REQUIRED"
+    ],
+    "decision_labels": [
+      "DRAFT_ONLY",
+      "MANUAL_REVIEW_REQUIRED",
+      "HIGH_PAYOUT_RISK"
+    ],
+    "decision_rule": "These labels are advisory checks based on supplied inputs only. Never output 'PAYOUT_APPROVED', 'GUARANTEED_PAYOUT' or any equivalent approval claim."
+  },
+  "final_safety_instruction": "Generate SEO copy; do not certify payout eligibility. Meesho makes the final determination. Preserve missing information as missing, expose compliance risks clearly, and leave final product-tag, price, link, original-content and account checks to the creator.",
+  "runtime_input_template": {
+    "request_keywords": [],
+    "product_name": "",
+    "product_category": null,
+    "brand": null,
+    "seller_or_listing_name": null,
+    "meesho_product_id_or_listing_reference": null,
+    "exact_product_tag_confirmed": null,
+    "product_link_attached": null,
+    "product_link": null,
+    "colour": null,
+    "material_or_fabric": null,
+    "design_details": [],
+    "features": [],
+    "functionality_or_use_case": [],
+    "size_or_fit": null,
+    "pack_or_combo": null,
+    "pack_quantity": null,
+    "price_display": null,
+    "price_basis": null,
+    "price_verified": null,
+    "price_checked_at": null,
+    "occasion_or_styling_context": [],
+    "content_description": null,
+    "content_asset_type": "unknown",
+    "real_product_clearly_visible": null,
+    "creator_owns_or_has_rights_to_assets": null,
+    "social_platform": null,
+    "instagram_dm_feature_enabled": null,
+    "meesho_approved_trigger_word": null,
+    "requested_language": "English",
+    "user_keywords": [],
+    "user_hashtag_preferences": []
+  },
+  "output_template": {
+    "selected_profile": "meesho_creator",
+    "caption": "",
+    "product_name": "",
+    "product_facts_used": [],
+    "price_callout": null,
+    "required_mentions": [
+      "@meeshoapp"
+    ],
+    "seo_keywords": [],
+    "hashtags": [],
+    "creator_platform_actions": [],
+    "missing_inputs": [],
+    "risk_flags": [],
+    "manual_review_required": true,
+    "compliance_notes": []
+  }
+}

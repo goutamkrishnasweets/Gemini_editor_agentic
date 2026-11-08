@@ -66,6 +66,7 @@ __all__ = [
     "lint_platform", "build_evidence", "ProvenanceGuard",
     "clean_entity_name", "strip_system_and_tracking_tokens",
     "extract_main_subject_and_context", "extract_celebrity_human_name", "sanitize_raw_handles_out",
+    "_load_meesho_policy_config", "_detect_meesho_keywords",
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -97,7 +98,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 15,
         "hashtag_placement": "Put the first 3 in the first line of the description; YouTube shows them above the title.",
         "disclosure": "(Paid link · qualifying purchases earn commission #ad)",
-        "disclosure_placement": "after_links",
+        "disclosure_placement": "line2",
         "links_label": "🛍️ FEATURED PRODUCTS / LINKS:",
         "link_mode_default": "inline",
         "caption_links_clickable": False,
@@ -116,10 +117,10 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "label": "Instagram Reels (caption/spoken/on-screen text search + sends)",
         "title_max": 80,
         "description_max": 2200, "hook_visible_chars": 125,
-        "hashtags_min": 5, "hashtags_max": 15, "hashtags_total_max": 15,
-        "hashtag_placement": "End of caption. 5-15 high-ranking niche search hashtags.",
+        "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 5,
+        "hashtag_placement": "End of caption. Up to 5 high-ranking niche search hashtags (Meta cap).",
         "disclosure": "#ad",
-        "disclosure_placement": "after_links",
+        "disclosure_placement": "line2",
         "links_label": "🛍️ FEATURED ITEMS / SHOP LINKS:",
         "link_mode_default": "dm_keyword",
         "caption_links_clickable": False,
@@ -132,7 +133,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
             "Primary keyword in the first sentence.",
             "Instagram search reads caption text, spoken words and on-screen text: keep them aligned. Short, scannable, "
             "keywords inside natural sentences, never a keyword list.",
-            "Hashtags are searchable categories: 5-15 high-ranking niche tags at the end of the caption.",
+            "Hashtags are searchable categories: up to 5 high-ranking niche tags at the end of the caption.",
             "End with ONE save/send trigger that fits the video.",
         ],
     },
@@ -143,7 +144,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "hashtags_min": 3, "hashtags_max": 5, "hashtags_total_max": 5,
         "hashtag_placement": "End of caption (Meta: no more than 5).",
         "disclosure": "#ad",
-        "disclosure_placement": "after_links",
+        "disclosure_placement": "line2",
         "links_label": "🛍️ Featured Items:",
         "link_mode_default": "first_comment",
         "caption_links_clickable": True,
@@ -162,7 +163,7 @@ PLATFORM_SPECS: Dict[str, Dict[str, Any]] = {
         "hashtags_min": 2, "hashtags_max": 5, "hashtags_total_max": 8,
         "hashtag_placement": "End of post. Use 2-5 stable category tags; they are navigation labels, not a reach hack.",
         "disclosure": "(Paid affiliate link · #ad)",
-        "disclosure_placement": "after_links",
+        "disclosure_placement": "line2",
         "links_label": "🛍️ Featured Items:",
         "link_mode_default": "inline",
         "caption_links_clickable": True,
@@ -206,6 +207,110 @@ def reload_rules() -> None:
 
 reload_rules()
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EXTERNAL POLICY CONFIG (MEESHO CREATOR CLUB & RUNTIME POLICY INJECTION)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_meesho_policy_cache: Optional[Dict[str, Any]] = None
+_meesho_policy_cache_mtime: float = 0.0
+_meesho_policy_cache_path: Optional[str] = None
+_meesho_policy_lock = threading.Lock()
+
+
+def _load_meesho_policy_config() -> Optional[Dict[str, Any]]:
+    """
+    Externally loads the Meesho Creator Club SEO runtime policy configuration.
+    Scans candidate paths (The_json/meesho_seo_gemini_config.json, etc.) and
+    caches the parsed JSON safely with mtime tracking.
+    """
+    global _meesho_policy_cache, _meesho_policy_cache_mtime, _meesho_policy_cache_path
+
+    candidates = [
+        os.getenv("MEESHO_SEO_CONFIG_PATH", "").strip(),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "The_json", "meesho_seo_gemini_config (1).json"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "The_json", "meesho_seo_gemini_config.json"),
+        os.path.join(os.getcwd(), "The_json", "meesho_seo_gemini_config (1).json"),
+        os.path.join(os.getcwd(), "The_json", "meesho_seo_gemini_config.json"),
+        r"D:\Gemini_editor\The_json\meesho_seo_gemini_config (1).json",
+        r"D:\Gemini_editor\The_json\meesho_seo_gemini_config.json",
+    ]
+
+    found_path = None
+    for p in candidates:
+        if p and os.path.isfile(p):
+            found_path = p
+            break
+
+    if not found_path:
+        return None
+
+    try:
+        mtime = os.path.getmtime(found_path)
+        with _meesho_policy_lock:
+            if _meesho_policy_cache is not None and found_path == _meesho_policy_cache_path and mtime <= _meesho_policy_cache_mtime:
+                return _meesho_policy_cache
+            with open(found_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _meesho_policy_cache = data
+                _meesho_policy_cache_mtime = mtime
+                _meesho_policy_cache_path = found_path
+                return _meesho_policy_cache
+    except Exception as e:
+        logger.warning("[PlatformSEO] Failed to load Meesho external policy from '%s': %s", found_path, e)
+
+    return _meesho_policy_cache
+
+
+def _detect_meesho_keywords(
+    user_title: str = "",
+    user_hint: Optional[str] = None,
+    video_context: str = "",
+    brand_info: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    policy_config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Detects Meesho-related keywords across user inputs (user_title, user_hint, video_context, brand_info).
+    Performs case-insensitive matching using the routing rules specified in the external policy.
+    """
+    match_terms = []
+    if policy_config and isinstance(policy_config, dict):
+        match_terms = policy_config.get("routing", {}).get("profiles", {}).get("meesho_creator", {}).get("match_any", [])
+    if not match_terms:
+        match_terms = [
+            "meesho",
+            "#meesho",
+            "#meeshoapp",
+            "@meeshoapp",
+            "meesho creator",
+            "meesho creator club",
+            "meesho affiliate",
+            "meesho affiliate commission",
+        ]
+
+    md = metadata or {}
+    text_corpus = " ".join([
+        str(user_title or ""),
+        str(user_hint or ""),
+        str(video_context or ""),
+        str(brand_info or ""),
+        str(md.get("caption") or ""),
+        str(md.get("title") or ""),
+        " ".join(str(t) for t in (md.get("hashtags") or [])),
+    ]).lower()
+
+    if not text_corpus.strip():
+        return False
+
+    for term in match_terms:
+        term_clean = str(term).lower().strip()
+        if term_clean and term_clean in text_corpus:
+            return True
+
+    return False
+
+
 _GENERIC_TAGS = frozenset({
     "viral", "trending", "reels", "reel", "fyp", "foryou", "foryoupage", "explore", "instagood",
     "love", "followforfollow", "like4like", "instadaily", "viralvideo", "viralreels", "trend",
@@ -238,12 +343,12 @@ _ROUTER_TRIED = False
 
 def _get_router():
     global _ROUTER, _ROUTER_TRIED
-    if _ROUTER_TRIED:
+    if _ROUTER_TRIED and _ROUTER is not None:
         return _ROUTER
-    _ROUTER_TRIED = True
     for mod in ("Gemini_Modules.gemini_router_module.gemini_governor", "gemini_router_module.gemini_governor"):
         try:
             _ROUTER = importlib.import_module(mod).GeminiGovernor()
+            _ROUTER_TRIED = True
             return _ROUTER
         except Exception as exc:
             logger.debug("[PlatformSEO] router import via %s failed: %s", mod, exc)
@@ -437,7 +542,7 @@ def _now() -> str:
 
 
 def _norm_key(s: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    return re.sub(r"[^\w]", "", (s or "").lower(), flags=re.UNICODE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -509,9 +614,14 @@ class ProvenanceGuard:
     """Learns the source channel's identifiers and keeps them out of everything that gets published."""
 
     def __init__(self, identifiers: Optional[List[str]] = None, allow_text: Optional[List[str]] = None,
-                 allowed_urls: Optional[List[str]] = None):
+                 allowed_urls: Optional[List[str]] = None, allowed_mentions: Optional[List[str]] = None):
         self.allowed_urls = set(allowed_urls or [])
-        allow = {_norm_key(a) for a in (allow_text or []) if a}
+        self.allowed_mentions = {str(m).lower().lstrip("@").strip() for m in (allowed_mentions or []) if str(m).strip()}
+        allow = {_norm_key(a) for a in (allow_text or []) if _norm_key(a)}
+        for am in self.allowed_mentions:
+            if _norm_key(am):
+                allow.add(_norm_key(am))
+
         variants: set = set()
         for raw in identifiers or []:
             raw = str(raw).strip().lstrip("@")
@@ -531,7 +641,8 @@ class ProvenanceGuard:
 
     @classmethod
     def from_inputs(cls, metadata: Optional[Dict[str, Any]], video_context: str, cache: Optional[Dict[str, Any]],
-                    user_title: str = "", user_hint: str = "", links: Optional[List[str]] = None) -> "ProvenanceGuard":
+                    user_title: str = "", user_hint: str = "", links: Optional[List[str]] = None,
+                    allowed_mentions: Optional[List[str]] = None) -> "ProvenanceGuard":
         md = _as_dict(metadata)
         ids: List[str] = []
         for k in _ID_KEYS:
@@ -560,7 +671,16 @@ class ProvenanceGuard:
         det = vc.get("detected_entities") or c.get("detected_entities") or []
         allow += [det] if isinstance(det, str) else list(det)
         allow = [clean_entity_name(str(a)) for a in allow if a]
-        return cls(ids, allow, links)
+
+        # Policy-mandated mentions (e.g. Meesho Creator Club @meeshoapp)
+        all_allowed_m = list(allowed_mentions or [])
+        policy_cfg = _load_meesho_policy_config()
+        if policy_cfg and _detect_meesho_keywords(user_title, user_hint, video_context, metadata=md, policy_config=policy_cfg):
+            req_m = policy_cfg.get("meesho_creator_policy", {}).get("mandatory_caption_and_tag_rules", {}).get("required_account_mention")
+            if req_m:
+                all_allowed_m.append(req_m)
+
+        return cls(ids, allow, links, allowed_mentions=all_allowed_m)
 
     # -- scrubbing ---------------------------------------------------------------------------------
     def scrub_text(self, text: Any) -> Any:
@@ -571,11 +691,27 @@ class ProvenanceGuard:
         masked, saved = _mask(t)
         kept = []
         for line in masked.split("\n"):
-            if _ML not in line and _CREDIT_LINE_RE.search(line):
+            if _ML in line:
+                kept.append(line)
+                continue
+            m = _CREDIT_LINE_RE.search(line)
+            if not m:
+                kept.append(line)
+                continue
+            prefix = line[:m.start()].strip()
+            if not prefix:
                 continue          # whole credit/attribution line goes (never a line carrying an affiliate link)
-            kept.append(line)
+            kept.append(prefix)
         t = "\n".join(kept)
-        t = _MENTION_RE.sub("", t)
+
+        # Policy-aware mention scrubbing: keep explicitly allowed policy handles (e.g. @meeshoapp)
+        def _sub_mention(m):
+            h = m.group(0).lower().lstrip("@").strip()
+            if h in self.allowed_mentions:
+                return m.group(0)
+            return ""
+
+        t = _MENTION_RE.sub(_sub_mention, t)
         if self._rx:
             t = self._rx.sub("", t)
         out_lines = []
@@ -624,7 +760,10 @@ class ProvenanceGuard:
     def find_leaks(self, text: str) -> List[str]:
         if not text:
             return []
-        leaks: List[str] = [m for m in _MENTION_RE.findall(_EMAIL_RE.sub("", text))]
+        leaks: List[str] = [
+            m for m in _MENTION_RE.findall(_EMAIL_RE.sub("", text))
+            if m.lower().lstrip("@").strip() not in self.allowed_mentions
+        ]
         leaks += [u for u in _URL_RE.findall(text) if u not in self.allowed_urls]
         masked, _ = _mask(text)
         if self._rx:
@@ -920,6 +1059,20 @@ def build_evidence(
         "past_performance": _clip_obj(performance_hints[:6] if performance_hints else None, 900),
         "previous_attempt": _clip_obj(previous, 900),
     }
+
+    # ── External Policy Injection (e.g. Meesho Creator Club) ───────────────────
+    policy_config = _load_meesho_policy_config()
+    if policy_config and _detect_meesho_keywords(
+        user_title=user_title,
+        user_hint=user_hint,
+        video_context=video_context,
+        brand_info=brand_info,
+        metadata=md,
+        policy_config=policy_config,
+    ):
+        ev["external_policy"] = policy_config
+        logger.info("🛍️ [PlatformSEO] Meesho Creator Club external policy active in evidence['external_policy'].")
+
     return _compact(ev)
 
 
@@ -1374,7 +1527,12 @@ _BIO_RE = re.compile(
 _BIO_AND_BELOW_RE = re.compile(r"(?i)\blink\s+in\s+bio\s*&?\s*below\b")
 _FLUFF_RE = re.compile(r"(?i)(elevate your perspective|radiate (?:absolute )?confidence|true confidence comes from|"
                        r"mastering the essentials|unlock your (?:true )?potential)")
-_DISC_ANY = re.compile(r"\(\s*(?:Disclosure:\s*)?#ad\b[^)]*\)|(?<!\w)#(?:ad|affiliate|sponsored|collab|promo|partnership)(?!\w)", re.I)
+_DISC_ANY = re.compile(
+    r"\(\s*(?:Paid\s+(?:link|[A-Za-z0-9_-]+\s+affiliate\s+link|affiliate\s+link)|Disclosure:?|#ad\b)[^)\n]*?\)"
+    r"|\([^\n)]*?(?:#ad|#affiliate|qualifying purchases|Amazon Associate)[^\n)]*?\)"
+    r"|(?<!\w)#(?:ad|affiliate|sponsored|collab|promo|partnership)(?!\w)",
+    re.I
+)
 _URL_THEN_TEXT = re.compile(r'(https?://[^\s<>"]+)[ \t]+(?=\S)')
 _DANGLING_BULLET = re.compile(r"(?m)^[ \t]*(?:👉|•|-|\*)[ \t]*$\n?")
 _OWNERSHIP_RE = re.compile(
@@ -1538,9 +1696,27 @@ def _place_disclosure(platform: str, desc: str, has_links: bool, links: Optional
 
 
 def _disclosure_ok(platform: str, desc: str) -> bool:
-    if PLATFORM_SPECS[platform]["disclosure_placement"] == "prefix":
-        return bool(re.match(r"\s*#ad\b", desc, re.I))
-    return bool(re.search(r"#ad\b", desc, re.I))
+    if not desc:
+        return False
+    spec = PLATFORM_SPECS.get(platform, {})
+    placement = spec.get("disclosure_placement", "line2")
+    lines = [ln.strip() for ln in desc.strip().split("\n") if ln.strip()]
+    if not lines:
+        return False
+
+    has_ad = bool(re.search(r"#ad\b", desc, re.I))
+    if not has_ad:
+        return False
+
+    if placement == "prefix":
+        return bool(re.match(r"\s*#ad\b", lines[0], re.I))
+    elif placement == "line2":
+        # ASCI compliance: disclosure must be upfront before the fold (within the first two lines)
+        first_two = " ".join(lines[:2])
+        return bool(re.search(r"#ad\b", first_two, re.I))
+    elif placement == "after_links":
+        return has_ad
+    return has_ad
 
 
 def _count_desc_tags(desc: str) -> int:
@@ -1625,8 +1801,8 @@ def lint_platform(platform: str, content: Dict[str, Any], links: Optional[List[s
         if not re.search(pat, desc, re.I):
             add("pointer_missing", "soft", "Caption lacks the pointer line for this link mode.")
     if links and not _disclosure_ok(platform, desc):
-        where = "the first line" if spec["disclosure_placement"] == "prefix" else "after the links block"
-        add("disclosure_position", "hard", f"Affiliate disclosure must be included {where}. Use compliant provider disclosure with #ad.")
+        where = "the first line" if spec.get("disclosure_placement") == "prefix" else "the first two lines (line 2)" if spec.get("disclosure_placement") == "line2" else "after the links block"
+        add("disclosure_position", "hard", f"Affiliate disclosure must be included in {where}. Use compliant provider disclosure with #ad.")
     if not links and re.search(r"#ad\b|#affiliate\b", both, re.I):
         add("unwanted_ad_tag", "hard", "No affiliate links provided: #ad and #affiliate must not appear in organic posts.")
 
@@ -1660,8 +1836,16 @@ def lint_platform(platform: str, content: Dict[str, Any], links: Optional[List[s
                 v = float(n)
             except ValueError:
                 continue
-            if v > 10 and not (1990 <= v <= 2100) and n not in ev_nums:
-                bad.append(n)
+            if v > 10 and n not in ev_nums:
+                # Calendar year check: exempt 4-digit years like 2025, but ONLY if NOT in currency/price context
+                is_price_context = bool(re.search(
+                    rf"(?:[₹$€£]|(?:^|[^\w])(?:rs\.?|inr|mrp|price|cost|pay|only)\s*){re.escape(n)}\b|\b{re.escape(n)}\s*(?:/-|rs\.?|inr|rupees|[₹$€£])",
+                    both_no_tags,
+                    re.I
+                ))
+                is_calendar_year = (1990 <= v <= 2100) and v.is_integer() and not is_price_context
+                if not is_calendar_year:
+                    bad.append(n)
         if bad:
             add("ungrounded_number", "hard", f"Number(s) not in the evidence (invented price/claim?): {', '.join(sorted(bad)[:4])}")
         if _ENDORSE_RE.search(both_no_tags) and not _ENDORSE_RE.search(ev_text):
@@ -1669,9 +1853,17 @@ def lint_platform(platform: str, content: Dict[str, Any], links: Optional[List[s
         if _SUPERLATIVE_RE.search(both_no_tags) and not _SUPERLATIVE_RE.search(ev_text):
             add("unsupported_superlative", "soft", "Superlative/guarantee claim not supported by the evidence.")
     if ctx.get("content_origin", "reused") == "reused" and _OWNERSHIP_RE.search(both_no_tags):
-        ev_has = bool(ev_text) and False
-        if not ev_has:
-            add("ownership_claim", "hard", "Claims ownership/first-hand use on reused footage ('I tested', 'my video', 'original').")
+        add("ownership_claim", "hard", "Claims ownership/first-hand use on reused footage ('I tested', 'my video', 'original').")
+
+    # policy-specific deterministic checks (e.g. Meesho Creator Club)
+    external_policy = ctx.get("external_policy") or {}
+    meesho_rules = external_policy.get("meesho_creator_policy", {})
+    req_mention = meesho_rules.get("mandatory_caption_and_tag_rules", {}).get("required_account_mention")
+    if req_mention:
+        req_norm = req_mention.lower().lstrip("@").strip()
+        mentions_found = {m.strip("@").strip(".,!?:;\"'()[]{}").lower() for m in re.findall(r"@[\w.]+", both)}
+        if req_norm not in mentions_found:
+            add("missing_policy_mention", "hard", f"Mandatory policy account mention {req_mention} is missing from caption.")
     if _BAIT_RE.search(both_no_tags):
         add("engagement_bait", "hard" if platform == "facebook" else "soft", "Engagement-bait phrasing (Meta/YouTube penalize it).")
 
@@ -1848,6 +2040,23 @@ def _hard_count(issues: List[Dict[str, str]]) -> int:
     return sum(1 for i in issues if i["severity"] == "hard")
 
 
+_META_CMD_TOKENS_RE = re.compile(
+    r"/(?:tr(?:ai|ia)l_reels|trial|trail)\b|"
+    r"/(?:no_?grid|reels_?only|hide_from_feed)\b|"
+    r"/(?:collab(?:orators)?|(?:user_)?tag(?:s)?)\b(?:\s*@[\w.]+[\s,]*)*|"
+    r"/(?:audio_name|audio)\b(?:\s*[\"'][^\"']+[\"'])?",
+    re.I
+)
+
+
+def _strip_meta_tokens_local(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _META_CMD_TOKENS_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def generate_platform_seo(
     video_context: str,
     user_title: str = "",
@@ -1905,6 +2114,9 @@ def generate_platform_seo(
         user_hint, _ = _feed_mgr.extract_feed_visibility(user_hint)
 
         user_tags_payload = _tag_mgr.calculate_visual_coords(raw_tags_list)
+        # Ensure any residual command tokens are completely scrubbed
+        user_title = _strip_meta_tokens_local(user_title)
+        user_hint = _strip_meta_tokens_local(user_hint)
     except Exception as _feat_err:
         logger.warning("[PlatformSEO] Meta features parsing notice: %s", _feat_err)
         is_trial_reel = False
@@ -1912,6 +2124,8 @@ def generate_platform_seo(
         user_tags_payload = []
         share_to_feed = True
         _audio_mgr = None
+        user_title = _strip_meta_tokens_local(user_title or "")
+        user_hint = _strip_meta_tokens_local(user_hint or "")
 
     if is_trial_reel:
         logger.info("[PlatformSEO] Trial Reels mode activated — cold-audience viral optimizer engaged.")
@@ -1940,17 +2154,38 @@ def generate_platform_seo(
         return _finalize_platform(
             platform, raw, links=links, slot_to_url=slot_to_url, backfill_tags=backfill, fallback_title=subject,
             primary_keyword=str(analysis.get("primary_keyword") or subject), mode=modes[platform], guard=guard,
-            ctx={"evidence_text": ev_text, "content_origin": content_origin}, labeled_items=labeled_items)
+            ctx={"evidence_text": ev_text, "content_origin": content_origin, "external_policy": evidence.get("external_policy")},
+            labeled_items=labeled_items)
 
     offline = _env_flag("FAST_OFFLINE_SEO")
     heur = _heuristic_draft(evidence, platforms)
     draft = None
+
+    # ── External Policy Injection (Runtime Policy Injection, e.g. Meesho Creator Club) ──
+    meesho_policy = evidence.get("external_policy")
+    if not meesho_policy:
+        policy_config = _load_meesho_policy_config()
+        if policy_config and _detect_meesho_keywords(
+            user_title=user_title,
+            user_hint=user_hint,
+            video_context=video_context,
+            brand_info=brand_info,
+            metadata=md,
+            policy_config=policy_config,
+        ):
+            meesho_policy = policy_config
+            evidence["external_policy"] = meesho_policy
+
     if not offline:
         gen_evidence = dict(evidence)
         learned = {p: learned_context(p) for p in platforms}
         learned = {p: c for p, c in learned.items() if c}
         if learned:
             gen_evidence["learned"] = learned
+
+        if meesho_policy:
+            gen_evidence["external_policy"] = meesho_policy
+            logger.info("🛍️ [PlatformSEO] Meesho Creator Club external policy injected into gen_evidence.")
 
         # ── Trail Reels: inject Cold-Audience Viral Optimizer directive ────────
         # When is_trial_reel=True, Gemini is the viral manipulator.
@@ -2041,6 +2276,8 @@ def generate_platform_seo(
         learned_n = {p: c for p, c in learned_n.items() if c}
         if learned_n:
             crit_evidence["learned"] = learned_n
+        if meesho_policy:
+            crit_evidence["external_policy"] = meesho_policy
         current = {p: {"title": _tokenize(f["title"], slot_to_url), "title_alternates": f.get("title_alternates", []),
                        "description": _tokenize(f["description"], slot_to_url), "keywords": f.get("keywords", []),
                        "hashtags": f["hashtags"]} for p, f in finals.items()}
@@ -2130,6 +2367,8 @@ def _assemble(finals: Dict[str, Dict[str, Any]], analysis: Dict[str, Any], evide
         "rules_researched": RULES_RESEARCHED,
         "_affiliate_links": links, "_labeled_links": labeled_items, "_optimization": opt, "_source": source,
     }
+    if "external_policy" in evidence:
+        result["external_policy"] = evidence["external_policy"]
     for k in ("main_subject", "applicable_context", "content_category", "target_audience"):
         if isinstance(result.get(k), str):
             result[k] = strip_system_and_tracking_tokens(guard.scrub_text(result[k]))
@@ -2160,7 +2399,8 @@ def approve_and_finalize(seo_data: Dict[str, Any], approved_title: str, platform
     keyword = str(_as_dict(seo_data.get("analysis")).get("primary_keyword") or seo_data.get("main_subject") or "")
     final = _finalize_platform(platform, pdata, links=links, slot_to_url={}, backfill_tags=[],
                                fallback_title=approved_title or "Untitled Video", primary_keyword=keyword, mode=mode,
-                               ctx={"content_origin": seo_data.get("content_origin", "reused")},
+                               ctx={"content_origin": seo_data.get("content_origin", "reused"),
+                                    "external_policy": seo_data.get("external_policy")},
                                labeled_items=labeled_items)
     final["approved_at"] = _now()
     final["status"] = "approved"
