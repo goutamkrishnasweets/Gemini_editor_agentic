@@ -402,6 +402,32 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
                 description = sanitize_raw_handles_out(raw_desc, raw_handle)
                 hashtags = sanitize_raw_handles_out(raw_tags, raw_handle)
 
+                # Persist generated SEO to ClipIntelligenceStore for review delivery
+                try:
+                    from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+                    _cstore = ClipIntelligenceStore()
+                    _intel_cur = _cstore.load(clip_id, clip_folder=os.path.dirname(r_file)) or {}
+                    _intel_cur["seo_result"] = {
+                        "platforms": seo_info.get("platform_payloads", {}),
+                        "main_subject": fallback_subject,
+                        "viral_seo_title": viral_title,
+                        "description": description,
+                        "hashtags": seo_info.get("hashtags", []),
+                        "target_niche": seo_info.get("target_niche", "universal"),
+                    }
+                    _cstore.save(clip_id, _intel_cur, clip_folder=os.path.dirname(r_file))
+                except Exception as _save_seo_err:
+                    logger.debug("Notice caching audit SEO for %s: %s", clip_id, _save_seo_err)
+
+                # Check AUTO_PUBLISH_CLIPS: if not enabled, hold clip for review with SEO instead of publishing to public group
+                auto_publish_enabled = os.getenv("AUTO_PUBLISH_CLIPS", "").strip().lower() in ("yes", "true", "1")
+                if not auto_publish_enabled:
+                    logger.info(
+                        f"⏸️ [SCHEDULED PUBLISH SKIPPED] AUTO_PUBLISH_CLIPS is not enabled. "
+                        f"Holding clip '{base_name}' for Telegram review card delivery with SEO."
+                    )
+                    continue
+
                 logger.info(f"📤 [SCHEDULED PUBLISH] Clip {clips_published_this_session+1}/{target_publish_quota} Title: '{viral_title}'")
                 clip_owner_id = get_account_owner_for_file(r_file) or (str(for_chat_id) if for_chat_id else None)
                 pub_res = run_phase4_publishing(

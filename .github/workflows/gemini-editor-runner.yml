@@ -131,6 +131,7 @@ jobs:
         TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
         BRAND_WATERMARK: ${{ secrets.BRAND_WATERMARK || secrets.BRAND_WATERMARK_TEXT }}
         AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES || vars.AUTO_INPUT_SCHEDULE_TIMES || '' }}
+        AUTO_PUBLISH_CLIPS: ${{ secrets.AUTO_PUBLISH_CLIPS || vars.AUTO_PUBLISH_CLIPS || 'no' }}
       run: |
         mkdir -p Credentials
         rm -f .env Credentials/.env
@@ -171,6 +172,7 @@ jobs:
                 'TIKTOK_ACCESS_TOKEN': os.getenv('TIKTOK_ACCESS_TOKEN'),
                 'BRAND_WATERMARK_TEXT': os.getenv('BRAND_WATERMARK'),
                 'AUTO_INPUT_SCHEDULE_TIMES': os.getenv('AUTO_INPUT_SCHEDULE_TIMES'),
+                'AUTO_PUBLISH_CLIPS': os.getenv('AUTO_PUBLISH_CLIPS') or 'no',
             }
             for k, v in mappings.items():
                 if v and v.strip():
@@ -178,7 +180,6 @@ jobs:
 
             f.write('CLIENT_SECRET_FILE=Credentials/youtube/client_secret.json\n')
             f.write('YOUTUBE_TOKEN_FILE=Credentials/youtube/token.json\n')
-            f.write('AUTO_PUBLISH_CLIPS=yes\n')
         "
 
         # Telegram config
@@ -232,6 +233,7 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
         MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL || vars.MAKE_WEBHOOK_URL }}
         AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES || vars.AUTO_INPUT_SCHEDULE_TIMES || '' }}
+        AUTO_PUBLISH_CLIPS: ${{ secrets.AUTO_PUBLISH_CLIPS || vars.AUTO_PUBLISH_CLIPS || 'no' }}
         DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
         DISPATCH_PLATFORM: ${{ github.event.inputs.platform || 'all_available' }}
         DISPATCH_TARGET_ACCOUNTS: ${{ github.event.inputs.target_accounts || '' }}

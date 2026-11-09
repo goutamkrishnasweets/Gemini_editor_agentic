@@ -128,7 +128,8 @@ class TelegramSessionManager:
         raw_video_file_id: Optional[str] = None,
         wm_clean_file_id: Optional[str] = None,
         social_url: Optional[str] = None,
-        processed_file_id: Optional[str] = None
+        processed_file_id: Optional[str] = None,
+        seo_result: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         Creates a new review session for a rendered video reel.
@@ -219,6 +220,7 @@ class TelegramSessionManager:
             "status": "AWAITING_REVIEW",
             "selected_audio": selected_audio,
             "custom_title": None,
+            "seo_result": seo_result or {},
             "created_at": time.time(),
             "updated_at": time.time()
         }
@@ -294,6 +296,20 @@ class TelegramSessionManager:
             logger.info(f"✅ Session {session_id} approved with title: '{custom_title}'")
             return self.sessions[session_id]
         return None
+
+    def set_seo_result(self, session_id: str, seo_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Stores pre-generated multi-platform SEO results in the session."""
+        self._refresh_from_disk()
+        sess = self.get_session(session_id)
+        if sess and isinstance(seo_result, dict):
+            sid = sess.get("session_id", session_id)
+            if sid in self.sessions:
+                self.sessions[sid]["seo_result"] = seo_result
+                self.sessions[sid]["updated_at"] = time.time()
+                self._save_sessions()
+                logger.info(f"📊 Session {sid} updated with generated SEO metadata.")
+                return self.sessions[sid]
+        return sess
 
     def set_rejected(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Marks session REJECTED and returns session data."""
