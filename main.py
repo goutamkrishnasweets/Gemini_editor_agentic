@@ -2303,6 +2303,26 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
     _task.add_done_callback(_BG_AGENT_TASKS.discard)
 
 
+_SOURCE_VIDEO_URL_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:"
+    r"instagram\.com/(?:reel|p|tv|stories)/[a-zA-Z0-9_\-]+|"
+    r"tiktok\.com/@[a-zA-Z0-9_.-]+/video/\d+|vm\.tiktok\.com/[a-zA-Z0-9]+|vt\.tiktok\.com/[a-zA-Z0-9]+|"
+    r"youtube\.com/shorts/[a-zA-Z0-9_\-]+|youtu\.be/[a-zA-Z0-9_\-]+|youtube\.com/watch\?v=[a-zA-Z0-9_\-]+|"
+    r"facebook\.com/(?:reel|watch)/[a-zA-Z0-9_\-]+|fb\.watch/[a-zA-Z0-9_\-]+|"
+    r"pinterest\.com/pin/[a-zA-Z0-9_\-]+|pin\.it/[a-zA-Z0-9_\-]+|"
+    r"[^\s]+\.(?:mp4|mov|mkv|webm)(?:\?[^\s]*)?"
+    r")",
+    re.IGNORECASE
+)
+
+
+def _is_source_video_url(text: str) -> bool:
+    """Detects whether text contains or is a source video URL meant for downloading/editing."""
+    if not text:
+        return False
+    return bool(_SOURCE_VIDEO_URL_RE.search(text.strip()))
+
+
 async def handle_telegram_incoming_msg(update, context):
     """
     Handles user messages sent to Telegram bot:
@@ -2389,7 +2409,20 @@ async def handle_telegram_incoming_msg(update, context):
             await msg.reply_text("↩️ **Cancelled title input.** Returned reel to review options.", reply_markup=review_kbd)
             return
 
-        if not user_input_raw.startswith("/"):
+        # Check if the user is actually sending a NEW SOURCE VIDEO URL to download/edit
+        # rather than submitting a title/affiliate link for the pending session!
+        if _is_source_video_url(user_input_raw):
+            sess_id = pending_sess["session_id"]
+            session_manager.revert_awaiting_title(sess_id)
+            logger.info("🔄 [SESSION SWITCH] User sent source video URL while session %s was AWAITING_TITLE. Reverted session to AWAITING_REVIEW and routing new video.", sess_id)
+            pending_sess = None
+        elif user_input_raw.startswith("@") or user_input_raw.lower().startswith("scrape "):
+            sess_id = pending_sess["session_id"]
+            session_manager.revert_awaiting_title(sess_id)
+            logger.info("🔄 [SESSION SWITCH] User sent handle/command '%s' while session %s was AWAITING_TITLE. Reverted session to AWAITING_REVIEW.", user_input_raw[:30], sess_id)
+            pending_sess = None
+
+        if pending_sess and not user_input_raw.startswith("/"):
             sess_id = pending_sess["session_id"]
             sess = session_manager.get_session(sess_id)
 
@@ -2433,17 +2466,19 @@ async def handle_telegram_incoming_msg(update, context):
                 c_line = re.sub(r'/no_grid\b', '', c_line, flags=re.I)
                 
                 line_urls = re.findall(r'https?://[^\s<>"]+', c_line)
-                if line_urls:
+                aff_urls = [u for u in line_urls if not _is_source_video_url(u)]
+                if aff_urls:
                     label = re.sub(r'https?://[^\s<>"]+', '', c_line).strip(" :-—\t\r\n")
-                    for u in line_urls:
+                    for u in aff_urls:
                         labeled_links.append({"label": label or "Featured Item", "url": u})
                 else:
                     text_part = c_line.strip(" :-—\t\r\n")
                     if text_part:
                         hint_lines.append(text_part)
 
-            extracted_urls = [l["url"] for l in labeled_links] if labeled_links else raw_urls
-            if not extracted_urls and _first_aff_url:
+            aff_raw_urls = [u for u in raw_urls if not _is_source_video_url(u)]
+            extracted_urls = [l["url"] for l in labeled_links] if labeled_links else aff_raw_urls
+            if not extracted_urls and _first_aff_url and not _is_source_video_url(_first_aff_url):
                 extracted_urls = [_first_aff_url]
                 labeled_links = [{"label": "Featured Item", "url": _first_aff_url}]
 

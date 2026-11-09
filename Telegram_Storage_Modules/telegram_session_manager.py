@@ -30,11 +30,28 @@ class TelegramSessionManager:
         self._last_disk_mtime: float = 0.0
         os.makedirs(os.path.dirname(self.sessions_file), exist_ok=True)
         self.sessions: Dict[str, Dict[str, Any]] = self._load_sessions()
+        if self._cleanup_stale_awaiting_title():
+            self._save_sessions()
         if os.path.exists(self.sessions_file):
             try:
                 self._last_disk_mtime = os.path.getmtime(self.sessions_file)
             except Exception:
                 pass
+
+    def _cleanup_stale_awaiting_title(self, max_age_seconds: float = 1800.0) -> bool:
+        """Auto-reverts any session that has been in AWAITING_TITLE for longer than max_age_seconds or missing chat_id."""
+        now = time.time()
+        modified = False
+        for sid, s in self.sessions.items():
+            if s.get("status") == "AWAITING_TITLE":
+                up_at = s.get("updated_at") or s.get("created_at") or 0
+                req_chat = s.get("requestor_chat_id")
+                if (now - up_at) > max_age_seconds or not req_chat:
+                    s["status"] = "AWAITING_REVIEW"
+                    s["updated_at"] = now
+                    modified = True
+                    logger.info("↩️ [SESSION TIMEOUT] Auto-reverted stale/orphaned AWAITING_TITLE session %s back to AWAITING_REVIEW.", sid)
+        return modified
 
     def _load_sessions(self) -> Dict[str, Dict[str, Any]]:
         if os.path.exists(self.sessions_file):
@@ -62,6 +79,7 @@ class TelegramSessionManager:
                                     if v is not None or cur.get(k) is None:
                                         cur[k] = v
                     self._last_disk_mtime = mtime
+                    self._cleanup_stale_awaiting_title()
             except Exception as e:
                 logger.debug("Notice refreshing sessions from disk: %s", e)
 
@@ -345,21 +363,38 @@ class TelegramSessionManager:
 
         return (True, 1)
 
-    def get_pending_title_session(self, chat_id: Optional[Any] = None) -> Optional[Dict[str, Any]]:
-        """Returns the most recent session waiting for a custom title, optionally filtered by chat_id."""
+    def get_pending_title_session(self, chat_id: Optional[Any] = None, max_age_seconds: float = 1800.0) -> Optional[Dict[str, Any]]:
+        """
+        Returns the active session waiting for a custom title for the specified chat_id.
+        CRITICAL RULES:
+          1. If chat_id is specified, ONLY return a session belonging to that exact chat_id.
+             NEVER fall back to another user's or an orphaned session.
+          2. Auto-reverts any session that has been in AWAITING_TITLE for longer than max_age_seconds
+             (default 30 mins) or that lacks a valid requestor_chat_id back to AWAITING_REVIEW.
+        """
+        self._refresh_from_disk()
+        if self._cleanup_stale_awaiting_title(max_age_seconds=max_age_seconds):
+            self._save_sessions()
+
         awaiting = [
             s for s in self.sessions.values()
             if s.get("status") == "AWAITING_TITLE"
         ]
-        if awaiting:
-            awaiting.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
-            if chat_id is not None:
-                chat_str = str(chat_id).strip()
-                for s in awaiting:
-                    if str(s.get("requestor_chat_id", "")).strip() == chat_str:
-                        return s
-            return awaiting[0]
-        return None
+        if not awaiting:
+            return None
+
+        awaiting.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+
+        if chat_id is not None:
+            chat_str = str(chat_id).strip()
+            for s in awaiting:
+                req_id = str(s.get("requestor_chat_id", "")).strip()
+                if req_id and req_id == chat_str:
+                    return s
+            # STRICT: If chat_id is specified and no session belongs to this user, return None!
+            return None
+
+        return awaiting[0]
 
     def get_session(self, session_id_or_clip_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves session by session_id, or by matching clip_id (most recent active session first)."""
