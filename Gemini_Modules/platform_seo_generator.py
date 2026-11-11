@@ -227,11 +227,8 @@ def _load_meesho_policy_config() -> Optional[Dict[str, Any]]:
 
     candidates = [
         os.getenv("MEESHO_SEO_CONFIG_PATH", "").strip(),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "The_json", "meesho_seo_gemini_config (1).json"),
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "The_json", "meesho_seo_gemini_config.json"),
-        os.path.join(os.getcwd(), "The_json", "meesho_seo_gemini_config (1).json"),
         os.path.join(os.getcwd(), "The_json", "meesho_seo_gemini_config.json"),
-        r"D:\Gemini_editor\The_json\meesho_seo_gemini_config (1).json",
         r"D:\Gemini_editor\The_json\meesho_seo_gemini_config.json",
     ]
 
