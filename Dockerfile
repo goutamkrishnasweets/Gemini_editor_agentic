@@ -22,7 +22,6 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     libavformat-dev \
     libavutil-dev \
     libswscale-dev \
-    poppler-utils \
     git \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -44,7 +43,6 @@ FROM python:3.11-slim AS runtime
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
     # FFmpeg with drawtext + libharfbuzz (full GPL build via BtbN)
     xz-utils \
-    poppler-utils \
     libsndfile1 \
     libopus0 \
     libgomp1 \
