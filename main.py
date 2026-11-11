@@ -482,104 +482,28 @@ async def deliver_rendered_reel_with_seo(
     directive: Optional[str] = None
 ):
     """
-    Delivers a rendered reel to the user's Telegram chat with:
-      1. A headline caption (Subject, Title, Tags, Session ID) + review keyboard.
-      2. Full multi-platform SEO preview (YouTube, Instagram, Facebook, TikTok) via format_for_telegram_preview.
-      3. Persists generated SEO in telegram_sessions.json.
+    Delivers a rendered reel to the user's Telegram chat for human review:
+      1. Clean headline caption with filename and session ID + review keyboard.
+      2. Persists precomputed SEO in session if explicitly provided.
+      3. ZERO premature SEO generation or preview spam — SEO is generated ONLY after
+         the user explicitly approves via 'Approve & Set Title' or 'Post Immediately'.
     """
     if not bot_obj or not target_chat or not os.path.isfile(reel_path):
         return None
 
-    seo_data = precomputed_seo or {}
-    real_cid = os.path.basename(reel_path).replace("_master.mp4", "").replace(".mp4", "")
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # 1. Resolve or pre-generate SEO metadata if not passed
-    if not seo_data or not seo_data.get("platforms"):
+    # If precomputed SEO was explicitly provided (e.g. from prior step), persist it in session
+    if precomputed_seo and sess_id:
         try:
-            from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
-            from Gemini_Modules.platform_seo_generator import generate_platform_seo
-
-            intel_data = {}
-            try:
-                store = ClipIntelligenceStore()
-                clip_folder = os.path.dirname(reel_path)
-                intel_data = store.load(real_cid, clip_folder=clip_folder) or {}
-            except Exception:
-                pass
-
-            if not intel_data:
-                # Fallback to .clip_intelligence.json
-                for cand in [
-                    os.path.join(base_dir, "downloads", real_cid, ".clip_intelligence.json"),
-                    os.path.join(os.path.dirname(reel_path), ".clip_intelligence.json"),
-                ]:
-                    if os.path.exists(cand):
-                        try:
-                            with open(cand, "r", encoding="utf-8") as f:
-                                intel_data = json.load(f)
-                            break
-                        except Exception:
-                            pass
-
-            # Check if intel_data already has cached audit seo_result
-            if intel_data.get("seo_result") and isinstance(intel_data["seo_result"], dict):
-                seo_data = intel_data["seo_result"]
-
-            if not seo_data or not seo_data.get("platforms"):
-                v_context = (intel_data.get("visual_context")
-                             or intel_data.get("visual_data", {}).get("gemini_visual_output")
-                             or intel_data.get("visual_data", {}).get("clip_intelligence") or {})
-                if isinstance(v_context, dict):
-                    video_context_str = (v_context.get("description") or v_context.get("visual_description")
-                                         or v_context.get("scene_context", {}).get("description", "")
-                                         or f"Reel for {real_cid}")
-                else:
-                    video_context_str = str(v_context) or f"Reel for {real_cid}"
-
-                creator_niche = (intel_data.get("visual_data", {}).get("gemini_visual_output", {}).get("niche")
-                                 or intel_data.get("ownerUsername")
-                                 or "General")
-                raw_meta = intel_data.get("phase1", {}) or {}
-                raw_meta.setdefault("creator_handle", creator_niche)
-                raw_meta.setdefault("raw_caption", intel_data.get("caption") or (directive or ""))
-                raw_meta["caption"] = intel_data.get("caption", "")
-
-                seo_data = generate_platform_seo(
-                    video_context=video_context_str,
-                    user_title=directive or "",
-                    brand_info=creator_niche,
-                    cache=intel_data,
-                    metadata=raw_meta,
-                    user_hint=directive or "",
-                )
-        except Exception as _seo_err:
-            logger.warning(f"⚠️ [SEO Preview] Could not generate SEO for session {sess_id}: {_seo_err}")
-            seo_data = {}
-
-    # Persist in session
-    if seo_data and sess_id:
-        try:
-            session_manager.set_seo_result(sess_id, seo_data)
+            session_manager.set_seo_result(sess_id, precomputed_seo)
         except Exception:
             sess = session_manager.get_session(sess_id)
             if sess:
-                sess["seo_result"] = seo_data
+                sess["seo_result"] = precomputed_seo
                 session_manager._save_sessions()
-
-    # Extract headline fields
-    main_subject = seo_data.get("main_subject") or "Viral Reel"
-    yt_info = seo_data.get("platforms", {}).get("youtube", {})
-    suggested_title = yt_info.get("title") or f"{main_subject} ✨"
-    tags_list = yt_info.get("hashtags", []) or seo_data.get("platforms", {}).get("instagram", {}).get("hashtags", []) or ["#viral", "#shorts", "#trending"]
-    tags_str = " ".join(tags_list[:5])
 
     video_caption = (
         f"{headline_prefix}\n"
         f"📁 `{os.path.basename(reel_path)}`\n"
-        f"⭐ **Subject**: `{main_subject}`\n"
-        f"📝 **Suggested Title**: `{suggested_title}`\n"
-        f"🏷️ **Tags**: `{tags_str}`\n"
         f"🆔 `Session: {sess_id}`"
     )
 
@@ -594,27 +518,6 @@ async def deliver_rendered_reel_with_seo(
     )
     if sent_msg and sess_id:
         session_manager.update_message_id(sess_id, sent_msg.message_id)
-
-    # Deliver full multi-platform SEO preview
-    if seo_data and seo_data.get("platforms"):
-        try:
-            from Gemini_Modules.platform_seo_generator import format_for_telegram_preview
-            seo_preview_text = format_for_telegram_preview(seo_data)
-            if seo_preview_text:
-                try:
-                    await bot_obj.send_message(
-                        chat_id=int(target_chat),
-                        text=seo_preview_text,
-                        parse_mode="Markdown"
-                    )
-                except Exception as _md_err:
-                    logger.debug("Markdown parse for SEO preview failed (%s), sending plain text...", _md_err)
-                    await bot_obj.send_message(
-                        chat_id=int(target_chat),
-                        text=seo_preview_text
-                    )
-        except Exception as _prev_err:
-            logger.warning(f"⚠️ Failed to deliver SEO preview message: {_prev_err}")
 
     return sent_msg
 

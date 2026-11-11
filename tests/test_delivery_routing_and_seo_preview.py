@@ -61,7 +61,7 @@ class TestDeliveryRoutingAndSEOPreview(unittest.TestCase):
 
     @patch("main._send_video_safe_main", new_callable=AsyncMock)
     def test_deliver_rendered_reel_with_seo(self, mock_send_video):
-        """Verifies deliver_rendered_reel_with_seo sends the video with rich caption and sends SEO preview."""
+        """Verifies deliver_rendered_reel_with_seo sends video review card without premature SEO preview spam."""
         from main import deliver_rendered_reel_with_seo
         mock_bot = MagicMock()
         mock_bot.send_message = AsyncMock()
@@ -77,11 +77,6 @@ class TestDeliveryRoutingAndSEOPreview(unittest.TestCase):
                     "hashtags": ["#summer", "#style", "#shorts"],
                     "seo_score": 92,
                     "description": "Full description here"
-                },
-                "instagram": {
-                    "title": "Viral Summer Style IG",
-                    "hashtags": ["#reels", "#explore"],
-                    "seo_score": 90
                 }
             }
         }
@@ -105,15 +100,15 @@ class TestDeliveryRoutingAndSEOPreview(unittest.TestCase):
                 self.assertIsNotNone(res)
                 mock_send_video.assert_called_once()
                 call_kwargs = mock_send_video.call_args[1]
-                self.assertIn("Trendy Outfit", call_kwargs["caption"])
-                self.assertIn("Viral Summer Style ✨", call_kwargs["caption"])
-                self.assertIn("#summer", call_kwargs["caption"])
+                self.assertIn(os.path.basename(temp_vid), call_kwargs["caption"])
+                self.assertIn(sess_id, call_kwargs["caption"])
 
-                mock_bot.send_message.assert_called_once()
-                msg_call = mock_bot.send_message.call_args[1]
-                self.assertEqual(msg_call["chat_id"], 12345)
-                self.assertIn("SEO Content Preview", msg_call["text"])
-                self.assertIn("YOUTUBE", msg_call["text"])
+                # Crucial check: Draft delivery must NEVER send premature SEO preview text to chat
+                mock_bot.send_message.assert_not_called()
+
+                # Precomputed SEO was persisted to session for when the user approves later
+                sess = self.session_mgr.get_session(sess_id)
+                self.assertEqual(sess.get("seo_result", {}).get("main_subject"), "Trendy Outfit")
         finally:
             if os.path.exists(temp_vid):
                 os.remove(temp_vid)
