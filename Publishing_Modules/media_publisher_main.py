@@ -20,6 +20,7 @@ import asyncio
 from typing import Dict, Any, Optional
 
 from Publishing_Modules.make_publisher import publish_to_make, is_make_configured
+from Publishing_Modules.buffer_publisher import publish_to_buffer, is_buffer_configured
 
 logger = logging.getLogger("media_publisher_main")
 logger.setLevel(logging.INFO)
@@ -447,6 +448,38 @@ async def run_phase4_publishing_async(
     except Exception as e:
         logger.error(f"❌ Telegram publish error: {e}")
         results["platforms"]["telegram"] = {"status": "failed", "error": str(e)}
+
+    # 5. Buffer Multi-Channel Broadcasting (TikTok, Pinterest, X/Twitter)
+    if is_buffer_configured(user_id=user_id):
+        try:
+            logger.info("📡 [BUFFER BROADCAST] Firing multi-channel syndication (TikTok, Pinterest, X)...")
+            buf_payload = platforms_payload.get("tiktok") or platforms_payload.get("x") or {}
+            buf_title = buf_payload.get("title") or title
+            buf_desc = buf_payload.get("description") or description or f"{title}\n\n{tags}"
+            buf_aff = (seo_data or {}).get("_affiliate_links", [None])[0] if seo_data else None
+
+            buf_res = publish_to_buffer(
+                video_path=video_path,
+                title=buf_title,
+                description=buf_desc,
+                tags=tags,
+                seo_data=seo_data,
+                affiliate_link=buf_aff,
+                user_id=user_id,
+            )
+            for ch, ch_res in (buf_res.get("results") or {}).items():
+                if ch_res.get("status") != "skipped":
+                    results["platforms"][f"buffer_{ch}"] = ch_res
+            if not any(k.startswith("buffer_") for k in results["platforms"]):
+                results["platforms"]["buffer"] = buf_res
+        except Exception as _buf_err:
+            logger.warning("Buffer broadcast notice: %s", _buf_err)
+            results["platforms"]["buffer"] = {"status": "failed", "error": str(_buf_err)}
+    else:
+        results["platforms"]["buffer"] = {
+            "status": "skipped",
+            "message": "BUFFER_ACCESS_TOKEN not configured.",
+        }
 
     # Determine overall success
     success_count = sum(1 for p in results["platforms"].values() if p.get("status") == "success")

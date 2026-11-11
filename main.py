@@ -3782,6 +3782,7 @@ def start_telegram_bot_service():
                         BotCommand("autosetup", "Run interactive 6-step setup wizard"),
                         BotCommand("guide", "Setup guides: /guide make, meta, yt"),
                         BotCommand("setwebhook", "Set Make.com Webhook URL (or /setwebhook guide)"),
+                        BotCommand("setbuffer", "Set Buffer API token for TikTok/Pinterest/X"),
                         BotCommand("connectmeta", "1-Click Meta (Instagram & FB) OAuth login"),
                         BotCommand("setmetaappid", "Set Meta Developer App ID"),
                         BotCommand("setmetaappsecret", "Set Meta Developer App Secret"),
@@ -4033,6 +4034,42 @@ def start_telegram_bot_service():
                 await update.message.reply_text("🎵 **TikTok Access Token Synced as your secret**")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
+
+        async def _cmd_setbuffer(update, context):
+            token_input = " ".join(context.args).strip() if context.args else ""
+            user_id = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
+            if not token_input:
+                await update.message.reply_text(
+                    "🔑 **Buffer Multi-Channel Publishing Setup**\n\n"
+                    "Publish approved reels to **TikTok, Pinterest & X (Twitter)** via Buffer:\n\n"
+                    "1️⃣ Open Buffer Settings → API → Personal Access:\n"
+                    "   `https://publish.buffer.com/settings/api?tab=personal-access`\n"
+                    "2️⃣ Copy your Personal Access Token\n"
+                    "3️⃣ Send: `/setbuffer <your_access_token>`"
+                )
+                return
+            try:
+                from Publishing_Modules.buffer_publisher import set_user_buffer_token, get_buffer_profiles
+                ok = set_user_buffer_token(user_id, token_input)
+                if ok:
+                    clean_display = token_input[:10] + "..." if len(token_input) > 10 else token_input
+                    profiles = get_buffer_profiles(token_input, force_refresh=True) or []
+                    channels = [
+                        f"{p.get('service', 'channel').capitalize()} (@{p.get('service_username', p.get('id', '')[:8])})"
+                        for p in profiles
+                    ]
+                    chan_text = "\n".join([f"  • {c}" for c in channels]) if channels else "  (No channels detected yet — ensure accounts are connected in Buffer)"
+                    await update.message.reply_text(
+                        f"✅ **Buffer Access Token Synced!**\n\n"
+                        f"🔑 **Token:** `{clean_display}`\n"
+                        f"Connected channels:\n{chan_text}\n\n"
+                        f"Approved reels will now automatically syndicate to your Buffer channels (TikTok, Pinterest, X)!\n"
+                        f"Synced to your profile and GitHub Secrets as `BUFFER_ACCESS_TOKEN`."
+                    )
+                else:
+                    await update.message.reply_text("❌ Failed to save Buffer token. Ensure it is a non-empty string.")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving Buffer token: {_e}")
 
         async def _send_make_guide(target_msg):
             guide_text = (
@@ -4573,6 +4610,9 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("facebookid", _cmd_facebookid))
         app.add_handler(CommandHandler("facebooktoken", _cmd_facebooktoken))
         app.add_handler(CommandHandler("tiktoktoken", _cmd_tiktoktoken))
+        app.add_handler(CommandHandler("setbuffer", _cmd_setbuffer))
+        app.add_handler(CommandHandler("buffertoken", _cmd_setbuffer))
+        app.add_handler(CommandHandler("buffer", _cmd_setbuffer))
         app.add_handler(CommandHandler("setmakewebhookurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("setmakewebhook", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makewebhook", _cmd_setmakewebhookurl))

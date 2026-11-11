@@ -947,6 +947,44 @@ def get_user_make_webhook_url(user_id_str: Optional[Union[str, int]] = None) -> 
     return None
 
 
+def set_user_buffer_token(user_id_str: str, buffer_token: str) -> bool:
+    """Saves user Buffer Personal Access Token and syncs to BUFFER_ACCESS_TOKEN in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    clean_tok = buffer_token.strip().strip("`'\"")
+    if clean_tok:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["buffer_access_token"] = clean_tok
+        save_all_users(users)
+        if _is_admin_user(user_id_str):
+            os.environ["BUFFER_ACCESS_TOKEN"] = clean_tok
+            _persist_env_var_to_disk("BUFFER_ACCESS_TOKEN", clean_tok)
+        else:
+            os.environ[f"USER_{user_id_str}_BUFFER_ACCESS_TOKEN"] = clean_tok
+        sync_user_secret_to_github(user_id_str, "BUFFER_ACCESS_TOKEN", clean_tok)
+        logger.info("🔑 [TELEGRAM USER MANAGER] Buffer Access Token saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def get_user_buffer_token(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Buffer token if present. Non-admins NEVER inherit admin token."""
+    if not user_id_str:
+        return os.getenv("BUFFER_ACCESS_TOKEN", "").strip() or None
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    if user_id_str in users:
+        val = users[user_id_str].get("buffer_access_token", "").strip()
+        if val:
+            return val
+    env_val = os.getenv(f"USER_{user_id_str}_BUFFER_ACCESS_TOKEN", "").strip()
+    if env_val:
+        return env_val
+    if _is_admin_user(user_id_str):
+        return os.getenv("BUFFER_ACCESS_TOKEN", "").strip() or None
+    return None
+
+
 def get_user_gemini_key(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
     """Returns user personal Gemini API key if present. Non-admins NEVER inherit admin key."""
     if not user_id_str:
@@ -1226,6 +1264,8 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
         f"🌐 **Make.com Webhook URL:** `{_chk('make_webhook_url', 'MAKE_WEBHOOK_URL')}`",
         "   👉 Command: `/setwebhook <URL>` (Guide: `/setwebhook guide` or `/guide make`)\n",
+        f"🔄 **Buffer Access Token (TikTok/Pinterest/X):** `{_chk('buffer_access_token', 'BUFFER_ACCESS_TOKEN')}`",
+        "   👉 Command: `/setbuffer YOUR_ACCESS_TOKEN`\n",
     ]
     if is_admin:
         meta_ver = get_meta_graph_api_version()
