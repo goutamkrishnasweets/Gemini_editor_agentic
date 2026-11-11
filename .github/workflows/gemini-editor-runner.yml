@@ -34,11 +34,11 @@ on:
         type: string
 
   schedule:
-    # 2 clean daytime windows (Indian Standard Time — IST = UTC + 5:30):
-    # Morning/Midday window: 09:30 AM IST trigger -> 01:27 PM IST stop (3.95 hours)
-    - cron: '0 4 * * *'
-    # Afternoon/Evening window: 03:30 PM IST trigger -> 07:27 PM IST stop (3.95 hours)
-    - cron: '0 10 * * *'
+    # 2 scheduled windows (Indian Standard Time — IST = UTC + 5:30):
+    # Early Morning window: 04:20 AM IST trigger (22:50 UTC previous day)
+    - cron: '50 22 * * *'
+    # Afternoon window: 04:20 PM IST trigger (10:50 UTC)
+    - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
 # Ongoing runs stay active until their full runtime completes.
