@@ -564,3 +564,70 @@ __all__ = [
     "get_user_buffer_token",
 ]
 
+
+if __name__ == "__main__":
+    import argparse
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+
+    parser = argparse.ArgumentParser(description="Buffer Standalone Video Publisher (TikTok, Pinterest, X)")
+    parser.add_argument("--video", "-v", type=str, default=None, help="Path to video file or public video URL")
+    parser.add_argument("--title", "-t", type=str, default="", help="Video title")
+    parser.add_argument("--desc", "-d", type=str, default="", help="Post caption / description")
+    parser.add_argument("--tags", type=str, default="#viral #shorts #trending", help="Hashtags")
+    parser.add_argument("--channels", "-c", type=str, default="tiktok,pinterest,x", help="Target channels (comma-separated: tiktok,pinterest,x)")
+    parser.add_argument("--affiliate", "-a", type=str, default=None, help="Affiliate / destination link")
+    parser.add_argument("--token", type=str, default=None, help="Explicit Buffer Access Token override")
+    parser.add_argument("--queue", action="store_true", help="Queue to Buffer calendar instead of publishing immediately")
+    parser.add_argument("--status", "--test", action="store_true", help="Test token and display connected Buffer channels")
+
+    args = parser.parse_args()
+
+    if args.token:
+        os.environ["BUFFER_ACCESS_TOKEN"] = args.token.strip()
+
+    if args.status:
+        tok = _get_buffer_token()
+        if not tok:
+            print("\n❌ BUFFER_ACCESS_TOKEN is not set in environment or .env file.")
+            print("   Get your token: https://publish.buffer.com/settings/api?tab=personal-access")
+            print("   Set it via: export BUFFER_ACCESS_TOKEN=your_token or pass --token <token>\n")
+            sys.exit(1)
+        print(f"\n🔑 Buffer Token: {tok[:10]}... (active)")
+        profiles = get_buffer_profiles(tok, force_refresh=True)
+        if profiles:
+            print(f"✅ Discovered {len(profiles)} connected channel(s):")
+            for p in profiles:
+                svc = p.get('service', 'unknown').capitalize()
+                user = p.get('service_username') or p.get('id')
+                pid = p.get('id')
+                print(f"   • [{svc}] @{user} (ID: {pid})")
+        else:
+            print("⚠️ No channels connected yet in this Buffer account.")
+            print("   Add channels in Buffer: https://publish.buffer.com/channels")
+        print()
+        sys.exit(0)
+
+    if not args.video:
+        parser.print_help()
+        print("\n❌ Error: --video is required to publish.")
+        sys.exit(1)
+
+    target_ch = [c.strip().lower() for c in args.channels.split(",") if c.strip()]
+    res = publish_to_buffer(
+        video_path=args.video,
+        title=args.title or os.path.splitext(os.path.basename(args.video))[0],
+        description=args.desc,
+        tags=args.tags,
+        affiliate_link=args.affiliate,
+        channels=target_ch,
+        now=not args.queue,
+    )
+
+    print("\n" + "=" * 60)
+    print(f"🎯 BUFFER PUBLISH RESULT: {res.get('status', 'unknown').upper()}")
+    print(f"Published to: {res.get('published_to') or 'none'}")
+    print(f"Failed on:    {res.get('failed_on') or 'none'}")
+    for ch, details in (res.get("results") or {}).items():
+        print(f"  • {ch.upper()}: {details.get('status')} {details.get('update_id', details.get('error', details.get('reason', '')))}")
+    print("=" * 60 + "\n")
+
