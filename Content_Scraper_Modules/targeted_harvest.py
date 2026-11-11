@@ -241,7 +241,7 @@ class TargetedHarvest:
         }
         
         try:
-            from Publishing_Modules.make_publisher import PublishQueue
+            from Publishing_Modules import PublishQueue
             
             for item in processed_items:
                 try:
@@ -273,8 +273,8 @@ class TargetedHarvest:
                     results["errors"].append(str(e))
         
         except ImportError:
-            logger.error("❌ [TARGETED HARVEST] make_publisher not available")
-            results["errors"].append("make_publisher module not available")
+            logger.error("❌ [TARGETED HARVEST] Publishing module not available")
+            results["errors"].append("Publishing module not available")
         
         return results
     

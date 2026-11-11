@@ -118,7 +118,6 @@ jobs:
         TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID || vars.TELEGRAM_API_ID }}
         TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH || vars.TELEGRAM_API_HASH }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
-        MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL || vars.MAKE_WEBHOOK_URL }}
         APIFY_TOKEN: ${{ secrets.APIFY_TOKEN || secrets.APIFY_API_TOKEN }}
         CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
         TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
@@ -171,7 +170,6 @@ jobs:
                 'META_PAGE_TOKEN': os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN'),
                 'TIKTOK_ACCESS_TOKEN': os.getenv('TIKTOK_ACCESS_TOKEN'),
                 'BUFFER_ACCESS_TOKEN': os.getenv('BUFFER_ACCESS_TOKEN'),
-                'MAKE_WEBHOOK_URL': os.getenv('MAKE_WEBHOOK_URL'),
                 'BRAND_WATERMARK_TEXT': os.getenv('BRAND_WATERMARK'),
                 'AUTO_INPUT_SCHEDULE_TIMES': os.getenv('AUTO_INPUT_SCHEDULE_TIMES'),
                 'AUTO_PUBLISH_CLIPS': os.getenv('AUTO_PUBLISH_CLIPS') or 'no',
@@ -233,7 +231,6 @@ jobs:
         TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID || vars.TELEGRAM_API_ID }}
         TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH || vars.TELEGRAM_API_HASH }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
-        MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL || vars.MAKE_WEBHOOK_URL }}
         BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN || vars.BUFFER_ACCESS_TOKEN }}
         AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES || vars.AUTO_INPUT_SCHEDULE_TIMES || '' }}
         AUTO_PUBLISH_CLIPS: ${{ secrets.AUTO_PUBLISH_CLIPS || vars.AUTO_PUBLISH_CLIPS || 'no' }}

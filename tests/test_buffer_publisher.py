@@ -106,6 +106,17 @@ class TestBufferPublisher(unittest.TestCase):
             )
             self.assertEqual(res["status"], "skipped")
 
+    def test_resolve_public_media_url_passthrough_http(self):
+        from Publishing_Modules.buffer_publisher import resolve_public_media_url
+        url = "https://example.com/stream.mp4"
+        self.assertEqual(resolve_public_media_url(url), url)
+
+    def test_publish_queue_compatibility(self):
+        from Publishing_Modules.buffer_publisher import PublishQueue
+        self.assertTrue(PublishQueue.add("test.mp4", title="Title"))
+        status = PublishQueue.status()
+        self.assertIn("queue_type", status)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,7 +158,7 @@ from Import_Modules.phase1_imports import run_phase1_ingestion
 from Import_Modules.phase2_imports import run_phase2_orchestration
 from Downloader_Modules.scheduled_scraper_manager import run_scheduled_scraper_batch, get_rotated_max_two_accounts
 from Main_Modules.master_ai_editor import MasterAIEditor
-from Publishing_Modules.make_publisher import PublishQueue
+from Publishing_Modules import PublishQueue
 from Telegram_Storage_Modules.telegram_session_manager import session_manager
 from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
 from Telegram_Storage_Modules import download_telegram_document
@@ -3780,8 +3780,7 @@ def start_telegram_bot_service():
                         BotCommand("start", "Show welcome & platform selection menu"),
                         BotCommand("myconfig", "View your SaaS credential checklist & setup commands"),
                         BotCommand("autosetup", "Run interactive 6-step setup wizard"),
-                        BotCommand("guide", "Setup guides: /guide make, meta, yt"),
-                        BotCommand("setwebhook", "Set Make.com Webhook URL (or /setwebhook guide)"),
+                        BotCommand("guide", "Setup guides: /guide buffer, meta, yt"),
                         BotCommand("setbuffer", "Set Buffer API token for TikTok/Pinterest/X"),
                         BotCommand("connectmeta", "1-Click Meta (Instagram & FB) OAuth login"),
                         BotCommand("setmetaappid", "Set Meta Developer App ID"),
@@ -4071,32 +4070,19 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Buffer token: {_e}")
 
-        async def _send_make_guide(target_msg):
+        async def _send_buffer_guide(target_msg):
             guide_text = (
-                "📚 **Make.com Social Publishing Setup Guide**\n\n"
-                "Publish approved reels to **Instagram Reels & Facebook Pages** automatically:\n\n"
-                "**1️⃣ Create Webhook in Make.com:**\n"
-                "• Go to Make.com → Webhooks → Add Webhook (name: `Gemini-Editor`).\n"
-                "• Copy URL and send: `/setwebhook <URL>`\n\n"
-                "**2️⃣ Build Scenario in Make.com:**\n"
-                "• Go to Scenarios → Create new scenario.\n"
-                "• Click `+` → Add **Webhooks** (select `Gemini-Editor`).\n\n"
-                "**3️⃣ Add Instagram Reels:**\n"
-                "• Click `+` next to Webhook → choose **Instagram for Business**.\n"
-                "• Action: **Create a reel post** *(⚠️ NOT photo!)*.\n"
-                "• Page: Select your page (keep `Map` toggle OFF).\n"
-                "• Video URL: `{{1.video_url}}`\n"
-                "• Caption: `{{1.caption}}` → Click Save.\n\n"
-                "**4️⃣ Add Facebook Pages:**\n"
-                "• Click `+` next to Instagram → choose **Facebook Pages**.\n"
-                "• Action: **Upload a Video**.\n"
-                "• Page: Select your page (keep `Map` toggle OFF).\n"
-                "• Type: Switch dropdown to **download a video from URL** *(keep `Map` OFF)*.\n"
-                "• URL: `{{1.video_url}}`\n"
-                "• Caption: `{{1.caption}}` → Click Save.\n\n"
-                "**5️⃣ Turn it ON:**\n"
-                "• Click Save at the bottom, flip top-right switch to **Active**!\n\n"
-                "💡 *Full documentation with screenshots: `Publishing_Modules/MAKE_SOCIAL_SETUP_GUIDE.md`*"
+                "🔄 **Buffer Multi-Channel Publishing Setup Guide**\n\n"
+                "Publish approved reels to **TikTok, Pinterest & X (Twitter)** automatically:\n\n"
+                "**1️⃣ Get your Buffer Token:**\n"
+                "• Open Buffer Settings → API → Personal Access:\n"
+                "  `https://publish.buffer.com/settings/api?tab=personal-access`\n"
+                "• Generate and copy your Access Token.\n\n"
+                "**2️⃣ Connect Channels:**\n"
+                "• Connect your TikTok, Pinterest, and X accounts in the Buffer dashboard.\n\n"
+                "**3️⃣ Save Token:**\n"
+                "• Send: `/setbuffer <YOUR_TOKEN>`\n\n"
+                "✅ All approved reels will now auto-syndicate to TikTok, Pinterest, and X!"
             )
             try:
                 await target_msg.reply_text(guide_text, parse_mode="Markdown")
@@ -4141,8 +4127,8 @@ def start_telegram_bot_service():
 
         async def _cmd_guide(update, context):
             sub = (context.args[0].lower().strip() if context.args else "") if context.args else ""
-            if sub in ("make", "makeguide", "webhook", "make.com"):
-                await _send_make_guide(update.message)
+            if sub in ("buffer", "tiktok", "pinterest", "x", "twitter", "buff"):
+                await _send_buffer_guide(update.message)
             elif sub in ("meta", "instagram", "facebook", "fb", "ig"):
                 await _send_meta_guide(update.message)
             elif sub in ("youtube", "yt"):
@@ -4151,45 +4137,20 @@ def start_telegram_bot_service():
                 await update.message.reply_text(
                     "📚 **AMTCE Setup & Automation Guides**\n\n"
                     "Select a topic below for step-by-step setup:\n\n"
-                    "• 🌐 **Make.com Social Publishing:** `/guide make` (or `/setwebhook guide`)\n"
+                    "• 🔄 **Buffer Publishing (TikTok, Pinterest, X):** `/guide buffer`\n"
                     "• ⚡ **Meta 1-Click Login (IG & FB):** `/guide meta`\n"
                     "• 🔴 **YouTube Shorts Setup:** `/guide youtube`\n\n"
                     "💡 *Send any command above to open its full walkthrough.*"
                 )
 
-        async def _cmd_makeguide(update, context):
-            await _send_make_guide(update.message)
-
         async def _cmd_setmakewebhookurl(update, context):
-            args_text = " ".join(context.args).strip() if context.args else ""
-            clean_arg = args_text.lower().strip()
-            if clean_arg in ("guide", "makeguide", "help", "setup", "tutorial"):
-                await _send_make_guide(update.message)
-                return
-
-            if not args_text or not args_text.startswith(("http://", "https://")):
-                await update.message.reply_text(
-                    "🌐 **Make.com Webhook Publisher Setup**\n\n"
-                    "👉 **Save Webhook:**\n"
-                    "`/setwebhook <URL>`\n"
-                    "*(Example: `/setwebhook https://hook.us2.make.com/your-private-webhook`)*\n\n"
-                    "📖 **Step-by-Step Scenario Guide:**\n"
-                    "Send `/setwebhook guide` (or `/guide make`) for the complete 5-step walkthrough on configuring Instagram Reels & Facebook Pages in Make.com!"
-                )
-                return
-            try:
-                from Telegram_Storage_Modules.telegram_user_manager import set_user_make_webhook_url
-                ok = set_user_make_webhook_url(str(update.effective_chat.id), args_text)
-                if ok:
-                    clean_display = args_text[:45] + "..." if len(args_text) > 45 else args_text
-                    await update.message.reply_text(
-                        f"✅ **Make.com Webhook URL Synced!**\n\n"
-                        f"🔗 **URL:** `{clean_display}`\n\n"
-                        f"All approved reels will now automatically broadcast to your Make.com scenario.\n"
-                        f"Synced to your profile and GitHub Secrets as `MAKE_WEBHOOK_URL`."
-                    )
-            except Exception as _e:
-                await update.message.reply_text(f"⚠️ Error saving Make.com Webhook URL: {_e}")
+            await update.message.reply_text(
+                "ℹ️ **Make.com Webhook is Deprecated**\n\n"
+                "Multi-channel syndication is now handled directly by the native **Buffer API**!\n\n"
+                "To publish directly to TikTok, Pinterest, and X (Twitter):\n"
+                "👉 Use `/setbuffer <YOUR_BUFFER_TOKEN>`\n"
+                "📖 Guide: `/guide buffer`"
+            )
 
         async def _cmd_updatemetaendpoints(update, context):
             uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))

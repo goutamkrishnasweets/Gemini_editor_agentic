@@ -4,7 +4,7 @@ media_publisher_main.py — Phase 4 Multi-Platform Publishing Orchestrator
 Orchestrates multi-platform broadcasting for approved master video reels:
   1. YouTube Shorts (via uploader.py using dynamic YOUTUBE_API_VERSION)
   2. Instagram Reels & Facebook Pages (via meta_uploader.py using dynamic META_GRAPH_VERSION)
-  3. Make.com Webhook Pipeline (optional secondary broadcast if MAKE_WEBHOOK_URL is set)
+  3. Buffer Multi-Channel (TikTok, Pinterest, X/Twitter via buffer_publisher.py)
   4. Telegram Channel / Public Group (via Telegram Bot API)
 
 Called directly after a user approves a reel title or taps 'Post Immediately' in Telegram.
@@ -17,7 +17,12 @@ import time
 import json
 import logging
 import asyncio
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
+
+from Publishing_Modules.buffer_publisher import publish_to_buffer, is_buffer_configured
+
+logger = logging.getLogger("media_publisher_main")
+logger.setLevel(logging.INFO)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.basename(_REPO_ROOT) == "simpler update":
@@ -25,12 +30,6 @@ if os.path.basename(_REPO_ROOT) == "simpler update":
 
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-
-from Publishing_Modules.make_publisher import publish_to_make, is_make_configured
-from Publishing_Modules.buffer_publisher import publish_to_buffer, is_buffer_configured
-
-logger = logging.getLogger("media_publisher_main")
-logger.setLevel(logging.INFO)
 
 try:
     from dotenv import load_dotenv
@@ -298,7 +297,6 @@ async def run_phase4_publishing_async(
     user_id: Optional[str] = None,
     seo_data: Optional[Dict[str, Any]] = None,
     trail_reels: bool = False,
-    target_platforms: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Asynchronous master multi-platform publishing orchestrator:
@@ -337,163 +335,117 @@ async def run_phase4_publishing_async(
     # and zero third-party file leakage.
     logger.info("🔄 [MASTER SOCIAL PIPELINE] Executing direct YouTube & Meta uploaders...")
 
-    active_targets = {p.strip().lower() for p in target_platforms} if target_platforms else None
-    run_all = not active_targets or "all" in active_targets
-
     # 1. YouTube Shorts (Direct Python Data API)
-    if run_all or any(p in active_targets for p in ["youtube", "yt"]):
-        yt_payload = platforms_payload.get("youtube", {})
-        yt_title = yt_payload.get("title") or title
-        yt_desc = yt_payload.get("description") or description or f"{title}\n\n{tags}"
-        yt_tags = " ".join(yt_payload.get("hashtags", [])) if yt_payload.get("hashtags") else tags
+    yt_payload = platforms_payload.get("youtube", {})
+    yt_title = yt_payload.get("title") or title
+    yt_desc = yt_payload.get("description") or description or f"{title}\n\n{tags}"
+    yt_tags = " ".join(yt_payload.get("hashtags", [])) if yt_payload.get("hashtags") else tags
 
-        try:
-            yt_res = await publish_to_youtube(
-                video_path=video_path,
-                title=yt_title,
-                description=yt_desc,
-                tags=yt_tags,
-                niche=niche,
-                user_id=user_id
-            )
-            if yt_res.get("status") != "skipped":
-                results["platforms"]["youtube"] = yt_res
-        except Exception as e:
-            logger.error("❌ YouTube publish error: %s", e)
-            results["platforms"]["youtube"] = {"status": "failed", "error": str(e)}
+    try:
+        yt_res = await publish_to_youtube(
+            video_path=video_path,
+            title=yt_title,
+            description=yt_desc,
+            tags=yt_tags,
+            niche=niche,
+            user_id=user_id
+        )
+        if yt_res.get("status") != "skipped":
+            results["platforms"]["youtube"] = yt_res
+    except Exception as e:
+        logger.error("❌ YouTube publish error: %s", e)
+        results["platforms"]["youtube"] = {"status": "failed", "error": str(e)}
 
     # 2. Meta (Instagram Reels & Facebook Pages)
-    if run_all or any(p in active_targets for p in ["meta", "instagram", "facebook", "ig", "fb"]):
-        ig_payload = platforms_payload.get("instagram", {})
-        ig_caption = ig_payload.get("caption") or ig_payload.get("description") or description or f"{title}\n\n{tags}"
-        target_tags = ig_payload.get("hashtags") or (tags.split() if tags else [])
-        if target_tags:
-            existing_tags = set(re.findall(r"#\w+", ig_caption.lower()))
-            missing_tags = [t for t in target_tags if t.lower() not in existing_tags and t.lower() not in ("#ad", "#affiliate")]
-            if missing_tags:
-                ig_caption = ig_caption.rstrip() + "\n\n" + " ".join(missing_tags)
+    ig_payload = platforms_payload.get("instagram", {})
+    ig_caption = ig_payload.get("caption") or ig_payload.get("description") or description or f"{title}\n\n{tags}"
+    target_tags = ig_payload.get("hashtags") or (tags.split() if tags else [])
+    if target_tags:
+        existing_tags = set(re.findall(r"#\w+", ig_caption.lower()))
+        missing_tags = [t for t in target_tags if t.lower() not in existing_tags and t.lower() not in ("#ad", "#affiliate")]
+        if missing_tags:
+            ig_caption = ig_caption.rstrip() + "\n\n" + " ".join(missing_tags)
 
+    try:
+        _meta_feats = (seo_data.get("meta_features", {}) if isinstance(seo_data, dict) else {}) or {}
+        meta_res = await publish_to_meta(
+            video_path=video_path,
+            caption=ig_caption,
+            niche=niche,
+            user_id=user_id,
+            trail_reels=trail_reels,
+            meta_features=_meta_feats,
+        )
+        ig_result = meta_res.get("instagram", {})
+        if ig_result.get("status") == "success":
+            media_id = ig_result.get("id")
+            link = ig_result.get("link") or (f"https://www.instagram.com/p/{media_id}/" if media_id else "Uploaded successfully")
+            results["platforms"]["instagram"] = {"status": "success", "media_id": media_id, "link": link, "url": link}
+        elif ig_result.get("status") not in ("skipped", None):
+            results["platforms"]["instagram"] = {"status": "failed", "response": ig_result}
+
+        fb_result = meta_res.get("facebook", {})
+        if fb_result.get("status") == "success":
+            fb_link = fb_result.get("link") or fb_result.get("url") or "Uploaded successfully"
+            results["platforms"]["facebook"] = {"status": "success", "link": fb_link, "url": fb_link}
+        elif fb_result.get("status") not in ("skipped", "disabled/skipped", None):
+            results["platforms"]["facebook"] = {"status": "failed", "response": fb_result}
+    except Exception as e:
+        logger.error("❌ Meta publish error: %s", e)
+        results["platforms"]["instagram"] = {"status": "failed", "error": str(e)}
+
+    # 3. Buffer Multi-Channel Broadcasting (TikTok, Pinterest, X/Twitter)
+    if is_buffer_configured(user_id=user_id):
         try:
-            _meta_feats = (seo_data.get("meta_features", {}) if isinstance(seo_data, dict) else {}) or {}
-            meta_res = await publish_to_meta(
+            logger.info("📡 [BUFFER BROADCAST] Firing multi-channel syndication (TikTok, Pinterest, X)...")
+            buf_payload = platforms_payload.get("tiktok") or platforms_payload.get("x") or {}
+            buf_title = buf_payload.get("title") or title
+            buf_desc = buf_payload.get("description") or description or f"{title}\n\n{tags}"
+            buf_aff = (seo_data or {}).get("_affiliate_links", [None])[0] if seo_data else None
+
+            buf_res = publish_to_buffer(
                 video_path=video_path,
-                caption=ig_caption,
-                niche=niche,
+                title=buf_title,
+                description=buf_desc,
+                tags=tags,
+                seo_data=seo_data,
+                affiliate_link=buf_aff,
                 user_id=user_id,
-                trail_reels=trail_reels,
-                meta_features=_meta_feats,
             )
-            ig_result = meta_res.get("instagram", {})
-            if ig_result.get("status") == "success":
-                media_id = ig_result.get("id")
-                link = ig_result.get("link") or (f"https://www.instagram.com/p/{media_id}/" if media_id else "Uploaded successfully")
-                results["platforms"]["instagram"] = {"status": "success", "media_id": media_id, "link": link, "url": link}
-            elif ig_result.get("status") not in ("skipped", None):
-                results["platforms"]["instagram"] = {"status": "failed", "response": ig_result}
-
-            fb_result = meta_res.get("facebook", {})
-            if fb_result.get("status") == "success":
-                fb_link = fb_result.get("link") or fb_result.get("url") or "Uploaded successfully"
-                results["platforms"]["facebook"] = {"status": "success", "link": fb_link, "url": fb_link}
-            elif fb_result.get("status") not in ("skipped", "disabled/skipped", None):
-                results["platforms"]["facebook"] = {"status": "failed", "response": fb_result}
-        except Exception as e:
-            logger.error("❌ Meta publish error: %s", e)
-            results["platforms"]["instagram"] = {"status": "failed", "error": str(e)}
-
-    # 3. Optional Auxiliary Webhook: Make.com (Non-blocking notification only)
-    if run_all or "make" in active_targets:
-        if is_make_configured(user_id=user_id):
-            try:
-                logger.info("📡 [AUXILIARY WEBHOOK] Firing optional background Make.com dispatch...")
-                make_res = publish_to_make(
-                    media_path=video_path,
-                    title=title,
-                    caption=description,
-                    tags=tags,
-                    post_type="reel",
-                    media_type="video",
-                    seo_data=seo_data,
-                    user_id=user_id
-                )
-                if make_res.get("status") == "success":
-                    results["platforms"]["make"] = {
-                        "status": "success",
-                        "url": make_res.get("media_url"),
-                        "message": "Dispatched to Make.com webhook as auxiliary feed."
-                    }
-                else:
-                    results["platforms"]["make"] = {
-                        "status": "skipped",
-                        "error": make_res.get("error", "Make webhook notice")
-                    }
-            except Exception as _mk_err:
-                logger.warning("Optional Make.com dispatch notice: %s", _mk_err)
-        else:
-            results["platforms"]["make"] = {
-                "status": "skipped",
-                "message": "MAKE_WEBHOOK_URL not configured (optional)."
-            }
+            for ch, ch_res in (buf_res.get("results") or {}).items():
+                if ch_res.get("status") != "skipped":
+                    results["platforms"][f"buffer_{ch}"] = ch_res
+            if not any(k.startswith("buffer_") for k in results["platforms"]):
+                results["platforms"]["buffer"] = buf_res
+        except Exception as _buf_err:
+            logger.warning("Buffer broadcast notice: %s", _buf_err)
+            results["platforms"]["buffer"] = {"status": "failed", "error": str(_buf_err)}
+    else:
+        results["platforms"]["buffer"] = {
+            "status": "skipped",
+            "message": "BUFFER_ACCESS_TOKEN not configured.",
+        }
 
     # 4. Telegram Channel Broadcasting
-    if run_all or any(p in active_targets for p in ["telegram", "tg"]):
-        tg_payload = platforms_payload.get("telegram", {})
-        tg_desc = tg_payload.get("description")
-        tg_title = tg_payload.get("title") or title
-        tg_tags = " ".join(tg_payload.get("hashtags", [])) if tg_payload.get("hashtags") else tags
+    tg_payload = platforms_payload.get("telegram", {})
+    tg_desc = tg_payload.get("description")
+    tg_title = tg_payload.get("title") or title
+    tg_tags = " ".join(tg_payload.get("hashtags", [])) if tg_payload.get("hashtags") else tags
 
-        if tg_desc:
-            tg_caption = tg_desc if (tg_tags and tg_tags.split()[0] in tg_desc) else f"{tg_desc}\n\n{tg_tags}"
-        elif description:
-            tg_caption = description if (tags and tags.split()[0] in description) else f"{description}\n\n{tags}"
-        else:
-            tg_caption = f"{title}\n\n{tags}" if title else tg_tags
+    if tg_desc:
+        tg_caption = tg_desc if (tg_tags and tg_tags.split()[0] in tg_desc) else f"{tg_desc}\n\n{tg_tags}"
+    elif description:
+        tg_caption = description if (tags and tags.split()[0] in description) else f"{description}\n\n{tags}"
+    else:
+        tg_caption = f"{title}\n\n{tags}" if title else tg_tags
 
-        try:
-            tg_res = await publish_to_telegram(video_path=video_path, title=tg_title, caption=tg_caption, user_id=user_id)
-            if tg_res.get("status") != "skipped":
-                results["platforms"]["telegram"] = tg_res
-        except Exception as e:
-            logger.error(f"❌ Telegram publish error: {e}")
-            results["platforms"]["telegram"] = {"status": "failed", "error": str(e)}
-
-    # 5. Buffer Multi-Channel Broadcasting (TikTok, Pinterest, X/Twitter)
-    if run_all or any(p in active_targets for p in ["buffer", "tiktok", "pinterest", "x", "twitter"]):
-        buf_ch = None
-        if not run_all and "buffer" not in active_targets:
-            buf_ch = [c for c in ["tiktok", "pinterest", "x"] if c in active_targets or (c == "x" and "twitter" in active_targets)]
-
-        if is_buffer_configured(user_id=user_id):
-            try:
-                logger.info("📡 [BUFFER BROADCAST] Firing multi-channel syndication (TikTok, Pinterest, X)...")
-                buf_payload = platforms_payload.get("tiktok") or platforms_payload.get("x") or {}
-                buf_title = buf_payload.get("title") or title
-                buf_desc = buf_payload.get("description") or description or f"{title}\n\n{tags}"
-                buf_aff = (seo_data or {}).get("_affiliate_links", [None])[0] if seo_data else None
-
-                buf_res = publish_to_buffer(
-                    video_path=video_path,
-                    title=buf_title,
-                    description=buf_desc,
-                    tags=tags,
-                    seo_data=seo_data,
-                    affiliate_link=buf_aff,
-                    user_id=user_id,
-                    channels=buf_ch,
-                )
-                for ch, ch_res in (buf_res.get("results") or {}).items():
-                    if ch_res.get("status") != "skipped":
-                        results["platforms"][f"buffer_{ch}"] = ch_res
-                if not any(k.startswith("buffer_") for k in results["platforms"]):
-                    results["platforms"]["buffer"] = buf_res
-            except Exception as _buf_err:
-                logger.warning("Buffer broadcast notice: %s", _buf_err)
-                results["platforms"]["buffer"] = {"status": "failed", "error": str(_buf_err)}
-        else:
-            results["platforms"]["buffer"] = {
-                "status": "skipped",
-                "message": "BUFFER_ACCESS_TOKEN not configured.",
-            }
+    try:
+        tg_res = await publish_to_telegram(video_path=video_path, title=tg_title, caption=tg_caption, user_id=user_id)
+        if tg_res.get("status") != "skipped":
+            results["platforms"]["telegram"] = tg_res
+    except Exception as e:
+        logger.error(f"❌ Telegram publish error: {e}")
+        results["platforms"]["telegram"] = {"status": "failed", "error": str(e)}
 
     # Determine overall success
     success_count = sum(1 for p in results["platforms"].values() if p.get("status") == "success")
@@ -518,7 +470,6 @@ def run_phase4_publishing(
     user_id: Optional[str] = None,
     seo_data: Optional[Dict[str, Any]] = None,
     trail_reels: bool = False,
-    target_platforms: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Synchronous Master Orchestration Entry Point for Phase 4 Publishing.
@@ -543,7 +494,6 @@ def run_phase4_publishing(
                     user_id=user_id,
                     seo_data=seo_data,
                     trail_reels=trail_reels,
-                    target_platforms=target_platforms,
                 )
             )
             return future.result()
@@ -558,7 +508,6 @@ def run_phase4_publishing(
                 user_id=user_id,
                 seo_data=seo_data,
                 trail_reels=trail_reels,
-                target_platforms=target_platforms,
             )
         )
 
@@ -572,76 +521,3 @@ __all__ = [
     "publish_to_telegram",
     "_resolve_user_credentials",
 ]
-
-
-if __name__ == "__main__":
-    import argparse
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-
-    parser = argparse.ArgumentParser(description="Standalone Multi-Platform Video Publisher CLI")
-    parser.add_argument("--video", "-v", type=str, default=None, help="Local video file path to publish")
-    parser.add_argument("--title", "-t", type=str, default="", help="Video post title")
-    parser.add_argument("--desc", "-d", type=str, default="", help="Caption / description")
-    parser.add_argument("--tags", type=str, default="#viral #shorts #trending", help="Hashtags")
-    parser.add_argument("--platforms", "-p", type=str, default="all",
-                        help="Platforms to publish to (comma-separated: all, buffer, youtube, meta, instagram, facebook, telegram, make)")
-    parser.add_argument("--status", action="store_true", help="Print configuration status of all publishing channels")
-
-    args = parser.parse_args()
-
-    if args.status:
-        print("\n" + "=" * 60)
-        print("📊 PUBLISHING PLATFORMS CONFIGURATION STATUS")
-        print("=" * 60)
-        yt_cfg = os.path.exists("Credentials/youtube/token.json") or bool(os.getenv("TOKEN_JSON"))
-        print(f"  • YouTube Shorts:    {'✅ Configured' if yt_cfg else '❌ Not Set'}")
-        meta_cfg = bool(os.getenv("INSTAGRAM_ACCESS_TOKEN") or os.getenv("META_ACCESS_TOKEN"))
-        print(f"  • Meta (IG/FB):      {'✅ Configured' if meta_cfg else '❌ Not Set'}")
-        tg_cfg = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_PUBLIC_GROUP_ID"))
-        print(f"  • Telegram Channel:  {'✅ Configured' if tg_cfg else '❌ Not Set'}")
-        make_cfg = is_make_configured()
-        print(f"  • Make.com Webhook:  {'✅ Configured' if make_cfg else '❌ Not Set'}")
-        buf_cfg = is_buffer_configured()
-        print(f"  • Buffer (TikTok/Pin/X): {'✅ Configured' if buf_cfg else '❌ Not Set'}")
-        if buf_cfg:
-            from Publishing_Modules.buffer_publisher import _get_buffer_token, get_buffer_profiles
-            tok = _get_buffer_token()
-            profiles = get_buffer_profiles(tok) if tok else []
-            for p in profiles:
-                svc = p.get('service', 'unknown').capitalize()
-                user = p.get('service_username') or p.get('id')
-                print(f"      ↳ [{svc}] @{user}")
-        print("=" * 60 + "\n")
-        sys.exit(0)
-
-    if not args.video:
-        parser.print_help()
-        print("\n❌ Error: --video is required to publish.")
-        sys.exit(1)
-
-    if not os.path.isfile(args.video):
-        print(f"\n❌ Error: Video file not found: {args.video}")
-        sys.exit(1)
-
-    target_list = [p.strip().lower() for p in args.platforms.split(",") if p.strip()]
-    vid_title = args.title or os.path.splitext(os.path.basename(args.video))[0]
-
-    print(f"\n🚀 Launching standalone publish for: {os.path.basename(args.video)}")
-    print(f"📌 Title: {vid_title}")
-    print(f"🌐 Target Platforms: {', '.join(target_list)}\n")
-
-    res = run_phase4_publishing(
-        video_path=args.video,
-        title=vid_title,
-        description=args.desc,
-        tags=args.tags,
-        target_platforms=target_list,
-    )
-
-    print("\n" + "=" * 60)
-    print(f"🎉 PUBLISH SUMMARY — Success: {res.get('success')} (Published count: {res.get('published_count', 0)})")
-    for plat, pdata in res.get("platforms", {}).items():
-        st = pdata.get("status", "unknown")
-        info = pdata.get("link") or pdata.get("url") or pdata.get("update_id") or pdata.get("error") or pdata.get("message") or ""
-        print(f"  • {plat.upper()}: {st} {info}")
-    print("=" * 60 + "\n")

@@ -1,19 +1,14 @@
 # Publishing_Modules package init
-# Multi-Platform Publishing Gateway (YouTube, Meta, Make.com, Telegram)
+# Multi-Platform Publishing Gateway (YouTube, Meta, Buffer, Telegram)
 
-from .make_publisher import (
-    publish_to_make,
-    is_make_configured,
-    build_make_payload,
-    resolve_public_media_url,
-    PublishQueue,
-)
 from .buffer_publisher import (
     publish_to_buffer,
     is_buffer_configured,
     get_buffer_profiles,
     set_user_buffer_token,
     get_user_buffer_token,
+    resolve_public_media_url,
+    PublishQueue,
 )
 from .media_publisher_main import (
     run_phase4_publishing,
@@ -39,16 +34,13 @@ from .uploader import (
 )
 
 __all__ = [
-    "publish_to_make",
-    "is_make_configured",
-    "build_make_payload",
-    "resolve_public_media_url",
-    "PublishQueue",
     "publish_to_buffer",
     "is_buffer_configured",
     "get_buffer_profiles",
     "set_user_buffer_token",
     "get_user_buffer_token",
+    "resolve_public_media_url",
+    "PublishQueue",
     "run_phase4_publishing",
     "run_phase4_publishing_async",
     "publish_to_youtube",

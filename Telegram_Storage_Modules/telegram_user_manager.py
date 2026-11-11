@@ -1262,8 +1262,6 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
         f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
-        f"🌐 **Make.com Webhook URL:** `{_chk('make_webhook_url', 'MAKE_WEBHOOK_URL')}`",
-        "   👉 Command: `/setwebhook <URL>` (Guide: `/setwebhook guide` or `/guide make`)\n",
         f"🔄 **Buffer Access Token (TikTok/Pinterest/X):** `{_chk('buffer_access_token', 'BUFFER_ACCESS_TOKEN')}`",
         "   👉 Command: `/setbuffer YOUR_ACCESS_TOKEN`\n",
     ]

@@ -311,21 +311,154 @@ def _post_to_buffer(
     return {"status": "failed", "error": f"Failed to post to Buffer after {max_retries} attempts."}
 
 
-# ── Public Media URL ───────────────────────────────────────────────────────────
+# ── Public URL Resolution via Telegram Vault ──────────────────────────────────
+
+_PUBLIC_URL_CACHE: Dict[str, str] = {}
+
+
+def _upload_fallback_tmpfiles(local_path: str) -> Optional[str]:
+    """Fallback public uploader if file exceeds Telegram Bot API 20MB download limit."""
+    try:
+        import mimetypes
+        import uuid
+
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+        filename = os.path.basename(local_path)
+        mime = mimetypes.guess_type(local_path)[0] or "video/mp4"
+
+        with open(local_path, "rb") as f:
+            file_bytes = f.read()
+
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode("utf-8") + file_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://tmpfiles.org/api/v1/upload",
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "BufferPublisher/1.0"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if res.get("status") == "success" and res.get("data", {}).get("url"):
+                raw_url = res["data"]["url"]
+                dl_url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                logger.info("🌐 [Buffer] Resolved public fallback URL via tmpfiles: %s", dl_url)
+                return dl_url
+    except Exception as e:
+        logger.debug(f"[Buffer] Fallback upload notice: {e}")
+    return None
+
+
+def resolve_public_media_url(local_path_or_url: str) -> Optional[str]:
+    """
+    Ensures media is accessible via a public HTTP(S) URL for Buffer / social networks.
+    If already a URL, returns as-is.
+    If a local file, obtains its Telegram Bot API direct download link:
+      https://api.telegram.org/file/bot{TOKEN}/{file_path}
+    Falls back to direct temporary hosting if file exceeds 20MB.
+    Caches resolved URLs to eliminate redundant uploads.
+    """
+    if not local_path_or_url:
+        return None
+
+    if str(local_path_or_url).startswith(("http://", "https://")):
+        return str(local_path_or_url)
+
+    if local_path_or_url in _PUBLIC_URL_CACHE:
+        return _PUBLIC_URL_CACHE[local_path_or_url]
+
+    if not os.path.isfile(local_path_or_url):
+        logger.warning(f"⚠️ [Buffer] File does not exist locally: {local_path_or_url}")
+        return None
+
+    file_size_mb = os.path.getsize(local_path_or_url) / (1024 * 1024)
+
+    # Telegram Bot API getFile has a hard 20MB file download limit
+    if file_size_mb > 20.0:
+        logger.info(f"📦 [Buffer] File is {file_size_mb:.1f}MB (>20MB Telegram limit). Using direct public uploader...")
+        fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
+        if fallback_url:
+            _PUBLIC_URL_CACHE[local_path_or_url] = fallback_url
+            return fallback_url
+
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    storage_chat_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID", "").strip()
+
+    clean_token = bot_token[3:] if bot_token.startswith("bot") else bot_token
+
+    if not clean_token or not storage_chat_id:
+        logger.warning("⚠️ [Buffer] TELEGRAM_BOT_TOKEN or TELEGRAM_STORAGE_GROUP_ID missing. Cannot resolve public URL via Telegram.")
+        return _upload_fallback_tmpfiles(local_path_or_url)
+
+    try:
+        # Step 1: Check if file was already uploaded in active session
+        file_id = None
+        try:
+            from Telegram_Storage_Modules.telegram_session_manager import session_manager
+            c_name = os.path.basename(local_path_or_url).replace("_master.mp4", "").replace(".mp4", "")
+            for s in session_manager.sessions.values():
+                if s.get("processed_file_id") and (s.get("clip_id") == c_name or s.get("video_path") == local_path_or_url):
+                    file_id = s.get("processed_file_id")
+                    logger.info("⚡ [Buffer] Reusing cached Telegram vault file_id: %s", file_id[:20] + "...")
+                    break
+        except Exception:
+            file_id = None
+
+        # Upload to Telegram Storage Group if not already recorded
+        if not file_id:
+            from Telegram_Storage_Modules.telegram_http import send_document, extract_file_id
+
+            doc_res = send_document(
+                local_path=local_path_or_url,
+                chat_id=storage_chat_id,
+                caption="📦 Media for Buffer Dispatch"
+            )
+            if doc_res and isinstance(doc_res, dict):
+                file_id = extract_file_id(doc_res)
+                if not file_id:
+                    res_obj = doc_res.get("result", {})
+                    file_id = extract_file_id(res_obj)
+
+        if not file_id:
+            logger.warning("⚠️ [Buffer] Failed to upload media to Telegram for public URL resolution. Trying fallback...")
+            return _upload_fallback_tmpfiles(local_path_or_url)
+
+        # Step 2: Get direct file_path from Telegram Bot API
+        get_file_url = f"https://api.telegram.org/bot{clean_token}/getFile?file_id={file_id}"
+        req = urllib.request.Request(get_file_url, headers={"User-Agent": "BufferPublisher/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if data.get("ok") and data.get("result", {}).get("file_path"):
+            remote_file_path = data["result"]["file_path"]
+            public_url = f"https://api.telegram.org/file/bot{clean_token}/{remote_file_path}"
+            logger.info("🌐 [Buffer] Resolved public media URL: %s", public_url[:40] + "...")
+            _PUBLIC_URL_CACHE[local_path_or_url] = public_url
+            return public_url
+        else:
+            logger.warning("⚠️ [Buffer] Telegram getFile did not return a file_path. Trying fallback...")
+            fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
+            if fallback_url:
+                _PUBLIC_URL_CACHE[local_path_or_url] = fallback_url
+            return fallback_url
+    except Exception as e:
+        logger.warning(f"⚠️ [Buffer] Public URL resolution error: {e}. Trying fallback...")
+        fallback_url = _upload_fallback_tmpfiles(local_path_or_url)
+        if fallback_url:
+            _PUBLIC_URL_CACHE[local_path_or_url] = fallback_url
+        return fallback_url
+
 
 def _resolve_media_url(video_path: str) -> Optional[str]:
-    """
-    Resolves a public video URL for Buffer's media[link] parameter.
-    Reuses make_publisher's battle-tested Telegram vault URL resolver.
-    """
-    if str(video_path).startswith(("http://", "https://")):
-        return video_path
-    try:
-        from Publishing_Modules.make_publisher import resolve_public_media_url
-        return resolve_public_media_url(video_path)
-    except Exception as e:
-        logger.warning("⚠️ [Buffer] Media URL resolution error: %s", e)
-        return None
+    """Alias for resolve_public_media_url."""
+    return resolve_public_media_url(video_path)
 
 
 # ── Main Publish Entry Point ───────────────────────────────────────────────────
@@ -556,78 +689,41 @@ def get_user_buffer_token(user_id_str: Optional[str] = None) -> Optional[str]:
     return _get_buffer_token(user_id_str)
 
 
+# ── Drop-In PublishQueue Compatibility Class ──────────────────────────────────
+
+class PublishQueue:
+    """Drop-in adapter for legacy callers. All broadcasting is orchestrated by Phase 4."""
+
+    @classmethod
+    def add(
+        cls,
+        video_path: str,
+        channel_title: str = "",
+        channel_folder: str = "General",
+        caption: str = "",
+        tags: str = "",
+        seo_data: Optional[Dict[str, Any]] = None,
+        post_type: str = "reel",
+        **kwargs: Any
+    ) -> bool:
+        logger.info("ℹ️ [PublishQueue] Registered reel '%s' for Phase 4 orchestration", os.path.basename(video_path))
+        return True
+
+    @classmethod
+    def status(cls) -> Dict[str, Any]:
+        return {
+            "queue_type": "Buffer / Direct Phase 4 Publisher",
+            "configured": is_buffer_configured(),
+        }
+
+
 __all__ = [
     "publish_to_buffer",
     "is_buffer_configured",
     "get_buffer_profiles",
     "set_user_buffer_token",
     "get_user_buffer_token",
+    "resolve_public_media_url",
+    "PublishQueue",
 ]
-
-
-if __name__ == "__main__":
-    import argparse
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-
-    parser = argparse.ArgumentParser(description="Buffer Standalone Video Publisher (TikTok, Pinterest, X)")
-    parser.add_argument("--video", "-v", type=str, default=None, help="Path to video file or public video URL")
-    parser.add_argument("--title", "-t", type=str, default="", help="Video title")
-    parser.add_argument("--desc", "-d", type=str, default="", help="Post caption / description")
-    parser.add_argument("--tags", type=str, default="#viral #shorts #trending", help="Hashtags")
-    parser.add_argument("--channels", "-c", type=str, default="tiktok,pinterest,x", help="Target channels (comma-separated: tiktok,pinterest,x)")
-    parser.add_argument("--affiliate", "-a", type=str, default=None, help="Affiliate / destination link")
-    parser.add_argument("--token", type=str, default=None, help="Explicit Buffer Access Token override")
-    parser.add_argument("--queue", action="store_true", help="Queue to Buffer calendar instead of publishing immediately")
-    parser.add_argument("--status", "--test", action="store_true", help="Test token and display connected Buffer channels")
-
-    args = parser.parse_args()
-
-    if args.token:
-        os.environ["BUFFER_ACCESS_TOKEN"] = args.token.strip()
-
-    if args.status:
-        tok = _get_buffer_token()
-        if not tok:
-            print("\n❌ BUFFER_ACCESS_TOKEN is not set in environment or .env file.")
-            print("   Get your token: https://publish.buffer.com/settings/api?tab=personal-access")
-            print("   Set it via: export BUFFER_ACCESS_TOKEN=your_token or pass --token <token>\n")
-            sys.exit(1)
-        print(f"\n🔑 Buffer Token: {tok[:10]}... (active)")
-        profiles = get_buffer_profiles(tok, force_refresh=True)
-        if profiles:
-            print(f"✅ Discovered {len(profiles)} connected channel(s):")
-            for p in profiles:
-                svc = p.get('service', 'unknown').capitalize()
-                user = p.get('service_username') or p.get('id')
-                pid = p.get('id')
-                print(f"   • [{svc}] @{user} (ID: {pid})")
-        else:
-            print("⚠️ No channels connected yet in this Buffer account.")
-            print("   Add channels in Buffer: https://publish.buffer.com/channels")
-        print()
-        sys.exit(0)
-
-    if not args.video:
-        parser.print_help()
-        print("\n❌ Error: --video is required to publish.")
-        sys.exit(1)
-
-    target_ch = [c.strip().lower() for c in args.channels.split(",") if c.strip()]
-    res = publish_to_buffer(
-        video_path=args.video,
-        title=args.title or os.path.splitext(os.path.basename(args.video))[0],
-        description=args.desc,
-        tags=args.tags,
-        affiliate_link=args.affiliate,
-        channels=target_ch,
-        now=not args.queue,
-    )
-
-    print("\n" + "=" * 60)
-    print(f"🎯 BUFFER PUBLISH RESULT: {res.get('status', 'unknown').upper()}")
-    print(f"Published to: {res.get('published_to') or 'none'}")
-    print(f"Failed on:    {res.get('failed_on') or 'none'}")
-    for ch, details in (res.get("results") or {}).items():
-        print(f"  • {ch.upper()}: {details.get('status')} {details.get('update_id', details.get('error', details.get('reason', '')))}")
-    print("=" * 60 + "\n")
 

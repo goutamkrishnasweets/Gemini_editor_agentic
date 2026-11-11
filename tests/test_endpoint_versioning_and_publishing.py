@@ -179,8 +179,8 @@ class TestEndpointVersioning(unittest.TestCase):
 
     def test_waterfall_primary_success(self):
         import Publishing_Modules.media_publisher_main as mpm
-        with patch.object(mpm, "is_make_configured", return_value=True), \
-             patch.object(mpm, "publish_to_make", return_value={"status": "success", "media_url": "https://example.com/v.mp4"}), \
+        with patch.object(mpm, "is_buffer_configured", return_value=True), \
+             patch.object(mpm, "publish_to_buffer", return_value={"status": "success", "results": {"tiktok": {"status": "success"}}}), \
              patch.object(mpm, "publish_to_youtube", new_callable=AsyncMock) as mock_yt, \
              patch.object(mpm, "publish_to_meta", new_callable=AsyncMock) as mock_meta, \
              patch.object(mpm, "publish_to_telegram", new_callable=AsyncMock) as mock_tg:
@@ -190,14 +190,13 @@ class TestEndpointVersioning(unittest.TestCase):
             mock_tg.return_value = {"status": "success"}
             res = _run_coro(mpm.run_phase4_publishing_async(video_path=__file__, title="Test Title"))
             self.assertTrue(res["success"])
-            self.assertEqual(res["platforms"]["make"]["status"], "success")
+            self.assertEqual(res["platforms"]["buffer_tiktok"]["status"], "success")
             mock_yt.assert_called_once()
             mock_meta.assert_called_once()
 
     def test_waterfall_failover_to_local(self):
         import Publishing_Modules.media_publisher_main as mpm
-        with patch.object(mpm, "is_make_configured", return_value=True), \
-             patch.object(mpm, "publish_to_make", return_value={"status": "failed", "error": "HTTP 410 Gone"}), \
+        with patch.object(mpm, "is_buffer_configured", return_value=False), \
              patch.object(mpm, "publish_to_youtube", new_callable=AsyncMock) as mock_yt, \
              patch.object(mpm, "publish_to_meta", new_callable=AsyncMock) as mock_meta, \
              patch.object(mpm, "publish_to_telegram", new_callable=AsyncMock) as mock_tg:
@@ -208,7 +207,7 @@ class TestEndpointVersioning(unittest.TestCase):
 
             res = _run_coro(mpm.run_phase4_publishing_async(video_path=__file__, title="Test Title"))
             self.assertTrue(res["success"])
-            self.assertEqual(res["platforms"]["make"]["status"], "skipped")
+            self.assertEqual(res["platforms"]["buffer"]["status"], "skipped")
             mock_yt.assert_called_once()
             mock_meta.assert_called_once()
 
