@@ -63,6 +63,40 @@ class StaticPatchReuseEngine:
             logger.debug(f"[StaticPatchReuseEngine] check_pixel_motion fallback: {e}")
             return True
 
+    @classmethod
+    def analyze_stability(
+        cls,
+        video_path: str,
+        mask_paths: Optional[Any] = None,
+        motion_hint: Optional[str] = None,
+        video_duration: float = 0.0
+    ) -> str:
+        """
+        Determines whether the watermark region is static, rigid_motion, or dynamic.
+        Returns 'dynamic' by default unless background pixel motion is verified stationary.
+        """
+        if motion_hint in ("static", "rigid_motion", "dynamic"):
+            return motion_hint
+        try:
+            is_moving = cls.check_pixel_motion(video_path)
+            return "dynamic" if is_moving else "static"
+        except Exception as e:
+            logger.debug(f"[StaticPatchReuseEngine] analyze_stability fallback: {e}")
+            return "dynamic"
+
+    @classmethod
+    def apply_patch(
+        cls,
+        video_path: str,
+        mask_paths: Any,
+        output_path: str,
+        mode: str = "static"
+    ) -> bool:
+        """
+        Applies static patch acceleration if possible; returns False to fall back to dynamic inpaint.
+        """
+        return False
+
 
 __all__ = ["StaticPatchReuseEngine"]
 

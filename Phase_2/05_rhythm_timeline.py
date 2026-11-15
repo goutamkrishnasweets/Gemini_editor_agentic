@@ -23,6 +23,19 @@ except ImportError:
     from rhythm_timeline_builder import RhythmTimelineBuilder
 
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, dict):
+        for k in ("time", "start", "timestamp", "offset", "value", "score", "tension"):
+            if k in val:
+                return _safe_float(val[k], default)
+    try:
+        return float(val)
+    except Exception:
+        return default
+
+
 def _calculate_optimal_audio_window(
     lyric_intel: Dict[str, Any],
     bgm_duration: float,
@@ -42,15 +55,24 @@ def _calculate_optimal_audio_window(
     # 1. Check sections for chorus, hook, or drop
     sections = lyric_intel.get("sections") or []
     for sec in sections:
+        if not isinstance(sec, dict):
+            continue
         sec_type = str(sec.get("type", "")).lower()
-        sec_start = float(sec.get("start", 0.0))
+        sec_start = _safe_float(sec.get("start", 0.0), default=0.0)
         if any(kw in sec_type for kw in ("chorus", "hook", "drop")) and sec_start <= max_offset:
             logger.info(f"🎵 [GOLDEN WINDOW] Selected section '{sec_type}' start at {sec_start:.2f}s")
             return round(sec_start, 2)
 
     # 2. Check beat drops / emotional peak moments
     drops = lyric_intel.get("drops") or lyric_intel.get("emotional_peak_moments") or []
-    valid_drops = [float(d) for d in drops if float(d) <= bgm_duration]
+    valid_drops = []
+    for d in drops:
+        try:
+            d_val = _safe_float(d, default=-1.0)
+            if 0.0 <= d_val <= bgm_duration:
+                valid_drops.append(d_val)
+        except Exception:
+            pass
     if valid_drops:
         # If there is a drop that can land inside our window (e.g. 2.0s to 3.0s build-up before drop)
         for d in valid_drops:
@@ -69,7 +91,13 @@ def _calculate_optimal_audio_window(
         curr = 0.0
         while curr <= max_offset:
             window_end = curr + target_duration
-            pts = [p.get("tension", 0.5) for p in tension_arc if curr <= p.get("time", 0.0) <= window_end]
+            pts = []
+            for p in tension_arc:
+                if not isinstance(p, dict):
+                    continue
+                t_val = _safe_float(p.get("time", p.get("start", p.get("timestamp", -1.0))), default=-1.0)
+                if curr <= t_val <= window_end:
+                    pts.append(_safe_float(p.get("tension", 0.5), default=0.5))
             avg_score = sum(pts) / len(pts) if pts else 0.0
             if avg_score > best_score:
                 best_score = avg_score

@@ -600,7 +600,7 @@ def inpaint_video(video_path, mask_paths, output_path, original_height: int = 10
     except: pass
 
     # 🟢 STATIC / RIGID ACCELERATION GATE 🟢
-    if StaticPatchReuseEngine and mask_paths:
+    if StaticPatchReuseEngine and hasattr(StaticPatchReuseEngine, "analyze_stability") and hasattr(StaticPatchReuseEngine, "apply_patch") and mask_paths:
         # Determine Mode: check passed hint
         mode = "static" # default check
         

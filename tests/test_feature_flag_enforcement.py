@@ -103,6 +103,10 @@ def test_feature_flags_enabled():
     assert new_plan.get("voiceover") == "/tmp/fake_vo.mp3"
     assert extra_inputs.get("voiceover") == "/tmp/fake_vo.mp3"
 
+    # 5. Must strictly satisfy GEMINI_FFMPEG_SCHEMA
+    engine = GeminiFFmpegEngine()
+    assert engine.validate_schema(new_plan), "Auto-added gentle zoom must pass GEMINI_FFMPEG_SCHEMA validation"
+
 
 def test_feature_flags_missing_leaves_plan_unchanged():
     fake_plan = {

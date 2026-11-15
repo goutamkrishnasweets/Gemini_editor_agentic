@@ -1543,7 +1543,8 @@ GEMINI_FFMPEG_SCHEMA = {
                     "duration": {"type": "number", "minimum": 0.0},
                     "target_width": {"type": "integer", "minimum": 1},
                     "target_height": {"type": "integer", "minimum": 1},
-                    "mode": {"type": "string", "enum": ["crop", "pad", "blur_pad", "stretch", "crop_cover", "cover", "crop_fill", "fill"]},
+                    "mode": {"type": "string", "enum": ["crop", "pad", "blur_pad", "stretch", "crop_cover", "cover", "crop_fill", "fill", "zoom_in", "zoom_out", "gentle", "slow", "fast", "dynamic"]},
+                    "zoom_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     "speed_factor": {"type": "number", "exclusiveMinimum": 0.0},
                     "x": {"type": "integer", "minimum": 0},
                     "y": {"type": "integer", "minimum": 0},
@@ -2494,6 +2495,15 @@ class GeminiFFmpegEngine:
                             op["mode"] = "blur_pad"
                         elif mode_str in ("fit", "padding"):
                             op["mode"] = "pad"
+                        elif mode_str in ("push_in", "pushin", "in"):
+                            op["mode"] = "zoom_in"
+                        elif mode_str in ("pull_out", "pullout", "out"):
+                            op["mode"] = "zoom_out"
+                        elif mode_str not in ("crop", "pad", "blur_pad", "stretch", "crop_cover", "cover", "crop_fill", "fill", "zoom_in", "zoom_out", "gentle", "slow", "fast", "dynamic"):
+                            if norm_type in ("cinematic_zoom", "zoom_in", "zoom_out", "zoom", "zoompan"):
+                                op["mode"] = "gentle"
+                            else:
+                                op["mode"] = "crop"
 
                     if op.get("operation_type") in valid_ops:
                         clean_ops.append(op)
