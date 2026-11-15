@@ -647,9 +647,9 @@ class FFmpegCommandGenerator:
 
         # Gentle push-in (zoom_in / cinematic_zoom) vs pull-out (zoom_out)
         if mode == "zoom_out":
-            scale_expr = f"(1+{rate:.4f}*(1-t/{dur:.4f}))"
+            scale_expr = f"(1+{rate:.4f}*(1-min(t/{dur:.4f},1)))"
         else:
-            scale_expr = f"(1+{rate:.4f}*t/{dur:.4f})"
+            scale_expr = f"(1+{rate:.4f}*min(t/{dur:.4f},1))"
 
         filter_str = (
             f"scale=w='{target_width}*{scale_expr}':h='{target_height}*{scale_expr}':eval=frame,"
@@ -1640,7 +1640,6 @@ def enforce_feature_flags(
             gentle_zoom = {
                 "operation_type": "cinematic_zoom",
                 "start_time": 0.0,
-                "duration": 3.0,
                 "mode": "gentle"
             }
             ops.append(gentle_zoom)

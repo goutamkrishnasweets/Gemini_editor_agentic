@@ -90,7 +90,9 @@ def test_feature_flags_enabled():
     assert "speed_ramp" in op_types
 
     # 2. enable_cinematic_zoom == True and plan has none -> add one gentle zoom op
-    assert any("zoom" in t.lower() for t in op_types)
+    zoom_op = next(op for op in new_plan["operations"] if "zoom" in op["operation_type"].lower())
+    assert zoom_op is not None
+    assert "duration" not in zoom_op
 
     # 3. enable_fast_pacing == True -> cap multi_trim shot length at 2.5s max
     multi_trim_op = next(op for op in new_plan["operations"] if op["operation_type"] == "multi_trim")
@@ -200,3 +202,95 @@ def test_real_cinematic_zoom_render(tmp_path):
     diff = np.abs(img0 - img1)
     # Assert frames differ consistent with 8% zoom over 3s
     assert diff.mean() > 0.0, "First and last frames are identical: zoom did not affect render"
+
+
+def test_real_cinematic_zoom_12s_clamped_and_unclamped(tmp_path):
+    in_clip = str(tmp_path / "synthetic_12s.mp4")
+    out_clip_clamped = str(tmp_path / "zoomed_12s_clamped.mp4")
+    out_clip_full = str(tmp_path / "zoomed_12s_full.mp4")
+
+    # 1. Render 12s synthetic clip with ffmpeg testsrc
+    p_in = subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc=duration=12:size=1080x1920:rate=30",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        in_clip
+    ], capture_output=True, text=True)
+    assert p_in.returncode == 0, f"ffmpeg testsrc failed: {p_in.stderr}"
+
+    engine = GeminiFFmpegEngine()
+
+    # Case A: duration=3.0 (zoom must hold at 1.08x after 3s)
+    plan_a = {
+        "editing_intent": "Test cinematic zoom duration clamp at 3s",
+        "operations": [
+            {
+                "operation_type": "cinematic_zoom",
+                "duration": 3.0,
+                "zoom_rate": 0.08,
+                "target_width": 1080,
+                "target_height": 1920,
+                "mode": "zoom_in"
+            }
+        ]
+    }
+    res_a = engine.execute_pipeline(
+        gemini_json=plan_a,
+        input_path=in_clip,
+        output_path=out_clip_clamped,
+        extra_inputs={"force_multipass": True}
+    )
+    assert os.path.exists(out_clip_clamped)
+    assert res_a.get("status") in ("SUCCESS", None)
+
+    # Case B: without duration (zoom spans the full 12s clip)
+    plan_b = {
+        "editing_intent": "Test cinematic zoom spanning full clip without duration",
+        "operations": [
+            {
+                "operation_type": "cinematic_zoom",
+                "zoom_rate": 0.08,
+                "target_width": 1080,
+                "target_height": 1920,
+                "mode": "zoom_in"
+            }
+        ]
+    }
+    res_b = engine.execute_pipeline(
+        gemini_json=plan_b,
+        input_path=in_clip,
+        output_path=out_clip_full,
+        extra_inputs={"force_multipass": True}
+    )
+    assert os.path.exists(out_clip_full)
+    assert res_b.get("status") in ("SUCCESS", None)
+
+    # Extract frames at t=10.0s and t=11.5s for both videos (last 2 seconds)
+    f_a_10 = str(tmp_path / "clamped_10s.png")
+    f_a_11 = str(tmp_path / "clamped_11s.png")
+    f_b_10 = str(tmp_path / "full_10s.png")
+    f_b_11 = str(tmp_path / "full_11s.png")
+
+    for t_sec, fpath in [("10.0", f_a_10), ("11.5", f_a_11)]:
+        p = subprocess.run(["ffmpeg", "-y", "-ss", t_sec, "-i", out_clip_clamped, "-frames:v", "1", fpath], capture_output=True)
+        assert p.returncode == 0
+
+    for t_sec, fpath in [("10.0", f_b_10), ("11.5", f_b_11)]:
+        p = subprocess.run(["ffmpeg", "-y", "-ss", t_sec, "-i", out_clip_full, "-frames:v", "1", fpath], capture_output=True)
+        assert p.returncode == 0
+
+    img_a_10 = np.array(Image.open(f_a_10)).astype(np.float32)
+    img_a_11 = np.array(Image.open(f_a_11)).astype(np.float32)
+    img_b_10 = np.array(Image.open(f_b_10)).astype(np.float32)
+    img_b_11 = np.array(Image.open(f_b_11)).astype(np.float32)
+
+    # In testsrc, the top 300 rows contain static color bars
+    diff_a = np.abs(img_a_10[:300, :] - img_a_11[:300, :]).mean()
+    diff_b = np.abs(img_b_10[:300, :] - img_b_11[:300, :]).mean()
+
+    # Case A: zoom capped at 3s -> last 2 seconds are identical in scale (diff == 0.0)
+    assert diff_a < 0.01, f"Clamped zoom continued zooming after 3s: diff={diff_a}"
+
+    # Case B: zoom spans full clip -> last 2 seconds continue zooming (diff > 1.0)
+    assert diff_b > 1.0, f"Full clip zoom stopped prematurely: diff={diff_b}"
+
