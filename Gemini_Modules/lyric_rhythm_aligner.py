@@ -1820,11 +1820,9 @@ Return ONLY valid JSON:
     try:
         try:
             from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
-        except Exception:
-            try:
-                from Intelligence_Modules.gemini_governor import gemini_router
-            except Exception:
-                from gemini_governor import gemini_router
+        except Exception as _r_err:
+            logger.error("Failed to import gemini_router from Gemini_Modules.gemini_router_module.gemini_governor: %s", _r_err)
+            gemini_router = None
 
         if gemini_router:
             logger.info("🎶 [BGM Selector] Querying Gemini Router across model vanguard...")

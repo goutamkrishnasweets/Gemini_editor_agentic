@@ -302,7 +302,7 @@ async def run_phase4_publishing_async(
     Asynchronous master multi-platform publishing orchestrator:
       1. YouTube Shorts (via uploader.py)
       2. Meta Instagram Reels & Facebook (via meta_uploader.py)
-      3. Make.com Webhook Pipeline (if MAKE_WEBHOOK_URL is set)
+      3. Buffer Multi-Channel (TikTok, Pinterest, X via buffer_publisher.py)
       4. Telegram Channel / Group (via Bot API)
     """
     logger.info("==================================================================")

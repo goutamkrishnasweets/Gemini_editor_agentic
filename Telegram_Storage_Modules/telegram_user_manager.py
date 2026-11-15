@@ -73,9 +73,6 @@ def load_all_users() -> Dict[str, Dict]:
                 elif suffix in ("tiktok_access_token", "tiktok_token"):
                     if not u_rec.get("tiktok_access_token"):
                         u_rec["tiktok_access_token"] = val
-                elif suffix in ("make_webhook_url", "webhook_url"):
-                    if not u_rec.get("make_webhook_url"):
-                        u_rec["make_webhook_url"] = val
                 elif suffix in ("client_secret_json", "youtube_client_secret"):
                     if not u_rec.get("youtube_client_secret"):
                         u_rec["youtube_client_secret"] = val
@@ -908,43 +905,6 @@ def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
         return True
     return False
 
-
-def set_user_make_webhook_url(user_id_str: str, webhook_url: str) -> bool:
-    """Saves user Make.com Webhook URL and syncs to MAKE_WEBHOOK_URL in GitHub Secrets."""
-    users = load_all_users()
-    user_id_str = str(user_id_str).strip()
-    clean_url = webhook_url.strip().strip("`'\"")
-    if clean_url and clean_url.startswith(("http://", "https://")):
-        u_rec = users.setdefault(user_id_str, {})
-        u_rec["make_webhook_url"] = clean_url
-        save_all_users(users)
-        if _is_admin_user(user_id_str):
-            os.environ["MAKE_WEBHOOK_URL"] = clean_url
-            _persist_env_var_to_disk("MAKE_WEBHOOK_URL", clean_url)
-        else:
-            os.environ[f"USER_{user_id_str}_MAKE_WEBHOOK_URL"] = clean_url
-        sync_user_secret_to_github(user_id_str, "MAKE_WEBHOOK_URL", clean_url)
-        logger.info("🌐 [TELEGRAM USER MANAGER] Make.com Webhook URL saved for User ID %s", user_id_str)
-        return True
-    return False
-
-
-def get_user_make_webhook_url(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
-    """Returns user personal Make.com Webhook URL if present. Non-admins NEVER inherit admin webhook."""
-    if not user_id_str:
-        return os.getenv("MAKE_WEBHOOK_URL", "").strip() or None
-    users = load_all_users()
-    user_id_str = str(user_id_str).strip()
-    if user_id_str in users:
-        val = users[user_id_str].get("make_webhook_url", "").strip()
-        if val:
-            return val
-    env_val = os.getenv(f"USER_{user_id_str}_MAKE_WEBHOOK_URL", "").strip()
-    if env_val:
-        return env_val
-    if _is_admin_user(user_id_str):
-        return os.getenv("MAKE_WEBHOOK_URL", "").strip() or None
-    return None
 
 
 def set_user_buffer_token(user_id_str: str, buffer_token: str) -> bool:

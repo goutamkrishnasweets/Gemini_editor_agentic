@@ -83,16 +83,9 @@ _HAS_ROUTER = False
 try:
     from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
     _HAS_ROUTER = True
-except ImportError:
-    try:
-        from Intelligence_Modules.gemini_governor import gemini_router
-        _HAS_ROUTER = True
-    except ImportError:
-        try:
-            from gemini_governor import gemini_router
-            _HAS_ROUTER = True
-        except ImportError:
-            gemini_router = None
+except ImportError as _r_err:
+    logger.error("Failed to import gemini_router from Gemini_Modules.gemini_router_module.gemini_governor: %s", _r_err)
+    gemini_router = None
 
 _CACHED_FONT_PATH: Optional[str] = None
 
@@ -1459,7 +1452,8 @@ GEMINI_FFMPEG_SCHEMA = {
                         "type": "string",
                         "enum": ["trim", "scale_aspect", "speed_change", "speed_ramp", "watermark_overlay",
                                  "delogo_blur", "audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix", "subtitle_burnin", "concat", "transition", "xfade",
-                                 "speed", "slowmo", "delogo", "crop", "drawtext", "brand_watermark", "text_watermark"]
+                                 "speed", "slowmo", "delogo", "crop", "drawtext", "brand_watermark", "text_watermark",
+                                 "cinematic_zoom", "zoom_in", "zoom_out", "zoom", "zoompan", "multi_trim"]
                     },
                     "gap_index": {"type": "integer", "minimum": 0},
                     "from_shot_index": {"type": "integer", "minimum": 0},
@@ -1510,6 +1504,162 @@ GEMINI_FFMPEG_SCHEMA = {
     },
     "required": ["editing_intent", "operations"]
 }
+
+
+def enforce_feature_flags(
+    plan: Dict[str, Any],
+    flags: Optional[Dict[str, Any]] = None,
+    extra_inputs: Optional[Dict[str, Any]] = None
+) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Enforce forensic feature flags deterministically on the editing plan before execution.
+
+    - enable_speed_ramps == False  -> remove all speed_ramp operations
+    - enable_cinematic_zoom == False -> remove zoom/zoompan operations
+    - enable_cinematic_zoom == True and the plan has none -> add one gentle zoom op
+    - enable_fast_pacing == True  -> cap multi_trim shot length at 2.5s max
+    - enable_fast_pacing == False -> floor multi_trim shot length at 2.0s
+    - enable_voiceover == False   -> remove the TTS/voiceover audio input
+    Missing flags = leave the plan unchanged.
+    """
+    if not isinstance(plan, dict):
+        return plan, []
+
+    # Unpack flags if wrapped inside forensic_context
+    if isinstance(flags, dict):
+        if "feature_flags" in flags and isinstance(flags["feature_flags"], dict):
+            flags = flags["feature_flags"]
+        elif "content_strategy" in flags and isinstance(flags["content_strategy"], dict) and "feature_flags" in flags["content_strategy"]:
+            flags = flags["content_strategy"]["feature_flags"]
+    else:
+        flags = {}
+
+    changes: List[str] = []
+    ops = plan.get("operations", [])
+    if not isinstance(ops, list):
+        ops = []
+        plan["operations"] = ops
+
+    # 1. enable_speed_ramps == False -> remove all speed_ramp operations
+    if flags.get("enable_speed_ramps") is False:
+        initial_len = len(ops)
+        ops = [op for op in ops if op.get("operation_type") != "speed_ramp"]
+        removed = initial_len - len(ops)
+        if removed > 0:
+            changes.append(f"enable_speed_ramps=False -> removed {removed} speed_ramp operation(s)")
+        plan["operations"] = ops
+
+    # 2. enable_cinematic_zoom == False -> remove zoom/zoompan operations
+    ZOOM_TYPES = {"cinematic_zoom", "zoom_in", "zoom_out", "zoom", "zoompan"}
+    if flags.get("enable_cinematic_zoom") is False:
+        initial_len = len(ops)
+        ops = [
+            op for op in ops
+            if op.get("operation_type") not in ZOOM_TYPES
+            and "zoom" not in str(op.get("operation_type", "")).lower()
+        ]
+        removed = initial_len - len(ops)
+        if removed > 0:
+            changes.append(f"enable_cinematic_zoom=False -> removed {removed} zoom/zoompan operation(s)")
+        plan["operations"] = ops
+
+    # 3. enable_cinematic_zoom == True and the plan has none -> add one gentle zoom op
+    elif flags.get("enable_cinematic_zoom") is True:
+        has_zoom = any(
+            op.get("operation_type") in ZOOM_TYPES
+            or "zoom" in str(op.get("operation_type", "")).lower()
+            for op in ops
+        )
+        if not has_zoom:
+            gentle_zoom = {
+                "operation_type": "cinematic_zoom",
+                "start_time": 0.0,
+                "duration": 3.0,
+                "mode": "gentle"
+            }
+            ops.append(gentle_zoom)
+            changes.append("enable_cinematic_zoom=True -> added gentle zoom operation")
+            plan["operations"] = ops
+
+    # 4 & 5. enable_fast_pacing: True -> cap multi_trim at 2.5s; False -> floor at 2.0s
+    fast_pacing = flags.get("enable_fast_pacing")
+    if fast_pacing is not None:
+        pacing_adjusted = 0
+        for op in ops:
+            if op.get("operation_type") == "multi_trim":
+                trims = op.get("trims") or op.get("shots") or []
+                for t in trims:
+                    if not isinstance(t, dict):
+                        continue
+                    st = float(t.get("start_time", t.get("start", 0.0)) or 0.0)
+                    et = t.get("end_time") if t.get("end_time") is not None else t.get("end")
+                    dur = t.get("duration")
+
+                    if et is not None:
+                        current_len = float(et) - st
+                        if fast_pacing is True and current_len > 2.5:
+                            new_et = round(st + 2.5, 3)
+                            t["end_time"] = new_et
+                            if "end" in t:
+                                t["end"] = new_et
+                            if "duration" in t:
+                                t["duration"] = 2.5
+                            pacing_adjusted += 1
+                        elif fast_pacing is False and current_len < 2.0:
+                            new_et = round(st + 2.0, 3)
+                            t["end_time"] = new_et
+                            if "end" in t:
+                                t["end"] = new_et
+                            if "duration" in t:
+                                t["duration"] = 2.0
+                            pacing_adjusted += 1
+                    elif dur is not None:
+                        current_dur = float(dur)
+                        if fast_pacing is True and current_dur > 2.5:
+                            t["duration"] = 2.5
+                            if "end_time" in t:
+                                t["end_time"] = round(st + 2.5, 3)
+                            pacing_adjusted += 1
+                        elif fast_pacing is False and current_dur < 2.0:
+                            t["duration"] = 2.0
+                            if "end_time" in t:
+                                t["end_time"] = round(st + 2.0, 3)
+                            pacing_adjusted += 1
+
+        if pacing_adjusted > 0:
+            if fast_pacing is True:
+                changes.append(f"enable_fast_pacing=True -> capped multi_trim shot length at 2.5s max ({pacing_adjusted} shot(s) adjusted)")
+            else:
+                changes.append(f"enable_fast_pacing=False -> floored multi_trim shot length at 2.0s min ({pacing_adjusted} shot(s) adjusted)")
+
+    # 6. enable_voiceover == False -> remove the TTS/voiceover audio input
+    if flags.get("enable_voiceover") is False:
+        vo_removed = False
+        for key in ("voiceover", "voiceover_path", "tts", "tts_path", "voiceover_input"):
+            if key in plan:
+                plan.pop(key, None)
+                vo_removed = True
+
+        if extra_inputs is not None and isinstance(extra_inputs, dict):
+            for key in ("voiceover", "voiceover_path", "tts"):
+                if key in extra_inputs:
+                    extra_inputs.pop(key, None)
+                    vo_removed = True
+            extra_inputs["enable_voiceover"] = False
+
+        for op in ops:
+            if "voiceover_input" in op:
+                op.pop("voiceover_input", None)
+                vo_removed = True
+            if op.get("operation_type") == "audio_ducking_mix":
+                op["operation_type"] = "bgm_mix"
+                vo_removed = True
+
+        if vo_removed:
+            changes.append("enable_voiceover=False -> removed voiceover audio input")
+
+    return plan, changes
+
 
 # =====================================================================
 # 4. MULTI-PASS REFINEMENT LOOP
@@ -1701,6 +1851,14 @@ class GeminiFFmpegEngine:
         self.cmd_generator = FFmpegCommandGenerator()
         self.context_extractor = VideoContextExtractor(sample_fps=1.0, target_width=720, api_key=self.api_key)
         self.refinement_loop = RefinementLoop(self)
+
+    def enforce_feature_flags(
+        self,
+        plan: Dict[str, Any],
+        flags: Optional[Dict[str, Any]] = None,
+        extra_inputs: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        return enforce_feature_flags(plan, flags, extra_inputs=extra_inputs)
 
     def fetch_rag_reference_examples(self, query: str, profile: Optional[Dict] = None) -> List[Dict]:
         if not _HAS_RAG:
@@ -2074,7 +2232,8 @@ class GeminiFFmpegEngine:
             return gemini_json
 
         valid_ops = {"trim", "scale_aspect", "speed_change", "speed_ramp", "watermark_overlay", "drawtext", "brand_watermark", "text_watermark",
-                     "delogo_blur", "audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix", "subtitle_burnin", "concat", "transition", "xfade"}
+                     "delogo_blur", "audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix", "subtitle_burnin", "concat", "transition", "xfade",
+                     "cinematic_zoom", "zoom_in", "zoom_out", "zoom", "zoompan", "multi_trim"}
 
         v_dur = self.cmd_generator._get_media_duration(input_path) if input_path and os.path.exists(input_path) else 0.0
         bgm_cand = (extra_inputs or {}).get("music") or (extra_inputs or {}).get("bgm")
@@ -2586,6 +2745,21 @@ class GeminiFFmpegEngine:
                 "global_encoding": {"codec": "libx264", "preset": "veryfast", "crf": 18}
             }
 
+        # ── Forensic Feature Flag Enforcement ────────────────────────────────
+        flags = {}
+        if isinstance(forensic_context, dict):
+            flags = (
+                forensic_context.get("feature_flags")
+                or forensic_context.get("content_strategy", {}).get("feature_flags")
+                or forensic_context
+            )
+        gemini_plan_json, flag_changes = enforce_feature_flags(gemini_plan_json, flags, extra_inputs=extra_inputs)
+        for chg in flag_changes:
+            logger.info(f"FLAG ENFORCED: {chg}")
+
+        if flags.get("enable_voiceover") is False:
+            voiceover_path = None
+
         # 3. Synthesize & Score Plan with Best-of-N Candidate Tracking & Up to 3 Retries
         extra_inputs = extra_inputs or {}
         if audio_path and os.path.exists(audio_path):
@@ -2641,6 +2815,8 @@ class GeminiFFmpegEngine:
                 user_explicitly_requested_narration = True
 
         _should_narrate = user_explicitly_requested_narration
+        if flags.get("enable_voiceover") is False:
+            _should_narrate = False
 
         if _should_narrate and "voiceover" not in extra_inputs:
             # First priority: extract spoken text from creative_script segments

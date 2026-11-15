@@ -37,6 +37,12 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FALLBACK_25 = "gemini-2.5-flash"
 GEMINI_FALLBACK_LITE = "gemini-2.5-flash-lite"
 
+NICHE_LIST = [
+    "fashion_lifestyle", "fitness_action", "tech_review", "educational_explainer",
+    "food_cooking", "travel_nature", "meme_viral", "talking_head", "music_performance",
+    "General_Fallback"
+]
+
 def frame_to_pil(frame: np.ndarray):
     try:
         h, w = frame.shape[:2]

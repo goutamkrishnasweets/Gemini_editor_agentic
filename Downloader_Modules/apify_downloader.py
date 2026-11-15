@@ -23,7 +23,7 @@ import io
 import json
 import logging
 import time
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 # Only real Instagram post/reel/story URLs are valid Apify inputs.
 # CDN URLs (scontent-*.cdninstagram.com) must NEVER be sent to Apify.
@@ -389,10 +389,11 @@ def gemini_reel_prescreen(item: Dict, creator_name: str) -> tuple:
 
     # ── Gemini Vision call ────────────────────────────────────────────────────
     try:
-        from Intelligence_Modules.gemini_governor import gemini_router
+        from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
         if not gemini_router:
             return True, {**_default_approve[1], "_source": "no_gemini_router"}
-    except ImportError:
+    except ImportError as _g_err:
+        logger.warning(f"Prescreen Gemini router import failed: {_g_err}")
         return True, {**_default_approve[1], "_source": "import_failed"}
 
     prompt = f"""You are a reel quality inspector for a social media automation system.
@@ -635,6 +636,27 @@ def apify_get_video_url_any(url: str, actor_name: Optional[str] = None) -> Optio
         return None
 
 
+def download_reel_apify(url: str, dest_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Downloads an Instagram reel by resolving its direct CDN video URL via Apify.
+    Returns a dict with 'video_path' on success, or None on failure.
+    """
+    cdn_url = apify_get_video_url(url) or apify_get_video_url_any(url)
+    if not cdn_url:
+        return None
+    dest_dir = dest_dir or tempfile.gettempdir()
+    os.makedirs(dest_dir, exist_ok=True)
+    out_file = os.path.join(dest_dir, f"apify_{int(time.time())}.mp4")
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(cdn_url, out_file)
+        if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
+            return {"video_path": out_file}
+    except Exception as e:
+        logger.error(f"[download_reel_apify] Failed to stream from CDN: {e}")
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Track B — Account Mode (Auto-Discovery)
 # Called by content_scheduler.py for daily automated scraping
@@ -851,10 +873,7 @@ def apify_scrape_creator_accounts(
         stage05_passed = []
         stage05_rejected = 0
         try:
-            try:
-                from Content_Scraper_Modules.content_ledger import get_ledger
-            except ImportError:
-                from Downloader_Modules.Content_Scraper_Modules.content_ledger import get_ledger
+            from Content_Scraper_Modules.content_ledger import get_ledger
             from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
             ledger = get_ledger()
             vault = TelegramVaultIndexer()
@@ -955,10 +974,7 @@ def apify_scrape_creator_accounts(
 
             # Layer avoid list check: also filter out using military-grade content_ledger.json
             try:
-                try:
-                    from Content_Scraper_Modules.content_ledger import get_ledger
-                except ImportError:
-                    from Downloader_Modules.Content_Scraper_Modules.content_ledger import get_ledger
+                from Content_Scraper_Modules.content_ledger import get_ledger
                 _ledger = get_ledger()
                 normalised = [item for item in normalised if not _ledger.is_in_avoid_list(item.get("shortcode"))]
             except Exception as _le:

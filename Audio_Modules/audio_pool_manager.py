@@ -2095,6 +2095,8 @@ def get_pool_manager(base_dir: Optional[str] = None) -> AudioPoolManager:
                 _global_pool_manager = AudioPoolManager(base_dir=base_dir)
     return _global_pool_manager
 
+pool_manager = get_pool_manager
+
 def __getattr__(name: str):
     if name == "pool_manager":
         return get_pool_manager()

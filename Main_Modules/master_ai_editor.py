@@ -443,7 +443,22 @@ class MasterAIEditor:
                 if v_dur > 6.0:
                     self.rhythm_timeline_builder.min_duration = 2.0
                     self.rhythm_timeline_builder.max_duration = 3.5
-                    raw_scenes = [{"clip_id": 0, "start": 0.0, "end": v_dur, "score": 0.85}]
+                    timeline_scenes = forensic_context.get("timeline") or []
+                    if timeline_scenes and isinstance(timeline_scenes, list):
+                        raw_scenes = [
+                            {
+                                "clip_id": idx,
+                                "start": float(sc.get("start", 0.0)),
+                                "end": float(sc.get("end", v_dur)),
+                                "score": float(sc.get("importance", 0.85) / 5.0) if "importance" in sc else 0.85,
+                                "scene_label": sc.get("scene_label", f"scene_{idx}"),
+                                "shot_type": sc.get("shot_type", "medium"),
+                            }
+                            for idx, sc in enumerate(timeline_scenes)
+                            if float(sc.get("end", 0.0)) > float(sc.get("start", 0.0))
+                        ]
+                    else:
+                        raw_scenes = [{"clip_id": 0, "start": 0.0, "end": v_dur, "score": 0.85}]
                     mi_info = {
                         "bar_duration_sec": 60.0 / (bpm or 120.0),
                         "sections": lyric_intel.get("sections", [{"start": 0.0, "end": v_dur, "type": "verse"}]),

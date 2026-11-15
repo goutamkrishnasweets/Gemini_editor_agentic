@@ -39,14 +39,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
-except Exception:
-    try:
-        from Gemini_Modules.gemini_governor import gemini_router
-    except Exception:
-        try:
-            from gemini_governor import gemini_router
-        except Exception:
-            gemini_router = None
+except Exception as _router_err:
+    logger.error("Failed to import gemini_router from Gemini_Modules.gemini_router_module.gemini_governor: %s", _router_err)
+    gemini_router = None
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -707,10 +702,7 @@ class ForensicVideoAnalyzer:
 
     def _scene_intel(self, video_path: str, creator_name: Optional[str]) -> dict:
         try:
-            try:
-                from Core_Modules.scene_intel import analyze_scene_pre_pipeline
-            except ImportError:
-                from Gemini_Modules.scene_intel import analyze_scene_pre_pipeline
+            from Core_Modules.scene_intel import analyze_scene_pre_pipeline
             ctx = analyze_scene_pre_pipeline(video_path, creator_name=creator_name)
             logger.info(
                 f"👤 SceneIntel: faces={ctx.get('num_detected_faces')} | "

@@ -1425,7 +1425,7 @@ async def handle_telegram_start(update, context):
         "• Automated content scraping runs daily at `07:00` & `19:00`.\n"
         "• Rendered reels are broadcast at `07:30` & `19:30` across YouTube, Instagram, & Facebook.\n\n"
         "🔑 **4. Personal API Keys (Optional):**\n"
-        "• `/setapify <token>` | `/setgemini <key>` | `/setmakewebhookurl <url>`\n\n"
+        "• `/setapify <token>` | `/setgemini <key>` | `/setbuffer <token>`\n\n"
         "🤖 **5. Autonomous Gemini Director:**\n"
         "• `/agent <your goal>` — Run autonomous multi-step scraping, rendering, and publishing with Gemini 2.5 Flash.\n"
         "  *(Example: `/agent Scrape @nike 1 reel, edit with cinematic beats and publish`)*\n\n"
@@ -4143,18 +4143,6 @@ def start_telegram_bot_service():
                     "💡 *Send any command above to open its full walkthrough.*"
                 )
 
-        async def _cmd_setmakewebhookurl(update, context):
-            await update.message.reply_text(
-                "ℹ️ **Make.com Webhook is Deprecated**\n\n"
-                "Multi-channel syndication is now handled directly by the native **Buffer API**!\n\n"
-                "To publish directly to TikTok, Pinterest, and X (Twitter):\n"
-                "👉 Use `/setbuffer <YOUR_BUFFER_TOKEN>`\n"
-                "📖 Guide: `/guide buffer`"
-            )
-
-        async def _cmd_makeguide(update, context):
-            await _cmd_setmakewebhookurl(update, context)
-
         async def _cmd_updatemetaendpoints(update, context):
             uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
             from Telegram_Storage_Modules.telegram_user_manager import (
@@ -4577,17 +4565,6 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setbuffer", _cmd_setbuffer))
         app.add_handler(CommandHandler("buffertoken", _cmd_setbuffer))
         app.add_handler(CommandHandler("buffer", _cmd_setbuffer))
-        app.add_handler(CommandHandler("setmakewebhookurl", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("setmakewebhook", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("makewebhook", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("setwebhook", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("setwebhookurl", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("webhook", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("webhookurl", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("setmake", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("makeurl", _cmd_setmakewebhookurl))
-        app.add_handler(CommandHandler("makeguide", _cmd_makeguide))
-        app.add_handler(CommandHandler("makesetup", _cmd_makeguide))
         app.add_handler(CommandHandler("bufferguide", _cmd_guide))
         app.add_handler(CommandHandler("guide", _cmd_guide))
         app.add_handler(CommandHandler("guides", _cmd_guide))

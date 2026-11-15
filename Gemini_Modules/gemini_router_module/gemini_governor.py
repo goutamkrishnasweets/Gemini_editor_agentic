@@ -1466,43 +1466,7 @@ class GeminiGovernor:
 
         is_escalated = False
 
-        if task_type in TEXT_TASKS and isinstance(prompt, str):
 
-            try:
-
-                from Intelligence_Modules.router_orchestra import orchestra
-
-                orch_result = orchestra.route(
-
-                    prompt=prompt,
-
-                    task_type=task_type,
-
-                    visual_context=metadata.get("visual_context")
-
-                )
-
-                if orch_result:
-
-                    self.cache[cache_key] = orch_result
-
-                    return orch_result
-
-               
-
-                # Orchestra failed or budget exhausted → mark for escalation fallback
-
-                logger.warning(f"⚠️ [ORCHESTRA] No result for '{task_type}'. Falling back to Gemini.")
-
-                is_escalated = True
-
-                metadata["escalated_fallback"] = True
-
-            except ImportError:
-                # Optional module not present; proceed directly to Gemini
-                pass
-            except Exception as _orch_err:
-                logger.warning(f"⚠️ [ORCHESTRA] Error: {_orch_err}. Falling back to Gemini.")
 
 
 

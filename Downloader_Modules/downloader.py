@@ -136,15 +136,24 @@ except ImportError as exc:
 
 
 # ---------------------------------------------------------------------------
-# Optional Smart Reuse Engine
+# Smart Reuse / Deduplication Engine
 # ---------------------------------------------------------------------------
 try:
-    from Intelligence_Modules.smart_reuse_engine import check_smart_reuse, register_video
+    import importlib
+    _dedup_mod = importlib.import_module("Phase_1.02_dedup_ledger")
+    check_deduplication = getattr(_dedup_mod, "check_deduplication")
+    def check_smart_reuse(url: str, reel_id: str = ""):
+        res = check_deduplication(reel_id or url, "downloader")
+        is_dup = res.get("is_duplicate", False) if isinstance(res, dict) else False
+        path = res.get("video_path") if isinstance(res, dict) else None
+        return (path, True) if is_dup else (None, False)
+    def register_video(path: str, url_id: str = ""):
+        pass
     SMART_REUSE_AVAILABLE = True
-    logger.info("🧠 Smart Reuse Engine loaded")
-except ImportError:
+    logger.info("🧠 Smart Reuse Deduplication Ledger loaded")
+except Exception as _dedup_err:
     SMART_REUSE_AVAILABLE = False
-    logger.warning("🧠 Smart Reuse Engine unavailable — reuse detection disabled")
+    logger.warning(f"🧠 Smart Reuse unavailable: {_dedup_err}")
 
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -872,7 +881,8 @@ def download_video(
 
                     # ── Audio Pool Integration ────────────────────────────────
                     try:
-                        from Audio_Modules.audio_pool_manager import pool_manager
+                        from Audio_Modules.audio_pool_manager import get_pool_manager
+                        pm = get_pool_manager()
                         from Audio_Modules.beat_engine import BeatEngine
 
                         be = BeatEngine()
@@ -991,10 +1001,7 @@ def download_video(
 
         # Commit to ContentLedger
         try:
-            try:
-                from Content_Scraper_Modules.content_ledger import get_ledger, extract_shortcode
-            except ImportError:
-                from Downloader_Modules.Content_Scraper_Modules.content_ledger import get_ledger, extract_shortcode
+            from Content_Scraper_Modules.content_ledger import get_ledger, extract_shortcode
             sc = extract_shortcode(url)
             get_ledger().commit(sc, final_path)
         except Exception as _cle:
