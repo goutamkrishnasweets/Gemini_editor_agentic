@@ -623,6 +623,55 @@ class FFmpegCommandGenerator:
         cmd.append(output_path)
         return {"cmd_list": cmd, "terminal_command": self.cmd_list_to_string(cmd), "operation": "speed_change", "speed_factor": speed_factor, "input": input_path, "output": output_path}
 
+    def build_zoom_command(
+        self,
+        input_path: str,
+        output_path: str,
+        duration: Optional[float] = None,
+        zoom_rate: float = 0.08,
+        target_width: int = 1080,
+        target_height: int = 1920,
+        mode: str = "zoom_in",
+        encoding_cfg: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Builds centered gentle cinematic zoom command using scale(eval=frame)+crop.
+        Gentle push-in: ~8-10% (zoom_rate=0.08) over the op's duration, centered, 1080x1920.
+        """
+        dur = duration
+        if not dur or float(dur) <= 0:
+            dur = self._get_media_duration(input_path) or 3.0
+
+        dur = max(0.5, float(dur))
+        rate = float(zoom_rate)
+
+        # Gentle push-in (zoom_in / cinematic_zoom) vs pull-out (zoom_out)
+        if mode == "zoom_out":
+            scale_expr = f"(1+{rate:.4f}*(1-t/{dur:.4f}))"
+        else:
+            scale_expr = f"(1+{rate:.4f}*t/{dur:.4f})"
+
+        filter_str = (
+            f"scale=w='{target_width}*{scale_expr}':h='{target_height}*{scale_expr}':eval=frame,"
+            f"crop={target_width}:{target_height}:(in_w-{target_width})/2:(in_h-{target_height})/2"
+        )
+
+        cmd = [self.ffmpeg_path, "-y", "-i", input_path, "-vf", filter_str]
+        cmd.extend(self._get_encoder_flags(encoding_cfg=encoding_cfg))
+        if self._has_audio_stream(input_path):
+            cmd.extend(["-c:a", "copy"])
+        cmd.append(output_path)
+
+        return {
+            "cmd_list": cmd,
+            "terminal_command": self.cmd_list_to_string(cmd),
+            "operation": "cinematic_zoom",
+            "filter_string": filter_str,
+            "mode": mode,
+            "input": input_path,
+            "output": output_path
+        }
+
     def build_audio_strip_command(self, input_path, output_path, encoding_cfg=None):
         """Fast stream-copy audio removal — no re-encode. Run before reshape/speed
         ops when BGM will replace the original track, so downstream steps never
@@ -1121,6 +1170,23 @@ class FFmpegCommandGenerator:
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2[vs]"
             )
         current_label = "[vs]"
+
+        # ── Step D2: Optional Cinematic Zoom (Push-in / Pull-out) ───────────────
+        zoom_op = next((op for op in ops if op.get("operation_type") in ("cinematic_zoom", "zoom_in", "zoom_out", "zoom", "zoompan")), None)
+        if zoom_op:
+            z_dur = float(zoom_op.get("duration") or total_visual_dur or 3.0)
+            z_rate = float(zoom_op.get("zoom_rate") or zoom_op.get("speed_factor") or 0.08)
+            if z_rate > 0.5:
+                z_rate = 0.08
+            z_mode = "zoom_out" if zoom_op.get("operation_type") == "zoom_out" or zoom_op.get("mode") == "zoom_out" else "zoom_in"
+            scale_expr = f"(1+{z_rate:.4f}*(1-t/{z_dur:.4f}))" if z_mode == "zoom_out" else f"(1+{z_rate:.4f}*t/{z_dur:.4f})"
+            next_label = "[vzoom]"
+            filter_parts.append(
+                f"{current_label}scale=w='{tw}*{scale_expr}':h='{th}*{scale_expr}':eval=frame,"
+                f"crop={tw}:{th}:(in_w-{tw})/2:(in_h-{th})/2{next_label}"
+            )
+            current_label = next_label
+            logger.info(f"🔍 [SINGLE-PASS] Applied Cinematic Zoom ({z_mode}): {z_rate*100:.1f}% push over {z_dur:.2f}s")
 
 
         # ── Step E: Optional drawtext brand watermark (MASKING INPAINT RESIDUE) ──
@@ -2259,6 +2325,10 @@ class GeminiFFmpegEngine:
                             op["operation_type"] = "drawtext"
                         elif op_str in ("fashion_caption", "caption", "text_overlay", "subtitles", "subtitle", "title_caption", "custom_caption", "overlay_text") or op_str.endswith("_caption") or op_str.endswith("_subtitles"):
                             op["operation_type"] = "subtitle_burnin"
+                        elif op_str in ("zoom", "zoompan", "push_in", "pushin", "ken_burns", "cinematic_zoom", "zoom_in"):
+                            op["operation_type"] = "cinematic_zoom"
+                        elif op_str == "zoom_out":
+                            op["operation_type"] = "zoom_out"
 
                     norm_type = op.get("operation_type")
 
@@ -2447,6 +2517,34 @@ class GeminiFFmpegEngine:
                     speed_factor = raw_speed
 
                 res = self.cmd_generator.build_speed_command(current_input, step_output, speed_factor=speed_factor, encoding_cfg=step_encoding)
+                command_steps.append(res)
+            elif op_type in ("cinematic_zoom", "zoom_in", "zoom_out", "zoom", "zoompan"):
+                op_dur = op.get("duration")
+                if not op_dur and op.get("end_time") is not None and op.get("start_time") is not None:
+                    op_dur = float(op["end_time"]) - float(op["start_time"])
+                if not op_dur or float(op_dur) <= 0:
+                    source_dur = (extra_inputs or {}).get("source_duration_s")
+                    if not source_dur and os.path.exists(current_input):
+                        source_dur = self.cmd_generator._get_media_duration(current_input)
+                    op_dur = source_dur or 3.0
+
+                z_mode = "zoom_out" if op_type == "zoom_out" or op.get("mode") == "zoom_out" else "zoom_in"
+                z_rate = float(op.get("zoom_rate") or op.get("speed_factor") or 0.08)
+                if z_rate > 0.5:
+                    z_rate = 0.08
+
+                t_w = int(op.get("target_width", 1080))
+                t_h = int(op.get("target_height", 1920))
+
+                res = self.cmd_generator.build_zoom_command(
+                    current_input, step_output,
+                    duration=float(op_dur),
+                    zoom_rate=z_rate,
+                    target_width=t_w,
+                    target_height=t_h,
+                    mode=z_mode,
+                    encoding_cfg=step_encoding
+                )
                 command_steps.append(res)
             elif op_type == "watermark_overlay":
                 wm_file = op.get("watermark_path") or extra_inputs.get("watermark")

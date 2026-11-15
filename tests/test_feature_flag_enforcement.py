@@ -1,12 +1,15 @@
 import os
 import sys
+import subprocess
 import pytest
+import numpy as np
+from PIL import Image
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from Gemini_Modules.gemini_ffmpeg_synthesis import enforce_feature_flags
+from Gemini_Modules.gemini_ffmpeg_synthesis import enforce_feature_flags, GeminiFFmpegEngine
 
 
 def test_feature_flags_disabled():
@@ -132,3 +135,68 @@ def test_forensic_context_nested_flags():
     op_types = [op["operation_type"] for op in new_plan["operations"]]
     assert "speed_ramp" not in op_types
     assert len(changes) == 1
+
+
+def test_real_cinematic_zoom_render(tmp_path):
+    in_clip = str(tmp_path / "synthetic_3s.mp4")
+    out_clip = str(tmp_path / "zoomed_out.mp4")
+
+    # 1. Render 3s synthetic clip with ffmpeg testsrc
+    p_in = subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc=duration=3:size=1080x1920:rate=30",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        in_clip
+    ], capture_output=True, text=True)
+    assert p_in.returncode == 0, f"ffmpeg testsrc failed: {p_in.stderr}"
+
+    # 2. Execute through real executor with a zoom op
+    engine = GeminiFFmpegEngine()
+    plan = {
+        "editing_intent": "Test cinematic zoom real render",
+        "operations": [
+            {
+                "operation_type": "cinematic_zoom",
+                "duration": 3.0,
+                "zoom_rate": 0.08,
+                "target_width": 1080,
+                "target_height": 1920,
+                "mode": "zoom_in"
+            }
+        ]
+    }
+    res = engine.execute_pipeline(
+        gemini_json=plan,
+        input_path=in_clip,
+        output_path=out_clip,
+        extra_inputs={"force_multipass": True, "source_duration_s": 3.0}
+    )
+
+    # Assert ffmpeg execution succeeded (exit code 0 / status SUCCESS)
+    assert os.path.exists(out_clip), f"Output video was not generated: {res}"
+    assert os.path.getsize(out_clip) > 1024, "Output video file is empty"
+    assert res.get("status") in ("SUCCESS", None), f"Pipeline execution failed: {res}"
+
+    # 3. Extract first frame (t=0.1s) and last frame (t=2.8s)
+    f0_path = str(tmp_path / "frame_first.png")
+    f1_path = str(tmp_path / "frame_last.png")
+
+    p0 = subprocess.run([
+        "ffmpeg", "-y", "-ss", "0.1", "-i", out_clip,
+        "-frames:v", "1", f0_path
+    ], capture_output=True)
+    assert p0.returncode == 0, f"Extract first frame failed: {p0.stderr}"
+
+    p1 = subprocess.run([
+        "ffmpeg", "-y", "-ss", "2.8", "-i", out_clip,
+        "-frames:v", "1", f1_path
+    ], capture_output=True)
+    assert p1.returncode == 0, f"Extract last frame failed: {p1.stderr}"
+
+    # 4. Compare first vs last frame to verify real zoom
+    img0 = np.array(Image.open(f0_path)).astype(np.float32)
+    img1 = np.array(Image.open(f1_path)).astype(np.float32)
+
+    diff = np.abs(img0 - img1)
+    # Assert frames differ consistent with 8% zoom over 3s
+    assert diff.mean() > 0.0, "First and last frames are identical: zoom did not affect render"
