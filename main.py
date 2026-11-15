@@ -4152,6 +4152,9 @@ def start_telegram_bot_service():
                 "📖 Guide: `/guide buffer`"
             )
 
+        async def _cmd_makeguide(update, context):
+            await _cmd_setmakewebhookurl(update, context)
+
         async def _cmd_updatemetaendpoints(update, context):
             uid = str(update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else ""))
             from Telegram_Storage_Modules.telegram_user_manager import (
@@ -4585,6 +4588,7 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("makeurl", _cmd_setmakewebhookurl))
         app.add_handler(CommandHandler("makeguide", _cmd_makeguide))
         app.add_handler(CommandHandler("makesetup", _cmd_makeguide))
+        app.add_handler(CommandHandler("bufferguide", _cmd_guide))
         app.add_handler(CommandHandler("guide", _cmd_guide))
         app.add_handler(CommandHandler("guides", _cmd_guide))
         app.add_handler(CommandHandler("updatemetaendpoints", _cmd_updatemetaendpoints))
