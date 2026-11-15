@@ -758,9 +758,16 @@ class FFmpegCommandGenerator:
         return {"cmd_list": cmd, "terminal_command": self.cmd_list_to_string(cmd), "operation": "drawtext", "text": text, "input": input_path, "output": output_path}
 
     def build_audio_ducking_mix_command(self, video_input, voiceover_input, music_input, output_path, music_volume=0.2, ducking_threshold=0.1, encoding_cfg=None):
+        try:
+            d_thresh = float(ducking_threshold)
+            if d_thresh < 0:
+                d_thresh = max(0.001, min(1.0, 10.0 ** (d_thresh / 20.0)))
+        except (ValueError, TypeError):
+            d_thresh = 0.1
+
         filter_complex = (
             f"[2:a]volume={music_volume}[music];"
-            f"[music][1:a]sidechaincompress=threshold={ducking_threshold}:ratio=4:attack=150:release=300[ducked_music];"
+            f"[music][1:a]sidechaincompress=threshold={d_thresh:.4f}:ratio=4:attack=150:release=300[ducked_music];"
             f"[1:a][ducked_music]amix=inputs=2:duration=first:dropout_transition=2[aout]"
         )
         cmd = [self.ffmpeg_path, "-y", "-i", video_input, "-i", voiceover_input, "-i", music_input,
@@ -1726,6 +1733,122 @@ def enforce_feature_flags(
     return plan, changes
 
 
+def enforce_route_params(
+    plan: Dict[str, Any],
+    route: Optional[Dict[str, Any]] = None,
+    flags: Optional[Dict[str, Any]] = None
+) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Enforce unified route parameters deterministically on the editing plan.
+    Precedence: feature flags > route_params > Gemini's plan.
+
+    - speed: if enable_speed_ramps is False, do nothing. Else if the plan has
+      speed_change/speed_ramp ops, set their speed_factor to route speed_factor
+      (clamped 0.5-2.0). If it has none and route speed_factor != 1.0, add one.
+    - transition: set each transition op's type to route transition_type, but
+      ONLY if that value exists in the executor's supported transition enum.
+    - ducking: set the audio_ducking_mix duck-level param to bgm_ducking_db
+      (using ducking_threshold from GEMINI_FFMPEG_SCHEMA and the executor).
+    Log each change as "ROUTE ENFORCED: <param> <old> -> <new>". Log only if it
+    really takes effect in the executor.
+    """
+    if not isinstance(plan, dict):
+        return plan, []
+
+    # Unpack flags if wrapped inside forensic_context
+    if isinstance(flags, dict):
+        if "feature_flags" in flags and isinstance(flags["feature_flags"], dict):
+            flags = flags["feature_flags"]
+        elif "content_strategy" in flags and isinstance(flags["content_strategy"], dict) and "feature_flags" in flags["content_strategy"]:
+            flags = flags["content_strategy"]["feature_flags"]
+    else:
+        flags = {}
+
+    # Unpack route if wrapped inside route_params
+    if isinstance(route, dict):
+        if "route_params" in route and isinstance(route["route_params"], dict):
+            route = route["route_params"]
+    else:
+        route = {}
+
+    changes: List[str] = []
+    ops = plan.get("operations", [])
+    if not isinstance(ops, list):
+        ops = []
+        plan["operations"] = ops
+
+    # 1. Speed enforcement
+    # Precedence: if enable_speed_ramps is False, do nothing.
+    if flags.get("enable_speed_ramps") is not False:
+        raw_speed = route.get("speed_factor")
+        if raw_speed is not None:
+            try:
+                target_speed = round(max(0.5, min(2.0, float(raw_speed))), 4)
+                speed_ops = [op for op in ops if op.get("operation_type") in ("speed_change", "speed_ramp")]
+                if speed_ops:
+                    for op in speed_ops:
+                        old_speed = op.get("speed_factor")
+                        if old_speed != target_speed:
+                            op["speed_factor"] = target_speed
+                            chg = f"speed_factor {old_speed} -> {target_speed}"
+                            logger.info(f"ROUTE ENFORCED: {chg}")
+                            changes.append(chg)
+                else:
+                    if target_speed != 1.0:
+                        new_op = {"operation_type": "speed_change", "speed_factor": target_speed}
+                        ops.append(new_op)
+                        chg = f"speed_factor None -> {target_speed}"
+                        logger.info(f"ROUTE ENFORCED: {chg}")
+                        changes.append(chg)
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Transition enforcement
+    # Set each transition op's type to route transition_type, but ONLY if supported by executor
+    SUPPORTED_TRANSITIONS = {
+        "fade", "wipeleft", "wiperight", "slideleft", "slideright",
+        "zoomin", "dissolve", "circlecrop", "pixelize", "slideup", "slidedown"
+    }
+    raw_transition = route.get("transition_type")
+    if raw_transition:
+        cand_trans = str(raw_transition).lower().strip()
+        if cand_trans in SUPPORTED_TRANSITIONS:
+            for op in ops:
+                if op.get("operation_type") in ("transition", "xfade"):
+                    old_trans = op.get("transition_type")
+                    if old_trans != cand_trans:
+                        op["transition_type"] = cand_trans
+                        chg = f"transition_type {old_trans} -> {cand_trans}"
+                        logger.info(f"ROUTE ENFORCED: {chg}")
+                        changes.append(chg)
+
+    # 3. Ducking parameter enforcement
+    # Set audio_ducking_mix duck-level param (ducking_threshold) to bgm_ducking_db
+    duck_val = route.get("bgm_ducking_db")
+    if duck_val is None:
+        duck_val = route.get("ducking_threshold")
+    if duck_val is not None:
+        try:
+            duck_val_num = float(duck_val)
+        except (ValueError, TypeError):
+            duck_val_num = duck_val
+
+        for op in ops:
+            if op.get("operation_type") in ("audio_ducking_mix", "audio_ducking"):
+                old_duck = op.get("ducking_threshold")
+                if old_duck is None:
+                    old_duck = op.get("bgm_ducking_db")
+                if old_duck != duck_val_num and old_duck != duck_val:
+                    op["ducking_threshold"] = duck_val_num
+                    if "bgm_ducking_db" in op:
+                        op["bgm_ducking_db"] = duck_val_num
+                    chg = f"ducking_threshold {old_duck} -> {duck_val_num}"
+                    logger.info(f"ROUTE ENFORCED: {chg}")
+                    changes.append(chg)
+
+    return plan, changes
+
+
 # =====================================================================
 # 4. MULTI-PASS REFINEMENT LOOP
 # =====================================================================
@@ -1924,6 +2047,14 @@ class GeminiFFmpegEngine:
         extra_inputs: Optional[Dict[str, Any]] = None
     ) -> Tuple[Dict[str, Any], List[str]]:
         return enforce_feature_flags(plan, flags, extra_inputs=extra_inputs)
+
+    def enforce_route_params(
+        self,
+        plan: Dict[str, Any],
+        route: Optional[Dict[str, Any]] = None,
+        flags: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        return enforce_route_params(plan, route, flags)
 
     def fetch_rag_reference_examples(self, query: str, profile: Optional[Dict] = None) -> List[Dict]:
         if not _HAS_RAG:
@@ -2853,6 +2984,14 @@ class GeminiFFmpegEngine:
         gemini_plan_json, flag_changes = enforce_feature_flags(gemini_plan_json, flags, extra_inputs=extra_inputs)
         for chg in flag_changes:
             logger.info(f"FLAG ENFORCED: {chg}")
+
+        # ── Route Parameters Enforcement ─────────────────────────────────────
+        route = {}
+        if isinstance(extra_inputs, dict):
+            route = extra_inputs.get("route_params") or extra_inputs.get("route") or {}
+        if not route and isinstance(forensic_context, dict):
+            route = forensic_context.get("route_params") or forensic_context.get("route") or {}
+        gemini_plan_json, route_changes = enforce_route_params(gemini_plan_json, route, flags)
 
         if flags.get("enable_voiceover") is False:
             voiceover_path = None

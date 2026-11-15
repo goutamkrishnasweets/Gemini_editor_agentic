@@ -523,6 +523,11 @@ class MasterAIEditor:
             extra_inputs = {
                 "micro_shots": micro_shots,
                 "rtb_timeline": rtb_timeline if rtb_timeline else micro_shots,
+                "route_params": {
+                    "speed_factor": route_params.get("speed_factor"),
+                    "transition_type": route_params.get("transition_type"),
+                    "bgm_ducking_db": route_params.get("bgm_ducking_db"),
+                },
             }
             if lyric_intel:
                 extra_inputs["lyric_intel"] = lyric_intel
