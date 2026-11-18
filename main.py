@@ -188,6 +188,358 @@ def _configure_mobile_linux_defaults():
 
 _configure_mobile_linux_defaults()
 
+# ── Zero-Mandatory .ENV Resolver & Interactive Native GUI Setup ──────────────
+DATA_DIR = os.path.join(_REPO_ROOT, "data")
+BOT_CONFIG_PATH = os.path.join(DATA_DIR, "bot_config.json")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def normalize_telegram_group_id(chat_id: Any) -> str:
+    """Preserves Telegram chat/group IDs accurately without corrupting basic group IDs."""
+    s = str(chat_id).strip()
+    if not s:
+        return ""
+    if s.startswith("-"):
+        return s
+    return f"-{s}"
+
+
+def load_bot_config_into_env():
+    """Loads bot token, storage group, and MTProto keys from data/bot_config.json if available."""
+    if os.path.exists(BOT_CONFIG_PATH):
+        try:
+            with open(BOT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if not os.getenv("TELEGRAM_BOT_TOKEN") and cfg.get("bot_token"):
+                    tok = str(cfg["bot_token"]).strip()
+                    if tok and tok != "your_bot_token_from_botfather":
+                        os.environ["TELEGRAM_BOT_TOKEN"] = tok
+                if not os.getenv("TELEGRAM_STORAGE_GROUP_ID") and cfg.get("storage_group_id"):
+                    gid = str(cfg["storage_group_id"]).strip()
+                    if gid:
+                        os.environ["TELEGRAM_STORAGE_GROUP_ID"] = normalize_telegram_group_id(gid)
+                if not os.getenv("TELEGRAM_API_ID") and cfg.get("telegram_api_id"):
+                    os.environ["TELEGRAM_API_ID"] = str(cfg["telegram_api_id"]).strip()
+                if not os.getenv("TELEGRAM_API_HASH") and cfg.get("telegram_api_hash"):
+                    os.environ["TELEGRAM_API_HASH"] = str(cfg["telegram_api_hash"]).strip()
+        except Exception as _e:
+            logger.debug(f"Could not load bot_config.json: {_e}")
+
+
+load_bot_config_into_env()
+
+
+def prompt_setup_gui(default_token: str = "", default_storage_id: str = "") -> Tuple[Optional[str], Optional[str]]:
+    """Displays a graphical UI dialog to configure Bot API Token and Storage Vault Group ID."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        config_result = {"token": None, "storage_group_id": None}
+
+        root = tk.Tk()
+        root.title("🚀 Master AI Editor — Setup Bot & Storage Vault")
+        root.geometry("540x440")
+        root.resizable(False, False)
+
+        # Center on screen
+        root.update_idletasks()
+        w = 540
+        h = 440
+        x = (root.winfo_screenwidth() // 2) - (w // 2)
+        y = (root.winfo_screenheight() // 2) - (h // 2)
+        root.geometry(f"{w}x{h}+{x}+{y}")
+
+        # Bring to front
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after_idle(root.attributes, "-topmost", False)
+
+        tk.Label(
+            root,
+            text="🚀 Master AI Editor — Initial Setup",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(pady=(16, 2))
+
+        tk.Label(
+            root,
+            text="Configure your Telegram Bot and Storage Vault below.\nSaved locally to data/bot_config.json — zero .env required!",
+            font=("Segoe UI", 9),
+            fg="#555555",
+            justify="center",
+        ).pack(pady=(0, 10))
+
+        form_frame = tk.Frame(root)
+        form_frame.pack(fill="x", padx=30)
+
+        # 1. Bot Token
+        tk.Label(
+            form_frame,
+            text="1. Telegram Bot Token (from @BotFather):",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(4, 2))
+
+        token_var = tk.StringVar(value=default_token)
+        token_entry = tk.Entry(form_frame, textvariable=token_var, width=50, font=("Segoe UI", 10))
+        token_entry.pack(fill="x", pady=(0, 10))
+
+        # 2. Storage Vault Group ID
+        tk.Label(
+            form_frame,
+            text="2. Storage Vault Group ID (e.g. -100xxxxxxxxxx or -5393269483):",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(4, 2))
+
+        storage_var = tk.StringVar(value=default_storage_id)
+        storage_entry = tk.Entry(form_frame, textvariable=storage_var, width=50, font=("Segoe UI", 10))
+        storage_entry.pack(fill="x", pady=(0, 8))
+
+        # 3. Prominent Admin Requirement Banner
+        notice_frame = tk.Frame(root, bg="#fff8e1", bd=1, relief="solid", padx=12, pady=8)
+        notice_frame.pack(fill="x", padx=30, pady=(4, 12))
+
+        notice_text = (
+            "⚠️ CRITICAL SETUP INSTRUCTIONS:\n"
+            "• Create a private Telegram Group for your cloud vault.\n"
+            "• Add this bot as a member to that group.\n"
+            "• PROMOTE THE BOT TO ADMINISTRATOR with permissions to post\n"
+            "  and pin messages (required for zero-disk vault indexing)!"
+        )
+        tk.Label(
+            notice_frame,
+            text=notice_text,
+            font=("Segoe UI", 8, "bold"),
+            bg="#fff8e1",
+            fg="#b78103",
+            justify="left",
+            anchor="w",
+        ).pack(fill="x")
+
+        def on_save(event=None):
+            tok = token_var.get().strip()
+            if not tok or ":" not in tok:
+                messagebox.showwarning(
+                    "Invalid Bot Token",
+                    "A valid Telegram Bot Token usually looks like:\n123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ\n\nPlease check your input.",
+                    parent=root,
+                )
+                return
+
+            raw_gid = storage_var.get().strip()
+            clean_gid = normalize_telegram_group_id(raw_gid) if raw_gid else ""
+
+            if not clean_gid:
+                confirm = messagebox.askyesno(
+                    "No Storage Group ID",
+                    "You did not provide a Storage Vault Group ID.\n\n"
+                    "Without it, Cloud Vault backup will be disabled until you run /setstorage in the bot chat.\n\n"
+                    "Do you want to continue without a storage group?",
+                    parent=root,
+                )
+                if not confirm:
+                    return
+
+            config_result["token"] = tok
+            config_result["storage_group_id"] = clean_gid
+            root.destroy()
+
+        def on_cancel():
+            root.destroy()
+
+        token_entry.bind("<Return>", on_save)
+        storage_entry.bind("<Return>", on_save)
+
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(pady=4)
+
+        save_btn = tk.Button(
+            btn_frame,
+            text="  Save & Connect  ",
+            command=on_save,
+            font=("Segoe UI", 10, "bold"),
+            bg="#0088cc",
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+        )
+        save_btn.pack(side="left", padx=8)
+
+        cancel_btn = tk.Button(
+            btn_frame,
+            text="  Cancel  ",
+            command=on_cancel,
+            font=("Segoe UI", 9),
+            relief="groove",
+            padx=10,
+            pady=5,
+            cursor="hand2",
+        )
+        cancel_btn.pack(side="left", padx=8)
+
+        if not default_token:
+            token_entry.focus_set()
+        else:
+            storage_entry.focus_set()
+
+        root.mainloop()
+        return config_result["token"], config_result["storage_group_id"]
+    except Exception as e:
+        logger.debug("Tkinter GUI not available: %s", e)
+        return None, None
+
+
+def _save_bot_config_and_env(token: str = "", storage_gid: str = "", api_id: Optional[str] = None, api_hash: Optional[str] = None):
+    """Persists Telegram credentials to bot_config.json, os.environ, Credentials/.env, and telegram_users.json."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        cfg = {}
+        if os.path.exists(BOT_CONFIG_PATH):
+            try:
+                with open(BOT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                cfg = {}
+
+        if token:
+            cfg["bot_token"] = token
+            os.environ["TELEGRAM_BOT_TOKEN"] = token
+        if storage_gid:
+            clean_gid = normalize_telegram_group_id(storage_gid)
+            cfg["storage_group_id"] = clean_gid
+            os.environ["TELEGRAM_STORAGE_GROUP_ID"] = clean_gid
+        if api_id:
+            cfg["telegram_api_id"] = str(api_id).strip()
+            os.environ["TELEGRAM_API_ID"] = str(api_id).strip()
+        if api_hash:
+            cfg["telegram_api_hash"] = str(api_hash).strip()
+            os.environ["TELEGRAM_API_HASH"] = str(api_hash).strip()
+
+        with open(BOT_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+
+        from Telegram_Storage_Modules.telegram_user_manager import (
+            _persist_env_var_to_disk,
+            load_all_users,
+            save_all_users,
+        )
+        if token:
+            _persist_env_var_to_disk("TELEGRAM_BOT_TOKEN", token)
+        if storage_gid:
+            _persist_env_var_to_disk("TELEGRAM_STORAGE_GROUP_ID", normalize_telegram_group_id(storage_gid))
+        if api_id:
+            _persist_env_var_to_disk("TELEGRAM_API_ID", str(api_id).strip())
+        if api_hash:
+            _persist_env_var_to_disk("TELEGRAM_API_HASH", str(api_hash).strip())
+
+        admin_raw = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
+        admin_id = admin_raw.split(",")[0].strip() if admin_raw else "admin"
+        users = load_all_users()
+        u_rec = users.setdefault(admin_id, {})
+        if storage_gid:
+            u_rec["telegram_storage_group_id"] = normalize_telegram_group_id(storage_gid)
+        if api_id:
+            u_rec["telegram_api_id"] = str(api_id).strip()
+        if api_hash:
+            u_rec["telegram_api_hash"] = str(api_hash).strip()
+        save_all_users(users, sync_to_vault=False)
+    except Exception as e:
+        logger.warning(f"Could not persist bot configuration: {e}")
+
+
+def resolve_bot_token() -> str:
+    """
+    Resolves Telegram Bot Token and Storage Group ID:
+      1. Checks TELEGRAM_BOT_TOKEN and TELEGRAM_STORAGE_GROUP_ID environment variables.
+      2. Checks data/bot_config.json on disk.
+      3. Launches graphical UI popup dialog if missing and running in interactive desktop session.
+      4. Falls back to console input if GUI is closed, unavailable, or headless (Termux / Linux).
+      5. Automatically persists entered credentials to data/bot_config.json and Credentials/.env.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    storage_gid = os.getenv("TELEGRAM_STORAGE_GROUP_ID", "").strip()
+
+    if os.path.exists(BOT_CONFIG_PATH):
+        try:
+            with open(BOT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if not token:
+                    tok = cfg.get("bot_token", "").strip()
+                    if tok and ":" in tok and not tok.startswith("your_"):
+                        token = tok
+                        os.environ["TELEGRAM_BOT_TOKEN"] = token
+                if not storage_gid:
+                    gid = cfg.get("storage_group_id", "").strip()
+                    if gid:
+                        storage_gid = normalize_telegram_group_id(gid)
+                        os.environ["TELEGRAM_STORAGE_GROUP_ID"] = storage_gid
+                if cfg.get("telegram_api_id") and not os.getenv("TELEGRAM_API_ID"):
+                    os.environ["TELEGRAM_API_ID"] = str(cfg["telegram_api_id"]).strip()
+                if cfg.get("telegram_api_hash") and not os.getenv("TELEGRAM_API_HASH"):
+                    os.environ["TELEGRAM_API_HASH"] = str(cfg["telegram_api_hash"]).strip()
+        except Exception:
+            pass
+
+    # If both token and storage group id are already resolved, return token immediately
+    if token and not token.startswith("your_") and ":" in token and storage_gid:
+        return token
+
+    # Check if running non-interactively (CI / GitHub Actions / pipes / background daemon)
+    is_ci = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI"))
+    is_interactive = bool(sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty() and not is_ci)
+
+    if not is_interactive:
+        if token and not token.startswith("your_") and ":" in token:
+            return token
+        logger.error(
+            "❌ TELEGRAM_BOT_TOKEN is missing or unconfigured in .env / data/bot_config.json! "
+            "(Non-interactive environment detected — skipping interactive prompt)"
+        )
+        return token
+
+    # 1. Try modern Graphical UI Dialog Popup
+    gui_token, gui_gid = prompt_setup_gui(default_token=token, default_storage_id=storage_gid)
+    if gui_token:
+        token = gui_token
+        if gui_gid:
+            storage_gid = gui_gid
+        _save_bot_config_and_env(token, storage_gid)
+        print(f"✅ Credentials saved to {BOT_CONFIG_PATH} and Credentials/.env!")
+        return token
+
+    # If GUI was closed without input but token already exists, continue with token
+    if token and not token.startswith("your_") and ":" in token:
+        return token
+
+    # 2. Console fallback if GUI closed, headless (Termux / Linux PRoot), or Tkinter unavailable
+    print("\n" + "=" * 65)
+    print("🔑 SETUP: Initial Telegram Configuration")
+    print("=" * 65)
+    print("Get a free bot token by messaging @BotFather on Telegram.")
+    try:
+        user_input = input("\n👉 Paste your Telegram Bot Token: ").strip()
+        print("\n⚠️ NOTE: Create a private Telegram Group, add this bot, and PROMOTE IT TO ADMIN!")
+        user_gid = input("👉 Paste your Storage Vault Group ID (or press Enter to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        sys.exit(1)
+
+    if not user_input:
+        if token and not token.startswith("your_"):
+            return token
+        print("❌ Error: A valid bot token is required to start.")
+        sys.exit(1)
+
+    token = user_input
+    storage_gid = normalize_telegram_group_id(user_gid) if user_gid else storage_gid
+    _save_bot_config_and_env(token, storage_gid)
+    print(f"✅ Credentials saved to {BOT_CONFIG_PATH}! (.env is completely optional)")
+    return token
+
+
 # ── Import Modular System Packages ───────────────────────────────────────────
 from Import_Modules.phase1_imports import run_phase1_ingestion
 from Import_Modules.phase2_imports import run_phase2_orchestration
@@ -3778,9 +4130,9 @@ def start_telegram_bot_service():
     Launches continuous Telegram Bot Polling Listener.
     Waits for user input on Telegram (URL, video upload, or target account ID).
     """
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    token = resolve_bot_token()
     if not token or token.startswith("your_"):
-        logger.error("❌ TELEGRAM_BOT_TOKEN environment variable is missing or unconfigured in .env! (Set TELEGRAM_BOT_TOKEN in GitHub Secrets or .env)")
+        logger.error("❌ TELEGRAM_BOT_TOKEN environment variable is missing or unconfigured in .env / data/bot_config.json! (Set TELEGRAM_BOT_TOKEN in GitHub Secrets or .env)")
         sys.exit(1)
 
     try:
@@ -4580,6 +4932,112 @@ def start_telegram_bot_service():
         async def _cmd_setnewsapi(update, context):
             await _cmd_setnews_provider("newsapi", "NewsAPI.org", "setnewsapi", update, context)
 
+        async def _cmd_setstorage(update, context):
+            """Sets or views user's private Telegram Storage Vault group ID in telegram_users.json and bot_config.json."""
+            gid = " ".join(context.args).strip() if (context and context.args) else ""
+            user = update.effective_user
+            uid = str(user.id) if user else str(update.effective_chat.id)
+
+            # 1. If sent from inside a group or channel without args, auto-detect the group ID directly!
+            if not gid and update.effective_chat and update.effective_chat.type in ("group", "supergroup", "channel"):
+                gid = str(update.effective_chat.id)
+
+            # 2. Check if user forwarded a message from the storage group or channel
+            if not gid and update.message and update.message.forward_from_chat:
+                gid = str(update.message.forward_from_chat.id)
+
+            # 3. If still no ID provided, display current status and helpful interactive instructions
+            if not gid:
+                from Telegram_Storage_Modules.telegram_user_manager import get_user_storage_group_id
+                current_gid = get_user_storage_group_id(uid)
+                current_display = f"`{current_gid}`" if current_gid else "_Not configured yet_"
+
+                status_text = ""
+                if current_gid:
+                    try:
+                        chat_info = await context.bot.get_chat(chat_id=current_gid)
+                        title = getattr(chat_info, "title", None) or "Private Group"
+                        status_text = f"\n📡 **Vault Status:** 🟢 Reachable (`{title}`)"
+                    except Exception as e:
+                        status_text = f"\n📡 **Vault Status:** ⚠️ Unreachable or Bot not Admin ({e})"
+
+                await update.message.reply_text(
+                    f"📦 **Telegram Storage Vault Group**\n\n"
+                    f"Current Vault ID: {current_display}{status_text}\n\n"
+                    "💡 **How to change or set your Vault in Chat:**\n"
+                    "• Send: `/setstorage <group_id>` (e.g. `/setstorage -5393269483` or `/setstorage -100xxxxxxxxxx`)\n"
+                    "• Or forward any message from your storage group here and reply with `/setstorage`\n"
+                    "• Or add the bot to your private group as Admin and type `/setstorage` inside that group\n\n"
+                    "✨ _Tip: Add the bot to your private group, promote it to Admin, and type /setstorage inside it!_",
+                    parse_mode="Markdown"
+                )
+                return
+
+            gid_clean = normalize_telegram_group_id(gid.strip().replace(" ", ""))
+
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_storage_group_id
+            ok = set_user_storage_group_id(uid, gid_clean)
+            _save_bot_config_and_env(token="", storage_gid=gid_clean)
+
+            if ok:
+                test_note = ""
+                try:
+                    chat = await context.bot.get_chat(chat_id=gid_clean)
+                    c_title = getattr(chat, "title", None) or "Storage Vault"
+                    test_note = f"\n\n🟢 **Verified:** Bot successfully reached **{c_title}**! Make sure the bot is an **Admin** with permission to send media/files."
+                except Exception as err:
+                    test_note = (
+                        f"\n\n⚠️ **Notice:** Group ID is saved, but the bot could not reach it yet (`{err}`).\n"
+                        "👉 Please make sure you have added this bot into your group/channel and granted **Admin** rights!"
+                    )
+
+                await update.message.reply_text(
+                    f"✅ **Telegram Storage Vault Linked!**\n\n"
+                    f"📦 **Storage Group ID:** `{gid_clean}`\n"
+                    f"All incoming media and indexes will be safely mirrored to this vault.{test_note}",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("❌ Failed to save storage group ID.")
+
+        async def _cmd_setmtproto(update, context):
+            """Sets user's Telegram MTProto API_ID and API_HASH for downloading videos >20MB up to 2GB."""
+            args = (context.args or []) if context else []
+            if len(args) < 2:
+                await update.message.reply_text(
+                    "⚡ **Telegram MTProto Setup (Bypass 20MB Limit up to 2GB)**\n\n"
+                    "Usage: `/setmtproto <api_id> <api_hash>`\n\n"
+                    "To get your API ID & Hash for free:\n"
+                    "1. Visit [my.telegram.org](https://my.telegram.org)\n"
+                    "2. Log in with your phone number\n"
+                    "3. Go to 'API development tools' and create an app\n"
+                    "4. Copy your `api_id` and `api_hash` and run `/setmtproto <api_id> <api_hash>`",
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                return
+
+            api_id_str = args[0].strip()
+            api_hash_str = args[1].strip()
+
+            if not api_id_str.isdigit():
+                await update.message.reply_text("❌ `api_id` must be numeric (e.g. `29384751`).")
+                return
+
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_mtproto
+            user = update.effective_user
+            uid = str(user.id) if user else str(update.effective_chat.id)
+            set_user_mtproto(uid, api_id_str, api_hash_str)
+            _save_bot_config_and_env(token="", storage_gid="", api_id=api_id_str, api_hash=api_hash_str)
+
+            await update.message.reply_text(
+                f"✅ **MTProto 2GB Engine Activated!**\n\n"
+                f"• **API ID:** `{api_id_str}`\n"
+                f"• **API Hash:** `{api_hash_str[:6]}...`\n\n"
+                f"The bot can now download and analyze full raw videos up to **2 GB**!",
+                parse_mode="Markdown"
+            )
+
         async def _cmd_myconfig(update, context):
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import format_user_credentials_summary
@@ -4702,6 +5160,9 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("cancel", _cmd_cancel))
         app.add_handler(CommandHandler("back", _cmd_cancel))
         app.add_handler(CommandHandler("setstoragechat", handle_telegram_incoming_msg))
+        app.add_handler(CommandHandler("setstorage", _cmd_setstorage))
+        app.add_handler(CommandHandler("storage", _cmd_setstorage))
+        app.add_handler(CommandHandler("setmtproto", _cmd_setmtproto))
 
         # Whitelist dynamic prompt commands so they route directly to handle_telegram_incoming_msg
         _DIRECT_PROMPT_COMMANDS = {

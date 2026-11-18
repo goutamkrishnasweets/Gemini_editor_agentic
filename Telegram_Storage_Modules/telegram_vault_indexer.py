@@ -244,6 +244,17 @@ class TelegramVaultIndexer:
         os.makedirs(os.path.dirname(self.index_file), exist_ok=True)
         self.vault_index = self._load_local_index()
 
+    def get_storage_group_id(self) -> Optional[str]:
+        """Resolves storage group ID from env var or user profile."""
+        gid = os.getenv("TELEGRAM_STORAGE_GROUP_ID", "").strip()
+        if gid:
+            return gid
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_storage_group_id
+            return get_user_storage_group_id()
+        except Exception:
+            return None
+
     def _load_local_index(self) -> Dict[str, Any]:
         default_index = _empty_vault_index()
         if os.path.exists(self.index_file):
@@ -287,7 +298,7 @@ class TelegramVaultIndexer:
         Synchronously fetches TELEGRAM_STORAGE_GROUP_ID for pinned master_vault_index.json,
         downloads it, and updates local vault_index.
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         if not storage_group_id or not bot_token:
             return False
@@ -698,7 +709,7 @@ class TelegramVaultIndexer:
     def upload_and_pin_vault_index_sync(self, upload_fn=None, force: bool = False):
         """Uploads master_vault_index.json to TELEGRAM_STORAGE_GROUP_ID and pins it (debounced)."""
         global _LAST_VAULT_PIN_TIMESTAMP
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
         if not storage_group_id or not os.path.exists(self.index_file):
             return
 
@@ -1782,7 +1793,7 @@ class TelegramVaultIndexer:
 
     async def sync_vault_index_from_telegram(self, bot) -> bool:
         """Startup Sync from Telegram Storage Group."""
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
         if not storage_group_id or not bot:
             return False
 
@@ -1871,7 +1882,7 @@ class TelegramVaultIndexer:
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Unified Storage Authority Entry Point."""
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
         filename = os.path.basename(raw_video_path)
         ext = os.path.splitext(filename)[1].lower()
         
@@ -2046,7 +2057,7 @@ class TelegramVaultIndexer:
 
         clean_sc = clip_folder_name.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_", "").replace("auto_", "").rstrip(".mp4")
 
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
         clean_file_id = None
@@ -2158,7 +2169,7 @@ class TelegramVaultIndexer:
         audio_file_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record downloaded raw video and audio into Telegram Storage Group & pool_metadata.json."""
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
 
         canonical_url = canonicalize_social_url(social_url)
         sc_val = extract_clean_shortcode(social_url)
@@ -2330,7 +2341,7 @@ class TelegramVaultIndexer:
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record processed video reel into Telegram Storage Group & pool_metadata.json."""
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        storage_group_id = self.get_storage_group_id()
 
         if not master_file_id and storage_group_id and bot and master_video_path and os.path.exists(master_video_path):
             try:
@@ -2588,7 +2599,7 @@ class TelegramVaultIndexer:
         # Cloud sync / pin to Telegram Storage Group
         try:
             from Telegram_Storage_Modules.telegram_http import send_document
-            storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+            storage_group_id = self.get_storage_group_id()
             if storage_group_id and os.path.exists(self.index_file):
                 res = send_document(
                     local_path=self.index_file,

@@ -536,6 +536,90 @@ def set_user_branding(user_id_str: str, brand_text: str) -> bool:
     return False
 
 
+def normalize_telegram_chat_id(chat_id: Union[str, int]) -> str:
+    """
+    Preserves Telegram chat/group IDs accurately without corrupting basic group IDs:
+    - If already negative (e.g. -5393269483 or -100xxxxxxxxxx), returns as-is.
+    - If positive string, ensures leading '-' is present.
+    """
+    s = str(chat_id).strip()
+    if not s:
+        return ""
+    if s.startswith("-"):
+        return s
+    return f"-{s}"
+
+
+def set_user_storage_group_id(user_id_str: str, storage_group_id: str) -> bool:
+    """Saves user personal Telegram Storage Vault Group ID in telegram_users.json and updates env."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    clean_group = normalize_telegram_chat_id(storage_group_id)
+    if clean_group:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["telegram_storage_group_id"] = clean_group
+        os.environ["TELEGRAM_STORAGE_GROUP_ID"] = clean_group
+        os.environ[f"USER_{user_id_str}_TELEGRAM_STORAGE_GROUP_ID"] = clean_group
+        if _is_admin_user(user_id_str):
+            _persist_env_var_to_disk("TELEGRAM_STORAGE_GROUP_ID", clean_group)
+        save_all_users(users)
+        logger.info("📦 [TELEGRAM USER MANAGER] Storage Vault Group ID saved for User ID %s: %s", user_id_str, clean_group)
+        return True
+    return False
+
+
+def get_user_storage_group_id(user_id_str: Optional[Union[str, int]] = None) -> Optional[str]:
+    """Returns user personal Telegram Storage Vault Group ID. Falls back to global env or configured storage group."""
+    if user_id_str:
+        users = load_all_users()
+        uid_clean = str(user_id_str).strip()
+        if uid_clean in users:
+            val = users[uid_clean].get("telegram_storage_group_id", "").strip()
+            if val:
+                return val
+        env_val = os.getenv(f"USER_{uid_clean}_TELEGRAM_STORAGE_GROUP_ID", "").strip()
+        if env_val:
+            return env_val
+
+    env_global = os.getenv("TELEGRAM_STORAGE_GROUP_ID", "").strip()
+    if env_global:
+        return env_global
+
+    try:
+        users = load_all_users()
+        for u in users.values():
+            if isinstance(u, dict) and u.get("telegram_storage_group_id"):
+                v = str(u.get("telegram_storage_group_id")).strip()
+                if v:
+                    os.environ["TELEGRAM_STORAGE_GROUP_ID"] = v
+                    return v
+    except Exception:
+        pass
+
+    return None
+
+
+def set_user_mtproto(user_id_str: str, api_id: str, api_hash: str) -> bool:
+    """Saves user Telegram MTProto API_ID and API_HASH for 2GB bypass."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    clean_id = str(api_id).strip()
+    clean_hash = str(api_hash).strip()
+    if clean_id and clean_hash:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["telegram_api_id"] = clean_id
+        u_rec["telegram_api_hash"] = clean_hash
+        os.environ["TELEGRAM_API_ID"] = clean_id
+        os.environ["TELEGRAM_API_HASH"] = clean_hash
+        if _is_admin_user(user_id_str):
+            _persist_env_var_to_disk("TELEGRAM_API_ID", clean_id)
+            _persist_env_var_to_disk("TELEGRAM_API_HASH", clean_hash)
+        save_all_users(users)
+        logger.info("⚡ [TELEGRAM USER MANAGER] MTProto credentials saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
 def set_user_public_group_id(user_id_str: str, group_id: str) -> bool:
     """Saves user personal Telegram Public Group ID and syncs to GitHub Secrets."""
     users = load_all_users()
@@ -1353,6 +1437,10 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/setbranding YOUR_WATERMARK_TEXT`\n",
         f"📢 **Public Group ID:** `{_val('telegram_public_group_id', 'TELEGRAM_PUBLIC_GROUP_ID')}`",
         "   👉 Command: `/setgroup YOUR_GROUP_ID`\n",
+        f"📦 **Storage Vault Group ID:** `{_val('telegram_storage_group_id', 'TELEGRAM_STORAGE_GROUP_ID')}`",
+        "   👉 Command: `/setstorage -100xxxxxxxxxx`\n",
+        f"⚡ **MTProto 2GB Bypass Engine:** `{_chk('telegram_api_id', 'TELEGRAM_API_ID')}`",
+        "   👉 Command: `/setmtproto <api_id> <api_hash>`\n",
         f"⏰ **Schedule Times:** `{_val('auto_input_schedule_times', 'AUTO_INPUT_SCHEDULE_TIMES')}`",
         "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
         f"🔢 **Auto-Scrape Limit:** `{_val('auto_scrape_limit', 'AUTO_SCRAPE_LIMIT') or '8'} reels/account`",
