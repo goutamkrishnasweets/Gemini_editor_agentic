@@ -13,7 +13,7 @@ import secrets
 import logging
 import hashlib
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 logger = logging.getLogger("telegram_user_manager")
 
@@ -663,6 +663,155 @@ def get_user_auto_scrape_limit(user_id_str: Optional[Union[str, int]] = None) ->
     return 8
 
 
+# ── Auto-Input Metadata Scout Limit, Target Keywords & News Provider API Keys ─
+
+_NEWS_PROVIDER_MAP = {
+    "newsdata": ("newsdata_api_key", "NEWSDATA_API_KEY"),
+    "newsdata.io": ("newsdata_api_key", "NEWSDATA_API_KEY"),
+    "gnews": ("gnews_api_key", "GNEWS_API_KEY"),
+    "guardian": ("guardian_api_key", "GUARDIAN_API_KEY"),
+    "newsapi": ("newsapi_org_key", "NEWSAPI_ORG_KEY"),
+    "newsapi.org": ("newsapi_org_key", "NEWSAPI_ORG_KEY"),
+}
+
+
+def set_user_news_api_key(user_id_str: str, provider: str, api_key: str) -> bool:
+    """Saves a News API credential (NewsData.io / GNews / Guardian / NewsAPI) identically to other user credentials."""
+    prov_key = (provider or "").strip().lower()
+    mapping = _NEWS_PROVIDER_MAP.get(prov_key)
+    if not mapping:
+        return False
+    field_name, env_name = mapping
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        return False
+
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    u_rec = users.setdefault(user_id_str, {})
+    u_rec[field_name] = clean_key
+    save_all_users(users)
+    if _is_admin_user(user_id_str):
+        os.environ[env_name] = clean_key
+        _persist_env_var_to_disk(env_name, clean_key)
+    else:
+        os.environ[f"USER_{user_id_str}_{env_name}"] = clean_key
+    synced = sync_user_secret_to_github(user_id_str, env_name, clean_key)
+    logger.info("📰 [TELEGRAM USER MANAGER] %s saved for User ID %s (GitHub Synced: %s)", env_name, user_id_str, synced)
+    return True
+
+
+def get_user_news_api_keys(user_id_str: Optional[Union[str, int]] = None) -> Dict[str, Optional[str]]:
+    """Returns per-user News API keys (newsdata_api_key, gnews_api_key, guardian_api_key, newsapi_org_key)."""
+    result: Dict[str, Optional[str]] = {
+        "newsdata_api_key": None,
+        "gnews_api_key": None,
+        "guardian_api_key": None,
+        "newsapi_org_key": None,
+    }
+    uid = str(user_id_str).strip() if user_id_str is not None and str(user_id_str).strip() else None
+    users = load_all_users() if uid else {}
+    u_rec = users.get(uid, {}) if uid else {}
+    allow_root = (uid is None) or _is_admin_user(uid)
+
+    for field_name, env_name in (
+        ("newsdata_api_key", "NEWSDATA_API_KEY"),
+        ("gnews_api_key", "GNEWS_API_KEY"),
+        ("guardian_api_key", "GUARDIAN_API_KEY"),
+        ("newsapi_org_key", "NEWSAPI_ORG_KEY"),
+    ):
+        val = u_rec.get(field_name)
+        if not val and uid:
+            val = os.getenv(f"USER_{uid}_{env_name}")
+        if not val and allow_root:
+            val = os.getenv(env_name)
+        result[field_name] = val.strip() if isinstance(val, str) and val.strip() else None
+    return result
+
+
+def set_user_metadata_scout_limit(user_id_str: str, limit_val: int) -> bool:
+    """Saves per-user Zero-Download Metadata Scout limit (1-50, default 20) via Telegram chat."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    try:
+        val = max(1, min(50, int(limit_val)))
+    except (ValueError, TypeError):
+        val = 20
+
+    u_rec = users.setdefault(user_id_str, {})
+    u_rec["metadata_scout_limit"] = val
+    save_all_users(users)
+    if _is_admin_user(user_id_str):
+        os.environ["AUTO_INPUT_METADATA_SCOUT_LIMIT"] = str(val)
+        _persist_env_var_to_disk("AUTO_INPUT_METADATA_SCOUT_LIMIT", str(val))
+    else:
+        os.environ[f"USER_{user_id_str}_AUTO_INPUT_METADATA_SCOUT_LIMIT"] = str(val)
+    synced = sync_user_secret_to_github(user_id_str, "AUTO_INPUT_METADATA_SCOUT_LIMIT", str(val))
+    logger.info("🔍 [TELEGRAM USER MANAGER] Metadata scout limit saved for User ID %s: %d (GitHub Synced: %s)", user_id_str, val, synced)
+    return True
+
+
+def get_user_metadata_scout_limit(user_id_str: Optional[Union[str, int]] = None) -> int:
+    """Returns per-user Zero-Download Metadata Scout limit (default 20, clamped 1-50)."""
+    def _parse(v: Any) -> Optional[int]:
+        try:
+            n = int(v)
+            return max(1, min(50, n)) if n > 0 else None
+        except (ValueError, TypeError):
+            return None
+
+    if not user_id_str:
+        return _parse(os.getenv("AUTO_INPUT_METADATA_SCOUT_LIMIT")) or 20
+    uid = str(user_id_str).strip()
+    users = load_all_users()
+    u_rec = users.get(uid, {})
+    for cand in (
+        u_rec.get("metadata_scout_limit"),
+        os.getenv(f"USER_{uid}_AUTO_INPUT_METADATA_SCOUT_LIMIT"),
+        os.getenv("AUTO_INPUT_METADATA_SCOUT_LIMIT") if _is_admin_user(uid) else None,
+    ):
+        parsed = _parse(cand)
+        if parsed is not None:
+            return parsed
+    return 20
+
+
+def set_user_auto_target_keywords(user_id_str: str, keywords: str) -> bool:
+    """Saves comma-separated Auto-Input target keywords (e.g. 'Anushka Sharma, Virat Kohli')."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    cleaned = ", ".join(k.strip() for k in (keywords or "").split(",") if k.strip())
+    u_rec = users.setdefault(user_id_str, {})
+    u_rec["auto_input_target_keywords"] = cleaned
+    save_all_users(users)
+    if _is_admin_user(user_id_str):
+        os.environ["AUTO_INPUT_TARGET_KEYWORDS"] = cleaned
+        _persist_env_var_to_disk("AUTO_INPUT_TARGET_KEYWORDS", cleaned)
+    else:
+        os.environ[f"USER_{user_id_str}_AUTO_INPUT_TARGET_KEYWORDS"] = cleaned
+    synced = sync_user_secret_to_github(user_id_str, "AUTO_INPUT_TARGET_KEYWORDS", cleaned)
+    logger.info("🎯 [TELEGRAM USER MANAGER] Auto-input target keywords saved for User ID %s: '%s' (GitHub Synced: %s)", user_id_str, cleaned, synced)
+    return True
+
+
+def get_user_auto_target_keywords(user_id_str: Optional[Union[str, int]] = None) -> List[str]:
+    """Returns list of Auto-Input target keywords for a user (falling back to AUTO_INPUT_TARGET_KEYWORDS)."""
+    raw = ""
+    if user_id_str:
+        uid = str(user_id_str).strip()
+        users = load_all_users()
+        u_rec = users.get(uid, {})
+        raw = (
+            u_rec.get("auto_input_target_keywords")
+            or os.getenv(f"USER_{uid}_AUTO_INPUT_TARGET_KEYWORDS")
+            or (os.getenv("AUTO_INPUT_TARGET_KEYWORDS") if _is_admin_user(uid) else "")
+            or ""
+        )
+    else:
+        raw = os.getenv("AUTO_INPUT_TARGET_KEYWORDS") or ""
+    return [k.strip() for k in str(raw).split(",") if k.strip()]
+
+
 def set_user_instagram_token(user_id_str: str, token: str) -> bool:
     """Saves user Instagram Access Token and syncs to IG_BUSINESS_TOKEN in GitHub Secrets."""
     users = load_all_users()
@@ -1208,6 +1357,16 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
         f"🔢 **Auto-Scrape Limit:** `{_val('auto_scrape_limit', 'AUTO_SCRAPE_LIMIT') or '8'} reels/account`",
         "   👉 Command: `/setautoscraplimit <number>` (e.g. `/setautoscraplimit 8`)\n",
+        f"🔍 **Metadata Scout Limit (Auto Input):** `{_val('metadata_scout_limit', 'AUTO_INPUT_METADATA_SCOUT_LIMIT') or '20'} videos (zero-download)`",
+        "   👉 Command: `/setscoutlimit <1-50>` (e.g. `/setscoutlimit 20`)\n",
+        f"🎯 **Auto-Input Target Keywords:** `{_val('auto_input_target_keywords', 'AUTO_INPUT_TARGET_KEYWORDS')}`",
+        "   👉 Command: `/setkeywords Anushka Sharma, Bollywood`\n",
+        f"📰 **NewsData.io Key:** `{_chk('newsdata_api_key', 'NEWSDATA_API_KEY')}`",
+        "   👉 Command: `/setnewsdata YOUR_NEWSDATA_KEY`\n",
+        f"📰 **GNews API Key:** `{_chk('gnews_api_key', 'GNEWS_API_KEY')}`",
+        "   👉 Command: `/setgnews YOUR_GNEWS_KEY`\n",
+        f"📰 **Guardian API Key:** `{_chk('guardian_api_key', 'GUARDIAN_API_KEY')}`",
+        "   👉 Command: `/setguardian YOUR_GUARDIAN_KEY`\n",
         f"📸 **Instagram Token:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
         "   👉 Command: `/instagramtoken YOUR_ACCESS_TOKEN`\n",
         f"🆔 **Instagram Business ID:** `{_val('ig_business_id', 'IG_BUSINESS_ID')}`",

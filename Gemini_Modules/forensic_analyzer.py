@@ -639,6 +639,7 @@ class ForensicVideoAnalyzer:
         audio_candidates: Optional[List[dict]] = None,
         transcript: Optional[Dict[str, Any]] = None,   # output of transcript_corrector.correct_transcript()
         use_cache: bool = True,
+        creative_brief: Optional[Dict[str, Any]] = None,  # Auto-Input-only Gemini Creative Planner brief
     ) -> dict:
         scene_context: Dict[str, Any] = {}
         try:
@@ -666,10 +667,10 @@ class ForensicVideoAnalyzer:
 
             # 3. Gemini (cached on proxy + transcript + inputs)
             cache_path = os.path.join(clip_folder, "forensic_analysis.json")
-            key = self._cache_key(proxy, transcript, creator_name, audio_candidates)
+            key = self._cache_key(proxy, transcript, creator_name, audio_candidates, creative_brief=creative_brief)
             result = self._load_cache(cache_path, key) if use_cache else None
             if result is None:
-                prompt = self._build_prompt(proxy, transcript, creator_name, audio_candidates)
+                prompt = self._build_prompt(proxy, transcript, creator_name, audio_candidates, creative_brief=creative_brief)
                 try:
                     data = self._call_gemini(proxy, prompt)
                 except Exception as ge:
@@ -818,7 +819,7 @@ class ForensicVideoAnalyzer:
             block = block[:_MAX_TRANSCRIPT_CHARS] + "\n[...transcript truncated...]"
         return block
 
-    def _build_prompt(self, proxy, transcript, creator_name, audio_candidates) -> str:
+    def _build_prompt(self, proxy, transcript, creator_name, audio_candidates, creative_brief=None) -> str:
         fps = float(proxy.get("fps", 1.0))
         prompt = (
             FORENSIC_PROMPT
@@ -836,9 +837,20 @@ class ForensicVideoAnalyzer:
                 for i, c in enumerate(audio_candidates, start=1)
             ]
             prompt += _BGM_TASK.replace("<<AUDIO_TABLE>>", "\n".join(rows))
+        if isinstance(creative_brief, dict) and creative_brief.get("mandatory_shots"):
+            shots_json = json.dumps(creative_brief.get("mandatory_shots", []), ensure_ascii=False)
+            prompt += (
+                "\n\nCREATIVE PLANNER SHOT-HUNTER TASK (AUTO-INPUT ONLY):\n"
+                f"Target Story Angle: {creative_brief.get('story_angle', '')}\n"
+                f"First 3s Scroll-Stopper Directive: {creative_brief.get('first_3s_visual_directive', '')}\n"
+                f"Mandatory Shots to Locate: {shots_json}\n"
+                "For each mandatory shot above that visibly occurs in this video, include an extra top-level JSON key "
+                "\"matched_creative_shots\": [{\"role\": \"hook|context|climax\", \"start\": <float_sec>, "
+                "\"end\": <float_sec>, \"score\": <0.0-1.0>, \"reason\": \"why this exact moment stops the scroll\"}]."
+            )
         return prompt
 
-    def _cache_key(self, proxy, transcript, creator_name, audio_candidates) -> str:
+    def _cache_key(self, proxy, transcript, creator_name, audio_candidates, creative_brief=None) -> str:
         h = hashlib.sha1()
         h.update(str(proxy.get("gemini_ready_path")).encode())
         h.update(str(proxy.get("gemini_size_mb")).encode())
@@ -846,6 +858,8 @@ class ForensicVideoAnalyzer:
                             ensure_ascii=False).encode())
         h.update(str(creator_name).encode())
         h.update(json.dumps(audio_candidates or [], sort_keys=True, default=str).encode())
+        if creative_brief:
+            h.update(json.dumps(creative_brief.get("mandatory_shots") or [], sort_keys=True, default=str).encode())
         h.update(f"{_PROMPT_VERSION}|{GEMINI_MODEL}|{proxy.get('fps')}".encode())
         return h.hexdigest()
 
@@ -1052,6 +1066,30 @@ class ForensicVideoAnalyzer:
         }
 
         creative = data.get("creative_possibilities")
+        raw_matched_shots = data.get("matched_creative_shots")
+        matched_creative_shots = []
+        dur_lim = float(proxy.get("duration_sec") or 0.0)
+        if isinstance(raw_matched_shots, list):
+            for sh in raw_matched_shots:
+                if not isinstance(sh, dict):
+                    continue
+                try:
+                    st = max(0.0, float(sh.get("start", 0.0)))
+                    en = float(sh.get("end", st + 2.0))
+                    if dur_lim > 0:
+                        st = min(st, max(0.0, dur_lim - 0.5))
+                        en = min(dur_lim, max(st + 0.5, en))
+                    if en > st:
+                        matched_creative_shots.append({
+                            "role": _s(sh.get("role")) or "body",
+                            "start": round(st, 3),
+                            "end": round(en, 3),
+                            "score": round(max(0.0, min(1.0, float(sh.get("score", 0.85)))), 3),
+                            "reason": _s(sh.get("reason")),
+                        })
+                except (ValueError, TypeError):
+                    continue
+
         result = {
             "watermarks": [],
             "intent": intent,
@@ -1061,6 +1099,7 @@ class ForensicVideoAnalyzer:
             "platform_priority": platform_priority,
             "selected_audio_track": _s(data.get("selected_audio_track")),
             "creative_possibilities": creative if isinstance(creative, list) else [],
+            "matched_creative_shots": matched_creative_shots,
             "safety": {"classification": safety_cls, "monetization_safe": mon_safe},
             "content_strategy": {          # backward-compat wrapper read by orchestrator
                 "intent": intent, "confidence": round(confidence, 3),

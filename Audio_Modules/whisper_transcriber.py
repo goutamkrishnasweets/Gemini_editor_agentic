@@ -35,7 +35,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "4")
 logger = logging.getLogger("whisper_transcriber")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")   # tiny|base|small|medium|large-v3
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "tiny")   # tiny|base|small|medium|large-v3 (Gemini corrects transcript downstream)
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 

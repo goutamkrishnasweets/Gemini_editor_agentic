@@ -96,12 +96,43 @@ def run_forensic_perception(
     and determined audio_strategy (preserve / bed / replace).
     """
     logger.info(f"🔬 [STEP 02] Running Gemini Call 1 Forensic Perception for: {os.path.basename(video_path)}")
+
+    # Auto-Input-Only Creative Brief lookup (None for Manual Input — manual mode stays untouched)
+    creative_brief = None
+    try:
+        from Gemini_Modules.creative_planner import load_creative_brief
+        creative_brief = load_creative_brief(video_path)
+        if creative_brief:
+            logger.info(
+                "🧠 [STEP 02 CREATIVE BRIEF] Auto-Input brief loaded for '%s' (%d mandatory shots).",
+                creative_brief.get("target_keyword", ""),
+                len(creative_brief.get("mandatory_shots") or []),
+            )
+    except Exception as _cb_err:
+        logger.debug(f"[STEP 02] creative_brief lookup notice: {_cb_err}")
+
     analyzer = ForensicVideoAnalyzer(api_key=api_key)
     res = analyzer.analyze(
         video_path=video_path,
         creator_name=creator_name,
         audio_candidates=audio_candidates,
+        creative_brief=creative_brief,
     )
+
+    # Merge Auto-Input Creative Planner decisions into forensic context for downstream enforcement
+    if creative_brief and isinstance(res, dict):
+        res["creative_brief"] = creative_brief
+        enforced_flags = creative_brief.get("enforced_feature_flags") or {}
+        if enforced_flags:
+            res.setdefault("feature_flags", {}).update(enforced_flags)
+            if isinstance(res.get("content_strategy"), dict):
+                res["content_strategy"].setdefault("feature_flags", {}).update(enforced_flags)
+        narration = (creative_brief.get("narration_script") or creative_brief.get("hook_line") or "").strip()
+        if narration:
+            cd = res.setdefault("content_director", {})
+            cd["engagement_hook"] = narration
+            if creative_brief.get("tone"):
+                cd["tone"] = creative_brief["tone"]
 
     # ── Step 2b: Audio Strategy Decision Engine ──────────────────────────────
     try:

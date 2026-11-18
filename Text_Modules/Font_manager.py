@@ -46,7 +46,16 @@ def ensure_montserrat_font():
             except Exception as e:
                 logger.warning(f"⚠️ Font download attempt from {url} failed: {e}")
                 time.sleep(1)
-            
+
+    for sys_font in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ):
+        if os.path.exists(sys_font):
+            logger.info(f"🔤 Using Linux system fallback font: {sys_font}")
+            return sys_font
+
     logger.error("❌ Failed to download Montserrat font. ASS subtitles may fallback or fail.")
     return None
 

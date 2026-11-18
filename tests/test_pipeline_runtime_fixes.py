@@ -73,3 +73,4 @@ def test_static_patch_reuse_engine_interface():
     mode = StaticPatchReuseEngine.analyze_stability("dummy_nonexistent.mp4")
     assert mode in ("dynamic", "static", "rigid_motion")
     assert StaticPatchReuseEngine.apply_patch("dummy.mp4", [], "out.mp4") is False
+

@@ -150,8 +150,43 @@ for lib in ["httpx", "telegram", "telegram.ext", "httpcore"]:
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(_REPO_ROOT, "Credentials", ".env"), override=True)
+    load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=False)
 except ImportError:
     pass
+
+
+def _configure_mobile_linux_defaults():
+    """Auto-tune concurrency & FFmpeg defaults on Android Termux / AnLinux Ubuntu (PRoot ARM64)."""
+    if sys.platform != "linux":
+        return
+    try:
+        import platform
+        arch = platform.machine().lower()
+        is_termux_or_proot = bool(
+            os.getenv("TERMUX_VERSION")
+            or os.getenv("PROOT_TMP_DIR")
+            or os.getenv("ANDROID_ROOT")
+            or os.path.exists("/data/data/com.termux")
+            or (arch in ("aarch64", "arm64", "armv7l", "armv8l") and not os.getenv("GITHUB_ACTIONS"))
+        )
+        if is_termux_or_proot:
+            os.environ.setdefault("MAX_CONCURRENT_PIPELINE_JOBS", "1")
+            os.environ.setdefault("FFMPEG_THREADS", "2")
+            os.environ.setdefault("FFMPEG_MASTER_PRESET", "veryfast")
+            os.environ.setdefault("FFMPEG_MASTER_CRF", "20")
+            os.environ.setdefault("WHISPER_MODEL_SIZE", "tiny")
+            os.environ.setdefault("LYRIC_WHISPER_MODEL_SIZE", "tiny")
+            os.environ.setdefault("USE_DOCKER_CONTAINERS", "0")
+            logger.info(
+                "📱 [MOBILE/TERMUX MODE] Detected %s Linux/PRoot — applied phone-safe defaults "
+                "(jobs=1, ffmpeg_threads=2, preset=veryfast, whisper=tiny, docker=off).",
+                arch,
+            )
+    except Exception:
+        pass
+
+
+_configure_mobile_linux_defaults()
 
 # ── Import Modular System Packages ───────────────────────────────────────────
 from Import_Modules.phase1_imports import run_phase1_ingestion
@@ -3791,6 +3826,11 @@ def start_telegram_bot_service():
                         BotCommand("setgroup", "Set your Telegram Public Group ID"),
                         BotCommand("setschedule", "Set daily scraping schedule times (HH:MM)"),
                         BotCommand("setautoscraplimit", "Set auto-scrape limit (default: 8, recommended: 6-8)"),
+                        BotCommand("setscoutlimit", "Set zero-download metadata scout limit (1-50, default: 20)"),
+                        BotCommand("setkeywords", "Set Auto-Input target keywords (e.g. Anushka Sharma)"),
+                        BotCommand("setnewsdata", "Set NewsData.io API key (primary news provider)"),
+                        BotCommand("setgnews", "Set GNews API key"),
+                        BotCommand("setguardian", "Set The Guardian Open Platform API key"),
                         BotCommand("instagramtoken", "Set Instagram Access Token"),
                         BotCommand("instagramid", "Set Instagram Business Account ID"),
                         BotCommand("facebookid", "Set Facebook Page ID"),
@@ -4468,6 +4508,78 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving auto-scrape limit: {_e}")
 
+        async def _cmd_setscoutlimit(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text(
+                    "Usage: `/setscoutlimit <1-50>`\n\n"
+                    "Controls how many latest videos the Zero-Download Metadata Scout inspects "
+                    "in **Auto Input** mode before selecting clips to download.\n"
+                    "Example: `/setscoutlimit 20`"
+                )
+                return
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_metadata_scout_limit
+                val = max(1, min(50, int(args_text.strip())))
+                uid = str(update.effective_chat.id)
+                set_user_metadata_scout_limit(uid, val)
+                await update.message.reply_text(
+                    f"🔍 **Zero-Download Metadata Scout Limit updated to:** `{val}` videos\n"
+                    f"✅ Saved to your Telegram profile vault & synced!"
+                )
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Invalid limit (must be 1–50): {_e}")
+
+        async def _cmd_setkeywords(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text(
+                    "Usage: `/setkeywords <keyword1, keyword2>`\n\n"
+                    "Sets target keywords for **Auto Input** News + Creative Planner mode "
+                    "(does not affect Manual Input uploads).\n"
+                    "Example: `/setkeywords Anushka Sharma, Bollywood`"
+                )
+                return
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_auto_target_keywords
+                uid = str(update.effective_chat.id)
+                set_user_auto_target_keywords(uid, args_text)
+                await update.message.reply_text(
+                    f"🎯 **Auto-Input Target Keywords saved:** `{args_text}`\n"
+                    f"✅ Synced to your profile vault (Auto Input mode only)."
+                )
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving target keywords: {_e}")
+
+        async def _cmd_setnews_provider(provider: str, label: str, usage_cmd: str, update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text(f"Usage: `/{usage_cmd} YOUR_{provider.upper()}_API_KEY`")
+                return
+            try:
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_news_api_key
+                ok = set_user_news_api_key(str(update.effective_chat.id), provider, args_text)
+                if ok:
+                    await update.message.reply_text(
+                        f"📰 **{label} API Key saved & synced as your credential!**"
+                    )
+                else:
+                    await update.message.reply_text(f"⚠️ Could not save {label} API key.")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving {label} API key: {_e}")
+
+        async def _cmd_setnewsdata(update, context):
+            await _cmd_setnews_provider("newsdata", "NewsData.io", "setnewsdata", update, context)
+
+        async def _cmd_setgnews(update, context):
+            await _cmd_setnews_provider("gnews", "GNews", "setgnews", update, context)
+
+        async def _cmd_setguardian(update, context):
+            await _cmd_setnews_provider("guardian", "The Guardian", "setguardian", update, context)
+
+        async def _cmd_setnewsapi(update, context):
+            await _cmd_setnews_provider("newsapi", "NewsAPI.org", "setnewsapi", update, context)
+
         async def _cmd_myconfig(update, context):
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import format_user_credentials_summary
@@ -4556,6 +4668,14 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setschedule", _cmd_setschedule))
         app.add_handler(CommandHandler("setautoscraplimit", _cmd_setautoscraplimit))
         app.add_handler(CommandHandler("autoscraplimit", _cmd_setautoscraplimit))
+        app.add_handler(CommandHandler("setscoutlimit", _cmd_setscoutlimit))
+        app.add_handler(CommandHandler("scoutlimit", _cmd_setscoutlimit))
+        app.add_handler(CommandHandler("setkeywords", _cmd_setkeywords))
+        app.add_handler(CommandHandler("settargetkeywords", _cmd_setkeywords))
+        app.add_handler(CommandHandler("setnewsdata", _cmd_setnewsdata))
+        app.add_handler(CommandHandler("setgnews", _cmd_setgnews))
+        app.add_handler(CommandHandler("setguardian", _cmd_setguardian))
+        app.add_handler(CommandHandler("setnewsapi", _cmd_setnewsapi))
         app.add_handler(CommandHandler("setytclient", _cmd_setytclient))
         app.add_handler(CommandHandler("instagramtoken", _cmd_instagramtoken))
         app.add_handler(CommandHandler("instagramid", _cmd_instagramid))

@@ -148,7 +148,7 @@ def run_meeting_pipeline(
     output_dir: str = "data/recordings",
     duration: Optional[int] = None,
     mic_device: Optional[str] = None,
-    model_size: str = "base"
+    model_size: str = "tiny"
 ) -> str:
     """Executes the full recording -> whisper -> gemini -> JSON export workflow."""
 
@@ -246,7 +246,7 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=int, default=None, help="Recording duration in seconds (optional).")
     parser.add_argument("--output-dir", type=str, default="data/recordings", help="Output directory for WAV & JSON.")
     parser.add_argument("--mic-device", type=str, default=None, help="Name of microphone input device for dual recording.")
-    parser.add_argument("--model-size", type=str, default="base", help="Faster-Whisper model size (tiny, base, small, medium, large-v3).")
+    parser.add_argument("--model-size", type=str, default="tiny", help="Faster-Whisper model size (tiny, base, small, medium, large-v3).")
 
     args = parser.parse_args()
     run_meeting_pipeline(

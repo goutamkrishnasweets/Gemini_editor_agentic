@@ -83,6 +83,66 @@ def _run_music_driven_fallback(
         return {"status": "FAILED", "mode": "DSP_FALLBACK", "error": str(e)}
 
 
+def _apply_creative_brief_to_shots(
+    micro_shots: Optional[List[Dict[str, Any]]],
+    forensic_context: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Auto-Input-Only hook-first shot ordering:
+    When Forensic Analyzer located `matched_creative_shots` for an Auto-Input
+    `creative_brief`, promotes the `hook` shot into the opening 0-3s position
+    and merges remaining matched shots before generic rhythm micro_shots.
+    Manual Input (no creative_brief) returns micro_shots completely unchanged.
+    """
+    base_shots = list(micro_shots or [])
+    if not isinstance(forensic_context, dict) or not forensic_context.get("creative_brief"):
+        return base_shots
+
+    matched = forensic_context.get("matched_creative_shots") or []
+    if not isinstance(matched, list) or not matched:
+        return base_shots
+
+    hooks = [s for s in matched if str(s.get("role", "")).lower() == "hook"]
+    others = [s for s in matched if str(s.get("role", "")).lower() != "hook"]
+    ordered_creative: List[Dict[str, Any]] = []
+
+    for sh in hooks + others:
+        try:
+            st = float(sh.get("start", 0.0))
+            en = float(sh.get("end", st + 2.0))
+            if str(sh.get("role", "")).lower() == "hook" and (en - st) > 3.0:
+                en = round(st + 3.0, 3)
+            if en > st:
+                ordered_creative.append({
+                    "start": round(st, 3),
+                    "end": round(en, 3),
+                    "_section": sh.get("role", "hook"),
+                    "score": float(sh.get("score", 0.95)),
+                    "reason": sh.get("reason", ""),
+                })
+        except (ValueError, TypeError):
+            continue
+
+    if not ordered_creative:
+        return base_shots
+
+    # Append non-overlapping micro_shots so timeline stays rich
+    merged = list(ordered_creative)
+    for ms in base_shots:
+        try:
+            ms_st = float(ms.get("start", 0.0))
+            ms_en = float(ms.get("end", 0.0))
+        except (ValueError, TypeError):
+            continue
+        overlaps = any(
+            min(ms_en, c["end"]) - max(ms_st, c["start"]) > 0.5
+            for c in merged
+        )
+        if not overlaps and ms_en > ms_st:
+            merged.append(ms)
+    return merged
+
+
 def synthesize_editing_plan(
     video_path: str,
     output_path: str,
@@ -112,8 +172,13 @@ def synthesize_editing_plan(
     engine = GeminiFFmpegEngine(api_key=api_key)
     route_params = (forensic_context or {}).get("route_params", {})
     lyric_intel = (forensic_context or {}).get("lyric_intel", {})
+    creative_brief = (forensic_context or {}).get("creative_brief")
     bpm = (route_params.get("bpm") or lyric_intel.get("tempo_bpm") or 120.0)
     emotion = lyric_intel.get("dominant_emotion", "hype")
+
+    # Enforce Auto-Input Creative Planner hook-first shot ordering (no-op on Manual Input)
+    if creative_brief:
+        micro_shots = _apply_creative_brief_to_shots(micro_shots, forensic_context)
 
     shot_plan_text = ""
     if micro_shots:
@@ -127,11 +192,22 @@ def synthesize_editing_plan(
             sc = shot.get("score", 0.8)
             shot_plan_text += f"  - Shot {i+1}: start_time={st:.3f}s, end_time={en:.3f}s (duration={en-st:.3f}s) | section={sec} | score={sc}\n"
 
+    creative_brief_text = ""
+    if isinstance(creative_brief, dict):
+        creative_brief_text = (
+            "\n\n### AUTO-INPUT CREATIVE PLANNER BRIEF (HIGHEST EDITORIAL PRIORITY):\n"
+            f"Target: {creative_brief.get('target_keyword', '')} | Angle: {creative_brief.get('story_angle', '')}\n"
+            f"Opening 0-3s Hook Visual: {creative_brief.get('first_3s_visual_directive', '')}\n"
+            f"Spoken Hook Line: \"{creative_brief.get('hook_line', '')}\"\n"
+            f"Enforced Tools: {creative_brief.get('enforced_feature_flags', {})}\n"
+        )
+
     user_req = (
         f"Master rhythm edit for video intent '{(forensic_context or {}).get('intent', 'viral_reel')}', "
         f"visual tone '{(forensic_context or {}).get('tone', 'aspirational')}', "
         f"BGM '{os.path.basename(selected_bgm_path or '')}' at {bpm:.0f} BPM ({emotion}). "
         f"Target duration: {target_duration}s."
+        + creative_brief_text
         + shot_plan_text
     )
 
@@ -202,6 +278,10 @@ def synthesize_editing_plan(
         extra_inputs["rtb_timeline"] = micro_shots
     if forensic_context and forensic_context.get("lyric_intel"):
         extra_inputs["lyric_intel"] = forensic_context["lyric_intel"]
+    if route_params:
+        extra_inputs["route_params"] = route_params
+    if isinstance(creative_brief, dict):
+        extra_inputs["creative_brief"] = creative_brief
 
     if forensic_context:
         # Pass inpainted_upfront flag explicitly to prevent duplicate delogo runs

@@ -1,0 +1,31 @@
+# =============================================================================
+# Gemini Editor — Pure-Python Requirements for AnLinux Ubuntu (Termux ARM64)
+# =============================================================================
+# Used by setup_termux_ubuntu.sh after installing ffmpeg + the 4 native ARM64
+# Ubuntu binaries (python3-opencv, python3-numpy, python3-pil,
+# python3-cryptography) via apt — zero C/C++/Rust compilation on phone.
+#
+# Gemini TTS (PRIMARY) is built into google-genai (gemini-2.5-flash-preview-tts).
+# faster-whisper (tiny model, ~75 MB) is installed separately by
+# setup_termux_ubuntu.sh with --prefer-binary (non-fatal if no ARM64 wheel).
+# =============================================================================
+
+# --- CORE & HTTP ---
+requests>=2.31.0
+python-dotenv>=1.0.0
+json-repair>=0.30.0
+jsonschema>=4.21.0
+
+# --- TELEGRAM BOT & VAULT ---
+python-telegram-bot>=21.0
+pyrogram>=2.0.106
+
+# --- GOOGLE / GEMINI (AI + PRIMARY GEMINI TTS) / YOUTUBE ---
+google-genai>=0.1.0
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.2.0
+
+# --- MEDIA / TTS ---
+yt-dlp>=2024.3.0
+# Gemini TTS (PRIMARY) -> powered by google-genai above (gemini-2.5-flash-preview-tts)
+edge-tts>=6.1.0              # Fallback TTS when Gemini TTS is unavailable

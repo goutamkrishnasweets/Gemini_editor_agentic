@@ -1,8 +1,11 @@
-# tts_engine.py - edge-tts implementation with Audio Normalization
+# narrator.py - Gemini TTS (primary) + edge-tts (fallback) with Audio Normalization
 import sys
 import os
 import asyncio
+import base64
 import subprocess
+import wave
+from typing import Optional
 
 import logging as _logging
 _logging.getLogger("asyncio").setLevel(_logging.WARNING)  # silence IocpProactor spam
@@ -221,6 +224,146 @@ class TTSEngine:
         except Exception:
             return False
 
+    GEMINI_TTS_VOICES = {
+        "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+        "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
+        "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
+        "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
+        "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+    }
+
+    def _resolve_gemini_voice(self, voice: Optional[str]) -> str:
+        """Resolves a Gemini prebuilt voice name (maps Edge-TTS voice names cleanly)."""
+        env_voice = os.getenv("GEMINI_TTS_VOICE", "Kore").strip() or "Kore"
+        if not voice:
+            return env_voice
+        clean = str(voice).strip()
+        for v in self.GEMINI_TTS_VOICES:
+            if clean.lower() == v.lower():
+                return v
+        # Map common male/female Edge-TTS voice names to natural Gemini voices
+        lower = clean.lower()
+        if any(m in lower for m in ("midhun", "guy", "andrew", "brian", "christopher", "male", "davis", "tony")):
+            return "Puck"
+        return env_voice
+
+    def _generate_gemini_tts(
+        self,
+        text: str,
+        output_path: str,
+        voice_name: Optional[str] = None,
+        tone: str = "confident",
+        api_key: Optional[str] = None,
+    ) -> bool:
+        """
+        PRIMARY TTS engine: generates voiceover via Google Gemini TTS
+        (gemini-2.5-flash-preview-tts) using google-genai, converting raw 24kHz
+        PCM output into a valid WAV/MP3 file.
+        """
+        key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not key:
+            return False
+
+        clean_text = self._sanitize_text(text)
+        if not clean_text or len(clean_text.strip()) < 2:
+            return False
+
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            return False
+
+        model_name = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts").strip()
+        gemini_voice = self._resolve_gemini_voice(voice_name)
+        prompt_text = (
+            f"Read the following script in a {tone}, natural short-form voiceover style:\n\n"
+            f"{clean_text}"
+        )
+
+        try:
+            client = genai.Client(api_key=key)
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=prompt_text,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=gemini_voice,
+                            )
+                        )
+                    ),
+                ),
+            )
+
+            audio_data = None
+            mime_type = ""
+            if hasattr(resp, "candidates") and resp.candidates:
+                for cand in resp.candidates:
+                    parts = getattr(getattr(cand, "content", None), "parts", None) or []
+                    for part in parts:
+                        inline = getattr(part, "inline_data", None)
+                        if inline and getattr(inline, "data", None):
+                            audio_data = inline.data
+                            mime_type = getattr(inline, "mime_type", "") or ""
+                            break
+                    if audio_data:
+                        break
+
+            if not audio_data:
+                return False
+
+            if isinstance(audio_data, str):
+                audio_bytes = base64.b64decode(audio_data)
+            else:
+                audio_bytes = bytes(audio_data)
+
+            if len(audio_bytes) < 500:
+                return False
+
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            mime_lower = mime_type.lower()
+            is_wav_or_mp3 = (
+                audio_bytes.startswith(b"RIFF")
+                or audio_bytes.startswith(b"ID3")
+                or audio_bytes[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")
+                or "mpeg" in mime_lower
+                or "mp3" in mime_lower
+            )
+            is_pcm = ("pcm" in mime_lower or "l16" in mime_lower or not is_wav_or_mp3)
+
+            if is_pcm:
+                rate_match = re.search(r"rate=(\d+)", mime_lower)
+                sample_rate = int(rate_match.group(1)) if rate_match else 24000
+                tmp_wav = output_path if output_path.lower().endswith(".wav") else f"{output_path}.gemini_pcm.wav"
+                with wave.open(tmp_wav, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio_bytes)
+                if tmp_wav != output_path:
+                    conv = subprocess.run(
+                        ["ffmpeg", "-y", "-i", tmp_wav, "-codec:a", "libmp3lame", "-q:a", "2", output_path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                    )
+                    self._safe_remove(tmp_wav)
+                    if conv.returncode != 0:
+                        return False
+            else:
+                with open(output_path, "wb") as af:
+                    af.write(audio_bytes)
+
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 500:
+                print(f"🎙️ [GEMINI TTS] Primary voiceover generated ({gemini_voice}, {os.path.getsize(output_path)//1024}KB) -> {output_path}")
+                return True
+            return False
+        except Exception as e:
+            print(f"⚠️ [GEMINI TTS] Failed ({e}) — falling back to secondary TTS.")
+            return False
+
     def _generate_pocket_tts(self, text: str, output_path: str) -> bool:
         """Generates voiceover using Kyutai pocket-tts if voice sample is provided."""
         try:
@@ -246,18 +389,33 @@ class TTSEngine:
         except Exception:
             return False
 
-    def generate_voiceover(self, text: str, voice: str, filename: str) -> str:
+    def generate_voiceover(
+        self,
+        text: str,
+        voice: str = "Kore",
+        filename: str = "voiceover.mp3",
+        tone: str = "confident",
+        api_key: Optional[str] = None,
+    ) -> str:
         """
-        Generates VO using Edge-TTS (Microsoft Azure Neural) or Pocket-TTS and applies normalization.
+        Generates VO using Gemini TTS (PRIMARY), Pocket-TTS (optional), or Edge-TTS (FALLBACK)
+        and applies loudness normalization.
         """
+        os.makedirs(TEMP_DIR, exist_ok=True)
         raw_path = os.path.join(TEMP_DIR, f"raw_{filename}")
         processed_path = os.path.join(TEMP_DIR, filename)
 
-        # 1. Try Kyutai pocket-tts zero-shot voice cloning first
-        pocket_success = self._generate_pocket_tts(text, raw_path)
-        if not pocket_success:
-            # 2. Edge-TTS (Microsoft Azure Neural)
-            # Reuse a persistent event loop to avoid spawning a new IocpProactor per call.
+        # 1. PRIMARY: Gemini TTS (via google-genai)
+        tts_success = self._generate_gemini_tts(
+            text, raw_path, voice_name=voice, tone=tone, api_key=api_key
+        )
+
+        # 2. Optional: Kyutai pocket-tts zero-shot voice cloning
+        if not tts_success:
+            tts_success = self._generate_pocket_tts(text, raw_path)
+
+        # 3. FALLBACK: Edge-TTS (Microsoft Azure Neural)
+        if not tts_success:
             try:
                 try:
                     loop = asyncio.get_event_loop()
@@ -276,7 +434,7 @@ class TTSEngine:
             cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "5.0", raw_path]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 3. Apply Normalization/Improvement
+        # 4. Apply Normalization/Improvement
         if self._apply_audio_processing(raw_path, processed_path):
             self._safe_remove(raw_path)
             return processed_path

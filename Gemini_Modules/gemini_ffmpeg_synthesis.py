@@ -3095,63 +3095,21 @@ class GeminiFFmpegEngine:
                         _hook_text = "Check out this incredible look."
             if _hook_text:
                 try:
-                    import tempfile as _tf
-                    _vo_path = os.path.join(_tf.gettempdir(), "forensic_voiceover.mp3")
-                    _vo_generated = False
-
-                    # ── PRIMARY: Gemini TTS ───────────────────────────────────
-                    try:
-                        _tone = (forensic.get("content_director") or {}).get("tone", "confident")
-                        _tts_prompt = (
-                            f"Speak the following as a {_tone} short-form video hook voiceover. "
-                            f"Keep it punchy, natural, under 10 seconds:\n\n\"{_hook_text}\""
-                        )
-                        _tts_resp = None
-                        if _HAS_ROUTER and gemini_router:
-                            _tts_resp = gemini_router.generate(
-                                task_type="creative",
-                                prompt=[_tts_prompt],
-                                module_name="gemini_ffmpeg_synthesis_tts",
-                                gen_config={"response_modalities": ["AUDIO"]},
-                                api_key=self.api_key,
-                            )
-                        _audio_data = None
-                        if hasattr(_tts_resp, "candidates"):
-                            for _cand in _tts_resp.candidates:
-                                for _part in _cand.content.parts:
-                                    if hasattr(_part, "inline_data") and _part.inline_data:
-                                        _audio_data = _part.inline_data.data
-                                        break
-                        if _audio_data:
-                            with open(_vo_path, "wb") as _af:
-                                _af.write(_audio_data)
-                            if os.path.exists(_vo_path) and os.path.getsize(_vo_path) > 500:
-                                _vo_generated = True
-                                logger.info(f"🎙️ [GEMINI TTS] Voiceover generated ({len(_audio_data)//1024}KB) -> {_vo_path}")
-                    except Exception as _gtts_err:
-                        logger.debug(f"🎙️ [GEMINI TTS] Not available, falling back to edge-tts: {_gtts_err}")
-
-                    # ── FALLBACK: edge-tts via narrator.py ────────────────────
-                    if not _vo_generated:
-                        try:
-                            from Audio_Modules.narrator import TTSEngine
-                            _tts = TTSEngine()
-                            _vo_path = _tts.generate_voiceover(
-                                text=_hook_text,
-                                voice="en-US-AvaNeural",
-                                filename="forensic_voiceover.mp3",
-                            )
-                            if _vo_path and os.path.exists(_vo_path) and os.path.getsize(_vo_path) > 500:
-                                _vo_generated = True
-                                logger.info(f"🎙️ [EDGE-TTS FALLBACK] Voiceover generated -> {_vo_path}")
-                        except Exception as _etts_err:
-                            logger.warning(f"🎙️ [TTS FALLBACK] edge-tts also failed: {_etts_err}")
-
-                    if _vo_generated:
+                    _tone = (forensic.get("content_director") or {}).get("tone", "confident")
+                    from Audio_Modules.narrator import TTSEngine
+                    _tts = TTSEngine()
+                    _vo_path = _tts.generate_voiceover(
+                        text=_hook_text,
+                        voice=os.getenv("GEMINI_TTS_VOICE", "Kore"),
+                        filename="forensic_voiceover.mp3",
+                        tone=_tone,
+                        api_key=self.api_key,
+                    )
+                    if _vo_path and os.path.exists(_vo_path) and os.path.getsize(_vo_path) > 500:
                         extra_inputs["voiceover"] = _vo_path
-                        logger.info(f"🎙️ [TTS BRIDGE] Wired voiceover into pipeline: {_vo_path}")
+                        logger.info(f"🎙️ [TTS BRIDGE] Wired voiceover (Gemini TTS primary) into pipeline: {_vo_path}")
                     else:
-                        logger.warning("🎙️ [TTS BRIDGE] Both Gemini TTS and edge-tts failed — narration skipped.")
+                        logger.warning("🎙️ [TTS BRIDGE] Both Gemini TTS and edge-tts fallback failed — narration skipped.")
                 except Exception as _tts_bridge_err:
                     logger.warning(f"🎙️ [TTS BRIDGE] Unexpected error: {_tts_bridge_err}")
             else:

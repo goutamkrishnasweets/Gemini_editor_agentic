@@ -236,6 +236,78 @@ def get_rotated_max_two_accounts(max_accounts: int = 2, for_chat_id: Optional[An
         return []
 
 
+def run_keyword_creative_auto_batch(
+    keywords: List[str],
+    sources: Optional[List[str]] = None,
+    for_chat_id: Optional[Any] = None,
+    scout_limit: Optional[int] = None,
+    api_key: Optional[str] = None,
+) -> List[str]:
+    """
+    Auto-Input-Only News + Zero-Download Metadata Scout + Gemini Creative Planner flow.
+    NEVER called by Manual Input mode.
+    Returns list of downloaded clip directories seeded with `creative_brief.json`.
+    """
+    from Intelligence_Modules.news_trend_fetcher import (
+        NewsTrendFetcher,
+        scout_candidate_videos_metadata,
+    )
+    from Gemini_Modules.creative_planner import GeminiCreativePlanner, save_creative_brief
+    from Downloader_Modules.downloader_main import run_phase1_ingestion
+
+    uid = str(for_chat_id).strip() if for_chat_id is not None else None
+    eff_key = api_key
+    if not eff_key and uid:
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_gemini_key
+            eff_key = get_user_gemini_key(uid)
+        except Exception:
+            eff_key = None
+
+    fetcher = NewsTrendFetcher(user_id=uid)
+    planner = GeminiCreativePlanner(api_key=eff_key)
+    prepared_dirs: List[str] = []
+
+    for kw in keywords:
+        clean_kw = (kw or "").strip()
+        if not clean_kw:
+            continue
+        logger.info("🎯 [AUTO CREATIVE BATCH] Running News + Metadata Scout + Planner for keyword: '%s'", clean_kw)
+
+        news_items = fetcher.fetch(clean_kw, max_results=6)
+        candidates = scout_candidate_videos_metadata(
+            keywords=[clean_kw],
+            sources=sources,
+            limit=scout_limit,
+            user_id=uid,
+        )
+        brief = planner.plan(
+            target_keyword=clean_kw,
+            news_items=news_items,
+            candidate_videos=candidates,
+        )
+        selected_urls = brief.get("selected_video_urls") or []
+        if not selected_urls:
+            logger.warning("⚠️ [AUTO CREATIVE BATCH] No matching candidate video URLs found for '%s'.", clean_kw)
+            continue
+
+        for sel_url in selected_urls:
+            try:
+                dl_res = run_phase1_ingestion(mode="manual", target_url=sel_url)
+                files = dl_res.get("downloaded_files") or []
+                for fpath in files:
+                    if fpath and os.path.exists(fpath):
+                        clip_dir = os.path.dirname(os.path.abspath(fpath))
+                        save_creative_brief(brief, clip_dir)
+                        if clip_dir not in prepared_dirs:
+                            prepared_dirs.append(clip_dir)
+                        logger.info("🧠 [AUTO CREATIVE BATCH] Seeded creative_brief.json -> %s", clip_dir)
+            except Exception as dl_err:
+                logger.warning("⚠️ [AUTO CREATIVE BATCH] Failed downloading selected URL '%s': %s", sel_url, dl_err)
+
+    return prepared_dirs
+
+
 def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any] = None) -> List[str]:
     """
     Runs a scheduled batch with max 2 target accounts:
@@ -302,15 +374,32 @@ def run_scheduled_scraper_batch(max_accounts: int = 2, for_chat_id: Optional[Any
     except (ValueError, TypeError):
         scrape_limit = 8
 
-    # Run ingestion for selected accounts (scrapes 8 clips, avoiding top 3 pinned clips)
-    ingest_res = run_phase1_ingestion(mode="auto", limit_per_account=scrape_limit, target_accounts=target_accounts)
-    downloaded_files = ingest_res.get("downloaded_files", [])
-    if not ingest_res.get("success") or not downloaded_files:
-        logger.warning("⚠️ [SCHEDULED BATCH] Ingestion returned 0 new clips.")
-        return []
+    # Auto-Input-Only Creative Planner Mode (when target keywords are configured via chat or env)
+    target_dirs: List[str] = []
+    try:
+        from Telegram_Storage_Modules.telegram_user_manager import get_user_auto_target_keywords
+        auto_keywords = get_user_auto_target_keywords(for_chat_id)
+    except Exception:
+        auto_keywords = [k.strip() for k in os.getenv("AUTO_INPUT_TARGET_KEYWORDS", "").split(",") if k.strip()]
 
-    # Target newly downloaded clip directories up to processing limit (6 clips)
-    target_dirs = list(set(os.path.dirname(f) for f in downloaded_files if os.path.exists(f)))[:clips_per_run]
+    if auto_keywords:
+        logger.info("🧠 [AUTO INPUT CREATIVE MODE] Target keywords active: %s", auto_keywords)
+        target_dirs = run_keyword_creative_auto_batch(
+            keywords=auto_keywords,
+            sources=target_accounts,
+            for_chat_id=for_chat_id,
+        )[:clips_per_run]
+
+    if not target_dirs:
+        # Standard account auto-scrape ingestion (scrapes N clips, avoiding top 3 pinned clips)
+        ingest_res = run_phase1_ingestion(mode="auto", limit_per_account=scrape_limit, target_accounts=target_accounts)
+        downloaded_files = ingest_res.get("downloaded_files", [])
+        if not ingest_res.get("success") or not downloaded_files:
+            logger.warning("⚠️ [SCHEDULED BATCH] Ingestion returned 0 new clips.")
+            return []
+
+        # Target newly downloaded clip directories up to processing limit (6 clips)
+        target_dirs = list(set(os.path.dirname(f) for f in downloaded_files if os.path.exists(f)))[:clips_per_run]
 
     # Run AI Master Editor on target downloaded clips
     phase2_res = run_phase2_orchestration(target_dirs=target_dirs, limit=clips_per_run)

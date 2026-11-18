@@ -84,11 +84,9 @@ VALID_SECTIONS = {"intro", "verse", "pre_chorus", "chorus", "drop", "bridge", "o
 # Minimum audio file size — skip analysis on tiny/corrupt extracts
 _MIN_AUDIO_BYTES = 32_768  # 32 KB
 
-# Which faster-whisper model tier to use IF no Phase-1 transcript already
-# exists and we have to run ASR fresh. "base" trades accuracy for speed;
-# "medium" (default here) trades speed for accuracy — precision is
-# the point, so this defaults to medium. Override with env if you need speed.
-WHISPER_MODEL_SIZE = os.getenv("LYRIC_WHISPER_MODEL_SIZE", "medium")
+# Default to "tiny" (~75 MB) because Gemini refines/corrects ASR output downstream.
+# Override with LYRIC_WHISPER_MODEL_SIZE or WHISPER_MODEL_SIZE if needed.
+WHISPER_MODEL_SIZE = os.getenv("LYRIC_WHISPER_MODEL_SIZE", os.getenv("WHISPER_MODEL_SIZE", "tiny"))
 
 # How long we actually wait for Gemini to finish the audio + math + ASR
 # fusion call before giving up and falling back to BeatEngine-only output.

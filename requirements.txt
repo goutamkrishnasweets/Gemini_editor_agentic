@@ -1,118 +1,37 @@
 # =============================================================================
-# AMTCE Requirements — Clean & Production-Ready for Linux/Windows/Docker
+# Gemini Editor Requirements — Minimal Essential Set (Termux AnLinux Ubuntu / CI)
+# =============================================================================
+# Only the 16 packages strictly required to run main.py and the full editing
+# pipeline. Whisper defaults to 'tiny' (~75 MB) since Gemini corrects transcripts
+# downstream. Gemini TTS (via google-genai) is the primary TTS engine.
+#
+# On AnLinux Ubuntu (Termux ARM64), run: bash setup_termux_ubuntu.sh
+# (installs the 4 native packages below via apt with zero compilation).
 # =============================================================================
 
-# --- ASYNC / HTTP ---
-aiohttp>=3.9.0
-anyio>=4.0.0
-httpcore>=1.0.0
-httpx>=0.27.0
+# --- CORE & HTTP ---
 requests>=2.31.0
-requests-oauthlib>=1.3.0
-urllib3>=2.0.0
-
-# --- CORE UTILITIES ---
-click>=8.0.0
-colorama>=0.4.6
-distro>=1.9.0
-filelock>=3.13.0
-filetype>=1.2.0
-fsspec>=2024.1.0
-json-repair>=0.30.0
-packaging>=24.0
-psutil>=5.9.0
 python-dotenv>=1.0.0
-pytz>=2024.1
-rich>=13.0.0
-tenacity>=8.2.0
-tqdm>=4.66.0
-typing_extensions>=4.10.0
+json-repair>=0.30.0
+jsonschema>=4.21.0
 
-# --- SCHEDULING ---
-APScheduler>=3.10.0
-schedule>=1.2.0
-
-# --- TELEGRAM BOT ---
+# --- TELEGRAM BOT & VAULT ---
 python-telegram-bot>=21.0
+pyrogram>=2.0.106
 
-# --- GRADIO UI ---
-gradio>=4.0.0
-ffmpy>=0.3.0
-
-# --- GOOGLE / CLOUD ---
-google-api-python-client>=2.100.0
-google-auth>=2.28.0
-google-auth-oauthlib>=1.2.0
+# --- GOOGLE / GEMINI (AI + PRIMARY GEMINI TTS) / YOUTUBE ---
 google-genai>=0.1.0
-google-generativeai>=0.5.0
-protobuf>=4.25.0,<6.0.0
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.2.0
 
-# --- GRPC ---
-grpcio>=1.60.0
-grpcio-status>=1.60.0,<1.72.0
+# --- MEDIA / TTS / SPEECH ---
+yt-dlp>=2024.3.0
+# Gemini TTS (PRIMARY) -> powered by google-genai above (gemini-2.5-flash-preview-tts)
+edge-tts>=6.1.0              # Fallback TTS when Gemini TTS is unavailable
+faster-whisper>=1.0.0        # Defaults to 'tiny' (~75 MB); Gemini corrects transcripts
 
-# --- AI & TRANSCRIBE ---
-faster-whisper>=1.0.0
-huggingface_hub>=0.22.0
-
-# --- VISION / IMAGE ---
+# --- VISION & SECURITY (prebuilt via apt in setup_termux_ubuntu.sh) ---
 opencv-python-headless>=4.9.0.80,<5.0.0
 Pillow>=10.0.0
-scenedetect[opencv-headless]>=0.6.0
-scenedetect>=0.6.2
-scikit-image>=0.22.0
-
-# --- NUMERICAL / ML ---
-joblib>=1.3.0
-matplotlib>=3.8.0
 numpy>=1.26.0,<2.2.0
-onnxruntime>=1.17.0
-pandas>=2.2.0
-scikit-learn>=1.4.0
-scipy>=1.12.0
-
-# --- PYDANTIC & API ---
-pydantic>=2.6.0
-pydantic-settings>=2.2.0
-apify-client>=1.6.0
-PyYAML>=6.0.1
-jsonschema>=4.21.0
-fastapi>=0.110.0
-uvicorn>=0.27.0
-pyrogram>=2.0.106
-tgcrypto>=1.2.5
-nest_asyncio>=1.6.0
-
-# --- AUDIO ---
-audioread>=3.0.0
-av>=11.0.0
-edge-tts>=6.1.0
-gTTS>=2.5.0
-librosa>=0.10.0
-mutagen>=1.47.0
-pydub>=0.25.1
-soundfile>=0.12.0
-shazamio>=0.6.0
-
-# --- VIDEO / MEDIA ---
-yt-dlp>=2024.3.0
-youtube-transcript-api>=0.6.0
-pytube>=15.0.0
-
-# --- SECURITY & AUTH ---
-cffi>=1.16.0
 cryptography>=42.0.0
-PyJWT>=2.8.0
-pynacl>=1.5.0
-
-# --- WINDOWS ONLY COMPATIBILITY ---
-MouseInfo>=0.1.3; sys_platform == 'win32'
-PyAutoGUI>=0.9.54; sys_platform == 'win32'
-PyGetWindow>=0.0.9; sys_platform == 'win32'
-PyMsgBox>=2.0.1; sys_platform == 'win32'
-PyRect>=0.2.0; sys_platform == 'win32'
-PyScreeze>=1.0.1; sys_platform == 'win32'
-pytweening>=1.2.0; sys_platform == 'win32'
-pyreadline3>=3.4.1; sys_platform == 'win32'
-pywin32>=306; sys_platform == 'win32'
-pyperclip>=1.8.2; sys_platform == 'win32'

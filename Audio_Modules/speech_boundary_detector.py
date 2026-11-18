@@ -26,7 +26,7 @@ _WHISPER_MODELS: Dict[str, Any] = {}
 _WHISPER_LOCK = threading.Lock()
 
 
-def _get_whisper_model(model_size: str = "base") -> Any:
+def _get_whisper_model(model_size: str = "tiny") -> Any:
     """Singleton model cache with bounded CPU threads to prevent memory leaks and MKL exhaustion."""
     with _WHISPER_LOCK:
         if model_size not in _WHISPER_MODELS:
@@ -46,12 +46,13 @@ def _get_whisper_model(model_size: str = "base") -> Any:
 def extract_speech_boundaries(
     audio_wav_path: str,
     output_json_path: Optional[str] = None,
-    model_size: str = "base"
+    model_size: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Runs faster-whisper on audio_wav_path to produce word-level timestamps,
     sentence structures, and safe cut boundaries.
     """
+    model_size = model_size or os.getenv("WHISPER_MODEL_SIZE", "tiny")
     if not os.path.exists(audio_wav_path):
         logger.warning(f"⚠️ [Speech Boundary] WAV file not found: {audio_wav_path}")
         return {"words": [], "sentences": [], "clean_cut_timestamps": [], "has_speech": False}
