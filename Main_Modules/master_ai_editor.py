@@ -12,7 +12,7 @@ Architecture (2-Pass Perception & Tactical FFmpeg Master Synthesis):
        └─ Fast 480p H.264 proxy compression
           │
           ▼
-    2. 2-Pass Adaptive Frame Sampler (`strategic_frame_sampler.py`)
+    2. Forensic Perception & Vector Analysis (`forensic_analyzer.py`)
        ├─ HSV Shot-Cut Transitions
        ├─ Hook Zone (0-5s) + Climax Zone + Motion Peaks
        └─ 256x256 High-Gradient Micro-Crops (watermarks/text)
@@ -88,7 +88,6 @@ logger = logging.getLogger("master_ai_editor")
 # canonical AMTCE modules are imported rather than the shadow copies living under
 # `simpler update/`.
 from Main_Modules.proxy_encoder import encode_proxy
-from Main_Modules.strategic_frame_sampler import extract_strategic_frame_files, extract_high_gradient_crops
 from Gemini_Modules.forensic_analyzer import ForensicVideoAnalyzer
 from Gemini_Modules.gemini_ffmpeg_synthesis import GeminiFFmpegEngine
 from Audio_Modules.audio_extractor import extract_audio
@@ -155,13 +154,8 @@ class MasterAIEditor:
             proxy_path = encode_proxy(video_path, overwrite=False)
             logger.info(f"   ✓ Proxy Ready: {proxy_path}")
 
-            # ── STEP 2: 2-Pass Adaptive Frame Extraction ─────────
-            logger.info("👁️ [Step 2/6] Sampling Strategic Keyframe Images...")
-            frame_files = extract_strategic_frame_files(proxy_path, tmp_dir, include_micro_crops=False)
-            logger.info(f"   ✓ Extracted {len(frame_files)} strategic keyframes")
-
-            # ── STEP 2.5: Candidate BGM Audio Metadata Scan ─────────────────
-            logger.info("🎵 [Step 2.5/6] Scanning candidate BGM audio track metadata...")
+            # ── STEP 2: Candidate BGM Audio Metadata Scan ─────────────────
+            logger.info("🎵 [Step 2/5] Scanning candidate BGM audio track metadata...")
             try:
                 from Audio_Modules.beat_engine import get_candidate_audio_metadata
                 audio_candidates = get_candidate_audio_metadata(audio_dir=audio_dir, max_tracks=5)
@@ -173,10 +167,9 @@ class MasterAIEditor:
             # ── STEP 3: Multimodal Vision Perception & Audio Matching ───────
             parent_folder = os.path.basename(os.path.dirname(video_path))
             creator_name = parent_folder.split("_")[0] if "_" in parent_folder else "unknown"
-            logger.info(f"🔬 [Step 3/6] Multimodal Vision & Audio Perception: Creator='{creator_name}'...")
+            logger.info(f"🔬 [Step 3/5] Multimodal Vision & Audio Perception: Creator='{creator_name}'...")
             forensic_context = self.forensic_analyzer.analyze(
                 proxy_path,
-                frame_paths=frame_files,
                 creator_name=creator_name,
                 audio_candidates=audio_candidates
             )

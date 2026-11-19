@@ -620,6 +620,41 @@ def set_user_mtproto(user_id_str: str, api_id: str, api_hash: str) -> bool:
     return False
 
 
+def set_user_cloudflare(user_id_str: str, account_id: str, api_token: str) -> bool:
+    """Saves user Cloudflare Workers AI Account ID and API Token for free image generation."""
+    users = load_all_users()
+    user_id_str = str(user_id_str).strip()
+    clean_acc = str(account_id).strip()
+    clean_tok = str(api_token).strip()
+    if clean_acc and clean_tok:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["cloudflare_account_id"] = clean_acc
+        u_rec["cloudflare_api_token"] = clean_tok
+        os.environ["CLOUDFLARE_ACCOUNT_ID"] = clean_acc
+        os.environ["CLOUDFLARE_API_TOKEN"] = clean_tok
+        if _is_admin_user(user_id_str):
+            _persist_env_var_to_disk("CLOUDFLARE_ACCOUNT_ID", clean_acc)
+            _persist_env_var_to_disk("CLOUDFLARE_API_TOKEN", clean_tok)
+        save_all_users(users)
+        logger.info("🎨 [TELEGRAM USER MANAGER] Cloudflare AI credentials saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def get_user_cloudflare(user_id_str: Optional[Union[str, int]] = None) -> Tuple[Optional[str], Optional[str]]:
+    """Returns (account_id, api_token) for user or global env."""
+    acc = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip() or None
+    tok = os.getenv("CLOUDFLARE_API_TOKEN", "").strip() or None
+    if acc and tok:
+        return acc, tok
+    if user_id_str:
+        users = load_all_users()
+        u = users.get(str(user_id_str).strip(), {})
+        if u.get("cloudflare_account_id") and u.get("cloudflare_api_token"):
+            return str(u["cloudflare_account_id"]).strip(), str(u["cloudflare_api_token"]).strip()
+    return acc, tok
+
+
 def set_user_public_group_id(user_id_str: str, group_id: str) -> bool:
     """Saves user personal Telegram Public Group ID and syncs to GitHub Secrets."""
     users = load_all_users()
@@ -1441,6 +1476,8 @@ def format_user_credentials_summary(user_id_str: str) -> str:
         "   👉 Command: `/setstorage -100xxxxxxxxxx`\n",
         f"⚡ **MTProto 2GB Bypass Engine:** `{_chk('telegram_api_id', 'TELEGRAM_API_ID')}`",
         "   👉 Command: `/setmtproto <api_id> <api_hash>`\n",
+        f"🎨 **Cloudflare Workers AI (Free FLUX):** `{_chk('cloudflare_api_token', 'CLOUDFLARE_API_TOKEN')}`",
+        "   👉 Command: `/setcloudflare <account_id> <api_token>`\n",
         f"⏰ **Schedule Times:** `{_val('auto_input_schedule_times', 'AUTO_INPUT_SCHEDULE_TIMES')}`",
         "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
         f"🔢 **Auto-Scrape Limit:** `{_val('auto_scrape_limit', 'AUTO_SCRAPE_LIMIT') or '8'} reels/account`",

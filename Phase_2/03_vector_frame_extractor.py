@@ -17,7 +17,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from Main_Modules.strategic_frame_sampler import extract_frames_from_vectors, extract_strategic_frame_files
+from Core_Modules.scene_intel import extract_frames_from_vectors, extract_strategic_frame_files
 
 
 def extract_targeted_frames(

@@ -461,6 +461,26 @@ def run_phase2_pipeline(
             )
             _emit("step_03", "success", {"message": f"Extracted {len(frame_paths)} targeted keyframes."})
 
+            # Step 3b: Hero Frame Precision Extraction & Cloudflare Workers AI Regeneration
+            hero_meta = None
+            try:
+                from Image_Modules.cloudflare_image_gen import generate_hero_cover_for_clip
+                hero_meta = generate_hero_cover_for_clip(
+                    video_path=working_video_path,
+                    clip_folder=clip_dir,
+                    hero_visual=forensic_res.get("hero_visual"),
+                    user_id=clip_owner_id,
+                )
+                if hero_meta:
+                    forensic_res["hero_cover_meta"] = hero_meta
+                    if hero_meta.get("hero_cover_generated"):
+                        forensic_res["hero_cover_image"] = hero_meta["hero_cover_generated"]
+                        logger.info("🎨 [STEP 03b HERO] AI-regenerated hero cover attached to forensic context.")
+                    elif hero_meta.get("hero_frame_raw"):
+                        forensic_res["hero_cover_image"] = hero_meta["hero_frame_raw"]
+            except Exception as _hero_err:
+                logger.debug(f"[STEP 03b HERO NOTICE] Hero generation notice: {_hero_err}")
+
             # Step 4: Gemini Call 2 BGM Selector
             _emit("step_04", "running", {"message": f"Selecting optimal BGM track for clip '{folder_name}'..."})
 

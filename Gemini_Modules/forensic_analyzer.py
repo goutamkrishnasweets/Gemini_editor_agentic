@@ -256,6 +256,12 @@ Return ONLY one valid JSON object. No markdown, no commentary.
       "enable_fast_pacing": <bool>, "enable_cinematic_zoom": <bool>, "enable_speed_ramps": <bool>,
       "enable_voiceover": <bool>, "enable_price_tags": <bool>, "enable_fashion_caption": <bool>
     }
+  },
+  "hero_visual": {
+    "timestamp_sec": <float exact second of the single most visually captivating, high-energy, or emotionally resonant climax/hook moment in the entire clip>,
+    "selection_reason": "<why this frame stops the audience from scrolling and makes the perfect high-CTR cover or hook visual>",
+    "micro_detail_image_prompt": "<EXHAUSTIVE, PARTICLE-LEVEL text-to-image prompt for Cloudflare FLUX Schnell. DO NOT WRITE A BRIEF SUMMARY. Detail every minute particle: (1) Subject Anatomy & Micro-Expressions: exact gaze, iris reflections, parted lips, pore-level skin texture, hair strands catching rim light, muscle tension; (2) Clothing & Material Physics: exact fabric weave, leather/cotton/silk texture, stitching, seam lines, folds; (3) Cinematic Camera Rig: 85mm f/1.4 cine lens, ARRI Alexa 65 8k capture, millimeter-sharp focus plane, creamy anamorphic bokeh; (4) Volumetric Lighting: 3-point lighting setup, key light angle, soft diffusion fill, sharp rim separation, suspended micro-dust motes catching volumetric sun rays (Tyndall effect); (5) Color Science: 35mm Kodak Vision3 film grade, rich velvety blacks, natural dynamic range, zero flat lighting; (6) Environment & Atmosphere: micro-textures of background walls/surfaces, light spills, reflections, deep spatial depth. Everything described logically, creatively, and ultra-vividly.>",
+    "negative_prompt": "blurry, smooth airbrushed plastic skin, cartoon, anime, illustration, 3d render, distorted hands, extra fingers, deformed limbs, floating artifacts, text watermark, low resolution, flat lighting"
   }
 }
 
@@ -299,6 +305,12 @@ def _default_result() -> Dict[str, Any]:
             "intent": "unknown", "confidence": 0.0,
             "recommended_editing_style": "cinematic",
             "feature_flags": dict(flags), "safety": "risky",
+        },
+        "hero_visual": {
+            "timestamp_sec": None,
+            "selection_reason": "",
+            "micro_detail_image_prompt": "",
+            "negative_prompt": "",
         },
     }
 
@@ -1090,6 +1102,14 @@ class ForensicVideoAnalyzer:
                 except (ValueError, TypeError):
                     continue
 
+        raw_hero = data.get("hero_visual") if isinstance(data.get("hero_visual"), dict) else {}
+        hero_visual = {
+            "timestamp_sec": round(float(raw_hero.get("timestamp_sec")), 3) if _f(raw_hero.get("timestamp_sec"), None) is not None else None,
+            "selection_reason": _s(raw_hero.get("selection_reason")),
+            "micro_detail_image_prompt": _s(raw_hero.get("micro_detail_image_prompt")),
+            "negative_prompt": _s(raw_hero.get("negative_prompt")),
+        }
+
         result = {
             "watermarks": [],
             "intent": intent,
@@ -1100,6 +1120,7 @@ class ForensicVideoAnalyzer:
             "selected_audio_track": _s(data.get("selected_audio_track")),
             "creative_possibilities": creative if isinstance(creative, list) else [],
             "matched_creative_shots": matched_creative_shots,
+            "hero_visual": hero_visual,
             "safety": {"classification": safety_cls, "monetization_safe": mon_safe},
             "content_strategy": {          # backward-compat wrapper read by orchestrator
                 "intent": intent, "confidence": round(confidence, 3),

@@ -250,14 +250,13 @@ def audit_human_engagement(
         "_source": "default_fallback"
     }
 
-    # Extract sample keyframes using strategic sampler
+    # Extract sample keyframes using scene_intel if needed
     sampled_images = []
     try:
-        from Main_Modules.strategic_frame_sampler import extract_strategic_frames
-        frames = extract_strategic_frames(proxy_video_path, max_frames=6)
-        for _, pil_img in frames:
-            if pil_img:
-                sampled_images.append(pil_img)
+        from Core_Modules.scene_intel import extract_strategic_frames, frames_to_pil
+        frames_res = extract_strategic_frames(proxy_video_path, return_timestamps=False)
+        if frames_res:
+            sampled_images = frames_to_pil(frames_res[:6])
     except Exception as fe:
         logger.debug(f"Frame sampling notice: {fe}")
 

@@ -222,6 +222,10 @@ def load_bot_config_into_env():
                     os.environ["TELEGRAM_API_ID"] = str(cfg["telegram_api_id"]).strip()
                 if not os.getenv("TELEGRAM_API_HASH") and cfg.get("telegram_api_hash"):
                     os.environ["TELEGRAM_API_HASH"] = str(cfg["telegram_api_hash"]).strip()
+                if not os.getenv("CLOUDFLARE_ACCOUNT_ID") and cfg.get("cloudflare_account_id"):
+                    os.environ["CLOUDFLARE_ACCOUNT_ID"] = str(cfg["cloudflare_account_id"]).strip()
+                if not os.getenv("CLOUDFLARE_API_TOKEN") and cfg.get("cloudflare_api_token"):
+                    os.environ["CLOUDFLARE_API_TOKEN"] = str(cfg["cloudflare_api_token"]).strip()
         except Exception as _e:
             logger.debug(f"Could not load bot_config.json: {_e}")
 
@@ -392,8 +396,15 @@ def prompt_setup_gui(default_token: str = "", default_storage_id: str = "") -> T
         return None, None
 
 
-def _save_bot_config_and_env(token: str = "", storage_gid: str = "", api_id: Optional[str] = None, api_hash: Optional[str] = None):
-    """Persists Telegram credentials to bot_config.json, os.environ, Credentials/.env, and telegram_users.json."""
+def _save_bot_config_and_env(
+    token: str = "",
+    storage_gid: str = "",
+    api_id: Optional[str] = None,
+    api_hash: Optional[str] = None,
+    cf_account_id: Optional[str] = None,
+    cf_api_token: Optional[str] = None,
+):
+    """Persists Telegram & Cloudflare credentials to bot_config.json, os.environ, Credentials/.env, and telegram_users.json."""
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         cfg = {}
@@ -417,6 +428,12 @@ def _save_bot_config_and_env(token: str = "", storage_gid: str = "", api_id: Opt
         if api_hash:
             cfg["telegram_api_hash"] = str(api_hash).strip()
             os.environ["TELEGRAM_API_HASH"] = str(api_hash).strip()
+        if cf_account_id:
+            cfg["cloudflare_account_id"] = str(cf_account_id).strip()
+            os.environ["CLOUDFLARE_ACCOUNT_ID"] = str(cf_account_id).strip()
+        if cf_api_token:
+            cfg["cloudflare_api_token"] = str(cf_api_token).strip()
+            os.environ["CLOUDFLARE_API_TOKEN"] = str(cf_api_token).strip()
 
         with open(BOT_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
@@ -434,6 +451,10 @@ def _save_bot_config_and_env(token: str = "", storage_gid: str = "", api_id: Opt
             _persist_env_var_to_disk("TELEGRAM_API_ID", str(api_id).strip())
         if api_hash:
             _persist_env_var_to_disk("TELEGRAM_API_HASH", str(api_hash).strip())
+        if cf_account_id:
+            _persist_env_var_to_disk("CLOUDFLARE_ACCOUNT_ID", str(cf_account_id).strip())
+        if cf_api_token:
+            _persist_env_var_to_disk("CLOUDFLARE_API_TOKEN", str(cf_api_token).strip())
 
         admin_raw = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
         admin_id = admin_raw.split(",")[0].strip() if admin_raw else "admin"
@@ -445,6 +466,10 @@ def _save_bot_config_and_env(token: str = "", storage_gid: str = "", api_id: Opt
             u_rec["telegram_api_id"] = str(api_id).strip()
         if api_hash:
             u_rec["telegram_api_hash"] = str(api_hash).strip()
+        if cf_account_id:
+            u_rec["cloudflare_account_id"] = str(cf_account_id).strip()
+        if cf_api_token:
+            u_rec["cloudflare_api_token"] = str(cf_api_token).strip()
         save_all_users(users, sync_to_vault=False)
     except Exception as e:
         logger.warning(f"Could not persist bot configuration: {e}")
@@ -5038,6 +5063,41 @@ def start_telegram_bot_service():
                 parse_mode="Markdown"
             )
 
+        async def _cmd_setcloudflare(update, context):
+            """Sets user's Cloudflare Account ID and API Token for free FLUX Schnell image generation."""
+            args = (context.args or []) if context else []
+            if len(args) < 2:
+                await update.message.reply_text(
+                    "🎨 **Cloudflare Workers AI Setup (Free FLUX Schnell / SDXL)**\n\n"
+                    "Usage: `/setcloudflare <account_id> <api_token>`\n\n"
+                    "Get 10,000 free neurons every day (~200 free FLUX images/day):\n"
+                    "1. Visit [dash.cloudflare.com](https://dash.cloudflare.com)\n"
+                    "2. Click 'Workers & Pages' on sidebar -> copy your `Account ID`\n"
+                    "3. Click 'My Profile' -> 'API Tokens' -> 'Create Token' with 'Workers AI: Read/Edit' permission -> copy `API Token`\n"
+                    "4. Run: `/setcloudflare <account_id> <api_token>`",
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                return
+
+            cf_acc = args[0].strip()
+            cf_tok = args[1].strip()
+
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_cloudflare
+            user = update.effective_user
+            uid = str(user.id) if user else str(update.effective_chat.id)
+            set_user_cloudflare(uid, cf_acc, cf_tok)
+            _save_bot_config_and_env(token="", storage_gid="", cf_account_id=cf_acc, cf_api_token=cf_tok)
+
+            await update.message.reply_text(
+                f"✅ **Cloudflare Workers AI Activated!**\n\n"
+                f"• **Account ID:** `{cf_acc[:6]}...{cf_acc[-4:] if len(cf_acc) > 10 else ''}`\n"
+                f"• **Primary Model:** `@cf/black-forest-labs/flux-1-schnell`\n"
+                f"• **Daily Allowance:** ~200 free hyper-detailed images/day\n\n"
+                f"The editor will now automatically generate micro-detailed hero covers and visual hooks for your reels!",
+                parse_mode="Markdown"
+            )
+
         async def _cmd_myconfig(update, context):
             try:
                 from Telegram_Storage_Modules.telegram_user_manager import format_user_credentials_summary
@@ -5163,6 +5223,8 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("setstorage", _cmd_setstorage))
         app.add_handler(CommandHandler("storage", _cmd_setstorage))
         app.add_handler(CommandHandler("setmtproto", _cmd_setmtproto))
+        app.add_handler(CommandHandler("setcloudflare", _cmd_setcloudflare))
+        app.add_handler(CommandHandler("cloudflare", _cmd_setcloudflare))
 
         # Whitelist dynamic prompt commands so they route directly to handle_telegram_incoming_msg
         _DIRECT_PROMPT_COMMANDS = {
@@ -5235,13 +5297,35 @@ def start_telegram_bot_service():
             try:
                 run_seconds = float(max_run_h) * 3600.0
                 def _ci_auto_stop_worker():
-                    time.sleep(run_seconds)
-                    logger.info(f"🛑 [CI AUTO-STOP] Configured max runtime of {max_run_h}h reached ({run_seconds/60:.0f}m). Gracefully exiting...")
-                    os._exit(0)
+                    import datetime
+                    tz, _ = resolve_app_timezone()
+                    start_time = time.time()
+                    while True:
+                        time.sleep(15)
+                        elapsed = time.time() - start_time
+                        if elapsed >= run_seconds:
+                            logger.info(f"🛑 [CI AUTO-STOP] Configured max runtime of {max_run_h}h reached ({run_seconds/60:.0f}m). Gracefully exiting...")
+                            os._exit(0)
+
+                        # Enforce strict 04:20-08:20 AM and 04:20-08:20 PM IST window ceilings
+                        now_ist = datetime.datetime.now(tz)
+                        cur_hour = now_ist.hour
+                        cur_min = now_ist.minute
+                        total_mins = cur_hour * 60 + cur_min
+
+                        # Night quiet zone: 08:22 PM (1222m) to 04:15 AM (255m)
+                        # Midday quiet zone: 08:22 AM (502m) to 04:15 PM (975m)
+                        is_night = (total_mins >= 1222 or total_mins < 255)
+                        is_midday = (502 <= total_mins < 975)
+
+                        is_scheduled_auto = bool(os.getenv("GITHUB_CRON") or os.getenv("DISPATCH_MODE") == "auto")
+                        if is_scheduled_auto and (is_night or is_midday):
+                            logger.info(f"🛑 [CI WINDOW GUARD] IST time {cur_hour:02d}:{cur_min:02d} is outside active schedule window (04:20-08:20 AM/PM IST). Gracefully shutting down...")
+                            os._exit(0)
 
                 _ci_thread = threading.Thread(target=_ci_auto_stop_worker, daemon=True, name="CIAutoStopThread")
                 _ci_thread.start()
-                logger.info(f"⏱️ [CI SESSION TIMER] Auto-stop timer active: Runner will shut down in {max_run_h}h ({run_seconds/60:.0f} mins).")
+                logger.info(f"⏱️ [CI SESSION TIMER] Auto-stop timer active: Runner will shut down in {max_run_h}h ({run_seconds/60:.0f} mins) with strict 04:20-08:20 AM/PM IST wall-clock boundaries.")
             except Exception as _te:
                 logger.warning(f"Failed to start CI auto-stop timer: {_te}")
 

@@ -124,13 +124,13 @@ In Telegram, message your bot:
 
 ## ⚡ GitHub Actions Automation
 
-The workflow in `.github/workflows/gemini-editor-runner.yml` automatically triggers on GitHub Actions runners every 6 hours (**04:20 AM, 10:20 AM, 04:20 PM, 10:20 PM IST**):
+The workflow in `.github/workflows/gemini-editor-runner.yml` automatically triggers on GitHub Actions runners strictly twice daily in two 4-hour active windows (**04:20 AM – 08:20 AM IST** and **04:20 PM – 08:20 PM IST**), with night hours (08:20 PM to 04:20 AM IST) completely protected:
 
 ```yaml
   schedule:
-    # 2 clean 6-hour windows (Indian Standard Time — IST):
-    - cron: '50 22 * * *'  # Morning window: 04:20 AM to 10:20 AM IST
-    - cron: '50 10 * * *'  # Evening window: 04:20 PM to 10:20 PM IST
+    # 2 clean 4-hour active windows (Indian Standard Time — IST = UTC + 5:30):
+    - cron: '50 22 * * *'  # Morning window: 04:20 AM to 08:20 AM IST
+    - cron: '50 10 * * *'  # Evening window: 04:20 PM to 08:20 PM IST
 ```
 
 ---

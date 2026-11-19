@@ -41,14 +41,51 @@ on:
     - cron: '50 10 * * *'
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
-# Ongoing runs stay active until their full runtime completes.
-# Upcoming runs queue up and wait until the active runner finishes.
+# Cancel stale or overlapping runs immediately so runs never queue up and run at night.
 concurrency:
   group: rawgrab-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
+  check-schedule-window:
+    name: Verify IST Execution Window
+    runs-on: ubuntu-latest
+    outputs:
+      allow_run: ${{ steps.gate.outputs.allow_run }}
+    steps:
+      - name: Check IST Time Gate
+        id: gate
+        run: |
+          EVENT_NAME="${{ github.event_name }}"
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "🔘 Non-schedule event ($EVENT_NAME). Allowing manual dispatch execution."
+            echo "allow_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CURRENT_HOUR=$(TZ="Asia/Kolkata" date +%H)
+          CURRENT_MIN=$(TZ="Asia/Kolkata" date +%M)
+          TOTAL_MINS=$(( 10#$CURRENT_HOUR * 60 + 10#$CURRENT_MIN ))
+          echo "🕒 Current IST time: ${CURRENT_HOUR}:${CURRENT_MIN} (${TOTAL_MINS} mins from midnight)"
+
+          # Window 1: Morning 04:20 AM IST (260 mins). Allowed start range: 04:15 AM (255m) - 05:45 AM (345m)
+          # Window 2: Afternoon 04:20 PM IST (980 mins). Allowed start range: 04:15 PM (975m) - 05:45 PM (1065m)
+          if [ "$TOTAL_MINS" -ge 255 ] && [ "$TOTAL_MINS" -le 345 ]; then
+            echo "✅ Morning window matched (04:20 AM - 08:20 AM IST)."
+            echo "allow_run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$TOTAL_MINS" -ge 975 ] && [ "$TOTAL_MINS" -le 1065 ]; then
+            echo "✅ Evening window matched (04:20 PM - 08:20 PM IST)."
+            echo "allow_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "🛑 [WINDOW GUARD] Current IST time (${CURRENT_HOUR}:${CURRENT_MIN}) is outside the approved 04:20 AM / 04:20 PM schedule windows."
+            echo "🛑 Aborting execution immediately to prevent night or out-of-schedule execution."
+            echo "allow_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run-rawgrab:
+    name: Run RawGrab Engine
+    needs: check-schedule-window
+    if: needs.check-schedule-window.outputs.allow_run == 'true'
     runs-on: ubuntu-latest
     env:
       TZ: "Asia/Kolkata"
